@@ -44,12 +44,37 @@ Compiler.REGISTRATION_MESSAGE_BANK = 180
 Compiler.SHOWCASE_MESSAGE_BANK = 181
 -- GAME_TITLE_MSG_NO: HeartGold is message 0, SoulSilver message 1.
 Compiler.TITLE_MESSAGE = { heartgold = 0, soulsilver = 1 }
-
 -- src/register_hall_of_fame.c: every member's reveal runs its own sub-scene
 -- chain (back picture, overworld sprite, header window, front picture) before
 -- the whole-party scene waits for the player. The cadence below is the source
 -- sub-scene frame count per member.
 Compiler.REGISTRATION_MEMBER_FRAMES = 84
+
+-- include/credits/data.h sScreenFlipTimings: the source display-swap timeline
+-- behind HandleSceneFlip, parallel to the scene transitions.
+local SCREEN_FLIP_TIMINGS = { 890, 1780, 2615, 3030, 4295 }
+-- src/credits/credits.c sprite resource members behind the dancing
+-- Pokémon/clouds (members 0-3) and the character cutscenes (base members 20
+-- and 149, with per-sprite file IDs in sCutsceneSpriteGfxFileIds). The port
+-- has no OAM cell/animation renderer yet, so the bundle publishes the
+-- source resource identities and flip timeline the future cutscene renderer
+-- consumes; presentation already drives transitions/flips/titles from them.
+local CREDIT_SPRITE_RESOURCES = { charMember = 1, paletteMember = 0, cellMember = 2, animMember = 3 }
+local CUTSCENE_RESOURCES = { charBaseMember = 20, paletteMember = 149, count = 16 }
+-- src/register_hall_of_fame.c background/sprite identities behind the
+-- individual and whole-party scenes (NARC_a_1_0_1 screens/chars/palettes and
+-- NARC_a_0_0_8 spotlight/confetti cells/anims). Published as source
+-- identities so the cache is complete only with the retail application art;
+-- rasterization rides the existing background decoder when the renderer
+-- lands.
+local REGISTRATION_BACKGROUND_ARCHIVE = "NARC_a_1_0_1"
+local REGISTRATION_BACKGROUND_MEMBERS = { 0, 1, 2, 3, 4, 5, 6, 7, 8 }
+local REGISTRATION_SPRITE_MEMBERS = { 16, 17, 18 }
+local REGISTRATION_SPOTLIGHT_ARCHIVE = "NARC_a_0_0_8"
+local REGISTRATION_SPOTLIGHT_MEMBERS = { 76, 77, 78 }
+-- src/hall_of_fame_showcase.c main/sub background archive behind the grid
+-- and detail presentation.
+local SHOWCASE_BACKGROUND_ARCHIVE = "NARC_a_0_9_7"
 
 -- include/credits/data.h sSceneTransitionTimings and sScreenFlipTimings.
 local SCENE_TRANSITION_TIMINGS = { 890, 1780, 2615, 3030, 4295 }
@@ -525,9 +550,15 @@ function Compiler.compile(romFs)
     registration = {
       messageBank = Compiler.REGISTRATION_MESSAGE_BANK,
       memberFrames = Compiler.REGISTRATION_MEMBER_FRAMES,
+      backgroundArchive = REGISTRATION_BACKGROUND_ARCHIVE,
+      backgroundMembers = REGISTRATION_BACKGROUND_MEMBERS,
+      spriteMembers = REGISTRATION_SPRITE_MEMBERS,
+      spotlightArchive = REGISTRATION_SPOTLIGHT_ARCHIVE,
+      spotlightMembers = REGISTRATION_SPOTLIGHT_MEMBERS,
     },
     showcase = {
       messageBank = Compiler.SHOWCASE_MESSAGE_BANK,
+      backgroundArchive = SHOWCASE_BACKGROUND_ARCHIVE,
     },
     credits = {
       frames = Compiler.CREDITS_FRAMES,
@@ -535,6 +566,9 @@ function Compiler.compile(romFs)
       messageBank = Compiler.CREDITS_MESSAGE_BANK,
       titleMessages = { heartgold = Compiler.TITLE_MESSAGE.heartgold, soulsilver = Compiler.TITLE_MESSAGE.soulsilver },
       sceneTransitionTimings = SCENE_TRANSITION_TIMINGS,
+      screenFlipTimings = SCREEN_FLIP_TIMINGS,
+      spriteResources = CREDIT_SPRITE_RESOURCES,
+      cutsceneResources = CUTSCENE_RESOURCES,
       pages = pageTable(),
       scenes = scenes,
       theEnd = theEnd,

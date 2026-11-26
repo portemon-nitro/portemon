@@ -148,6 +148,25 @@ local function checkCredits(section)
       fail("a credit scene transition timing is invalid", { index = index })
     end
   end
+  -- The source display-swap timeline behind HandleSceneFlip rides with the
+  -- transitions; a bundle without it cannot drive the display choreography.
+  if type(credits.screenFlipTimings) ~= "table" or #credits.screenFlipTimings == 0 then
+    fail("the League ending bundle carries its screen flip timings", {})
+  end
+  for index, timing in ipairs(credits.screenFlipTimings) do
+    if not isInteger(timing) or timing < 0 then
+      fail("a credit screen flip timing is invalid", { index = index })
+    end
+  end
+  local sprites = checkRecord(credits.spriteResources, "credit sprite resources")
+  checkInteger(sprites.charMember, "credit sprite char member", 0)
+  checkInteger(sprites.paletteMember, "credit sprite palette member", 0)
+  checkInteger(sprites.cellMember, "credit sprite cell member", 0)
+  checkInteger(sprites.animMember, "credit sprite anim member", 0)
+  local cutscenes = checkRecord(credits.cutsceneResources, "credit cutscene resources")
+  checkInteger(cutscenes.charBaseMember, "credit cutscene char base member", 0)
+  checkInteger(cutscenes.paletteMember, "credit cutscene palette member", 0)
+  checkInteger(cutscenes.count, "credit cutscene count", 1)
   if type(credits.scenes) ~= "table" or #credits.scenes == 0 then
     fail("the League ending bundle carries its credit scenes", {})
   end
@@ -170,6 +189,24 @@ local function checkRegistration(section)
   local registration = checkRecord(section, "registration section")
   checkInteger(registration.messageBank, "registration message bank", 1)
   checkInteger(registration.memberFrames, "registration member frames", 0)
+  -- The retail registration art identities: the cache is complete only with
+  -- the application backgrounds/sprites the individual and whole-party
+  -- scenes draw from, not just the message bank and cadence.
+  if type(registration.backgroundArchive) ~= "string" or registration.backgroundArchive == "" then
+    fail("the League ending bundle names its registration background archive", { field = "backgroundArchive" })
+  end
+  if type(registration.backgroundMembers) ~= "table" or #registration.backgroundMembers == 0 then
+    fail("the League ending bundle carries its registration background members", {})
+  end
+  if type(registration.spriteMembers) ~= "table" or #registration.spriteMembers == 0 then
+    fail("the League ending bundle carries its registration sprite members", {})
+  end
+  if type(registration.spotlightArchive) ~= "string" or registration.spotlightArchive == "" then
+    fail("the League ending bundle names its registration spotlight archive", { field = "spotlightArchive" })
+  end
+  if type(registration.spotlightMembers) ~= "table" or #registration.spotlightMembers == 0 then
+    fail("the League ending bundle carries its registration spotlight members", {})
+  end
   return registration
 end
 
@@ -178,6 +215,9 @@ end
 local function checkShowcase(section)
   local showcase = checkRecord(section, "showcase section")
   checkInteger(showcase.messageBank, "showcase message bank", 1)
+  if type(showcase.backgroundArchive) ~= "string" or showcase.backgroundArchive == "" then
+    fail("the League ending bundle names its showcase background archive", { field = "backgroundArchive" })
+  end
   return showcase
 end
 

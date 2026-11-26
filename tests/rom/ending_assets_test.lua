@@ -40,6 +40,32 @@ local function testEndingBundle(romFs)
   )
   Assert.equal(bundle.sections.registration.messageBank, 180, "the registration text bank is the source one")
   Assert.equal(bundle.sections.showcase.messageBank, 181, "the showcase text bank is the source one")
+  Assert.equal(
+    bundle.sections.registration.backgroundArchive,
+    "NARC_a_1_0_1",
+    "the registration names its source background archive"
+  )
+  Assert.isTrue(
+    #bundle.sections.registration.backgroundMembers >= 9,
+    "the registration carries its source background members"
+  )
+  Assert.equal(
+    bundle.sections.showcase.backgroundArchive,
+    "NARC_a_0_9_7",
+    "the showcase names its source background archive"
+  )
+  Assert.equal(
+    credits.screenFlipTimings[1],
+    890,
+    "the roll's first screen flip keeps its source frame"
+  )
+  Assert.equal(
+    credits.screenFlipTimings[#credits.screenFlipTimings],
+    4295,
+    "the roll's last screen flip keeps its source frame"
+  )
+  Assert.equal(credits.spriteResources.charMember, 1, "the roll names its dancing sprite char member")
+  Assert.equal(credits.cutsceneResources.count, 16, "the roll names its source cutscene count")
 
   -- Every published image is a real PNG in the bundle's own asset root.
   local images = 0

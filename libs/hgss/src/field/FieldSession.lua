@@ -82,6 +82,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field enterMapActors fun()?
 ---@field autoAcknowledgePresentation boolean?
 ---@field incomingCalls FieldSession.IncomingCalls? ambient incoming-call collaborator; absent sessions offer no phone opportunity
+---@field trainerSightClaim (fun(): boolean)? session-owned ordinary-input sight admission; the concrete composition supplies the retail coordinator
 
 ---@class FieldSession.RoamerTransitions
 ---@field connection fun(sourceMapId: integer, destinationMapId: integer) the source connection-entry roamer transition
@@ -178,6 +179,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field _boundaryMovementDirection FieldDirection?
 ---@field _actorLocked fun(actorId: string): boolean
 ---@field _tickScratch FieldSession.TickScratch
+---@field _trainerSightClaim (fun(): boolean)? session-owned ordinary-input sight admission
 local FieldSession = {}
 
 ---@param self FieldSession
@@ -559,6 +561,7 @@ function FieldSession.new(options)
     tick = 0,
     accumulator = 0,
     _boundaryMovementDirection = nil,
+    _trainerSightClaim = options.trainerSightClaim,
   }, FieldSession)
   -- One lock predicate for the session lifetime: it consults the scheduler
   -- at invocation time and never caches a lock result.
@@ -568,6 +571,20 @@ function FieldSession.new(options)
   session._actorLocked = actorLocked
   session._tickScratch = newTickScratch(session._actorLocked)
   return session
+end
+
+-- The single session-owned ordinary-input admission for ambient trainer
+-- sight, supplied by the concrete composition. The claim runs immediately
+-- after a refused on-frame script and before lower-priority step/input work,
+-- matching the source FieldInput_Process order (on-frame table, then
+-- TryGetSeenByNpcTrainers). Advancement of an already engaged approach
+-- stays with the coordinator's own fixed update; only new-sight admission
+-- rides this arbiter, so a simultaneously eligible on-frame script keeps the
+-- tick and no second on-frame evaluation exists.
+---@param claim (fun(): boolean)? returns true when sight consumed the tick
+function FieldSession:setTrainerSightClaim(claim)
+  assert(claim == nil or type(claim) == "function", "the trainer sight claim is a function or nil")
+  self._trainerSightClaim = claim
 end
 
 -- Announces the map the entry is installing to the actor owner before the
@@ -1814,6 +1831,20 @@ function FieldSession:updateFixed(inputSnapshot)
     -- still physically walking. The next step boundary always offers the rule
     -- again, because the committed tile ends its tick with an idle motion.
     if evaluateFrame and self.player.motion == "idle" and evaluateFrame(self.initController, self.tick + 1) then
+      self:_advanceTick()
+      return
+    end
+  end
+
+  -- Retail sight admission, immediately after a refused on-frame script and
+  -- before lower-priority ordinary-step/input work. A successful claim
+  -- consumes the tick so the same edge cannot also start movement. The
+  -- claim itself owns the modal/field-ready gates through admitsTrainerSight
+  -- plus the coordinator's script/battle guards; a held tick keeps its
+  -- higher-priority owner.
+  if not inputSuppressedThisTick and self._trainerSightClaim ~= nil then
+    local claimedOk, claimed = pcall(self._trainerSightClaim)
+    if claimedOk and claimed == true then
       self:_advanceTick()
       return
     end

@@ -182,13 +182,24 @@ function T.congratulations_paints_the_registered_party(scope)
   -- The production coordinator begin is what script 163 invokes: the
   -- transaction, its readiness demand and the source timeline stay owned.
   runtime.gameClear:begin(0)
-  for _ = 1, 240 do
+  for _ = 1, 600 do
     state:update(1 / 60)
-    if runtime.gameClear:phase() == "congratulations" and runtime.endingPresentation:isReady() then
+    local presentation = runtime.endingPresentation
+    if
+      runtime.gameClear:phase() == "congratulations"
+      and presentation ~= nil
+      and presentation:isReady()
+      and type(presentation.isDrawReady) == "function"
+      and presentation:isDrawReady({ "registration" })
+    then
       break
     end
   end
   Assert.isTrue(runtime.endingPresentation:isReady(), "the presented ending admits its bundle")
+  Assert.isTrue(
+    runtime.endingPresentation:isDrawReady({ "registration" }),
+    "the registration admits its text and party icons before it paints"
+  )
   local registration = render(scope, state)
   Assert.isTrue(differ(before, registration), "the registration surface covers the live field")
   Assert.isTrue(paintedPixels(registration) > 0, "the registration paints its framed surface")
@@ -252,8 +263,9 @@ function T.credits_advance_pages_and_reach_the_end(scope)
 end
 
 -- The PC showcase opens over the recorded history and paints the newest
--- record first, then its framed member page, through the admitted bundle
--- and the recorded party's own icons.
+-- record first as one grid: the party icon set with the exit target plus the
+-- selected detail together. Cursor movement refreshes both icons and
+-- details; B cancels the application from any cursor.
 function T.pc_showcase_paints_record_pages(scope)
   local state = bootHofField(scope, heldWorldState())
   local recorded = recordPaintedText(state)
@@ -277,25 +289,21 @@ function T.pc_showcase_paints_record_pages(scope)
   end
   Assert.isTrue(host:status().presentationReady, "the presented showcase admits its bundle and icons")
   recorded.text = {}
-  local team = render(scope, state)
-  Assert.isTrue(paintedPixels(team) > 0, "the showcase team page paints")
+  local grid = render(scope, state)
+  Assert.isTrue(paintedPixels(grid) > 0, "the showcase grid paints")
   local painted = paintedText(recorded)
   Assert.isTrue(painted:find("TYPHLOSION", 1, true) ~= nil, "the showcase paints the recorded party species")
   Assert.isTrue(painted:find("PIDGEOT", 1, true) ~= nil, "the showcase paints every recorded member")
-  -- The source confirm input opens the framed member page from the team page.
-  host:step(handle, { { type = "confirm" } })
+  Assert.isTrue(painted:find("GOLD", 1, true) ~= nil, "the grid paints the selected detail OT name without confirming")
+  -- Moving the cursor refreshes the detail without a page transition.
+  host:step(handle, { { type = "navigate", direction = "down" } })
   recorded.text = {}
-  local member = render(scope, state)
-  Assert.isTrue(differ(team, member), "the member page replaces the team page")
-  local memberPainted = paintedText(recorded)
-  Assert.isTrue(memberPainted:find("GOLD", 1, true) ~= nil, "the member page paints the OT name")
-  -- The source cancel input walks back to the team page and closes from it.
-  -- The script task takes the close result and closes the host; the test
-  -- follows that same production close protocol.
-  host:step(handle, { { type = "cancel" } })
-  recorded.text = {}
-  local backToTeam = render(scope, state)
-  Assert.isTrue(differ(member, backToTeam), "cancel walks back to the team page")
+  local moved = render(scope, state)
+  Assert.isTrue(paintedPixels(moved) > 0, "the moved cursor still paints")
+  -- The source cancel input closes the showcase from any cursor: there is
+  -- no team/member page mode to walk back through. The script task takes
+  -- the close result and closes the host; the test follows that same
+  -- production close protocol.
   host:step(handle, { { type = "cancel" } })
   local result = host:result(handle)
   Assert.equal(assert(result, "the closed showcase publishes its result").kind, "closed", "the showcase closes")

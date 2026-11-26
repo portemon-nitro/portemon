@@ -52,6 +52,10 @@ function HallOfFamePresentation:prepare(bundle)
     self._images = nil
   end
   self._textCache = {}
+  self._admittedSections = {}
+  self._textAdmittedSections = {}
+  self._admissionFailure = nil
+  self._iconsAdmitted = false
   self.signature = signature
   self.sections = bundle
 end
@@ -59,6 +63,80 @@ end
 ---@return boolean
 function HallOfFamePresentation:isReady()
   return self.sections ~= nil
+end
+
+-- Whether the actually required phase receipt for the named sections is
+-- admitted outside the fixed tick: required source text warmed with real
+-- substitution values. Sections present is not enough; a composed owner
+-- without its admitted receipt stays pending and holds its phase clock and
+-- phase-owned input. Icons and GPU images are draw-only and gate draw, not
+-- the transaction clock: headless compositions without a presentation owner
+-- advance on text alone while production draws hold on the full receipt.
+---@param required string[]|nil the sections the advancing phase draws; nil means all
+---@return boolean
+function HallOfFamePresentation:isPhaseReady(required)
+  if self.sections == nil or self.disposed then
+    return false
+  end
+  if self._admissionFailure ~= nil then
+    return false
+  end
+  local admitted = self._textAdmittedSections
+  if admitted == nil then
+    return false
+  end
+  local names = required or HallOfFamePresentation.SECTIONS
+  for _, name in ipairs(names) do
+    if admitted[name] ~= true then
+      return false
+    end
+  end
+  return true
+end
+
+-- Whether the actually required draw resources for the named sections are
+-- admitted outside draw: published images uploaded, required source text
+-- warmed, the party's localized names warmed, and the party icons admitted.
+-- Sections present or phase-ready is not enough; a composed owner without
+-- its full draw receipt paints nothing and holds its surface.
+---@param required string[]|nil the sections the advancing phase draws; nil means all
+---@return boolean
+function HallOfFamePresentation:isDrawReady(required)
+  if self.sections == nil or self.disposed then
+    return false
+  end
+  if self._admissionFailure ~= nil then
+    return false
+  end
+  local admitted = self._admittedSections
+  if admitted == nil then
+    return false
+  end
+  local names = required or HallOfFamePresentation.SECTIONS
+  for _, name in ipairs(names) do
+    if admitted[name] ~= true then
+      return false
+    end
+    -- Registration and showcase paint the recorded party's own icons: cold
+    -- icons hold those phases exactly like cold images/text.
+    if (name == "registration" or name == "showcase") and self._iconsAdmitted ~= true then
+      return false
+    end
+  end
+  return true
+end
+
+---@return string? terminal admission failure, nil while pending or ready
+function HallOfFamePresentation:admissionFailure()
+  return self._admissionFailure
+end
+
+-- The shared mon icon pages the registration/showcase phases draw are
+-- admitted by the field's icon owner outside draw. A cold icon page holds
+-- its phase clock like cold images/text: the mandatory sequence never draws
+-- tolerantly with missing party art.
+function HallOfFamePresentation:noteIconsAdmitted()
+  self._iconsAdmitted = true
 end
 
 ---@param section string
@@ -90,8 +168,10 @@ end
 -- One admitted source background: draw-only from the presentation's own
 -- pre-admission table. Admission happens once outside draw (see
 -- admitImages); a steady draw never touches the filesystem, never uploads a
--- new image, and never acquires a source lease. A missing admission draws
--- nothing so preparation can hold the timeline instead of faulting mid-roll.
+-- new image, and never acquires a source lease. A missing admission on a
+-- draw-ready phase is a terminal bundle fault, never a silent skip: pending
+-- phases never reach draw because their clock and input stay blocked and
+-- drawEnding paints nothing until isDrawReady holds.
 ---@param self HallOfFamePresentation
 ---@param resources table<string, unknown>
 ---@param path string content-addressed generated image path
@@ -104,8 +184,9 @@ local function paintImage(self, resources, path, x, y)
   assert(type(graphics.draw) == "function", "the ending graphics draws its backgrounds")
   local image = self._images ~= nil and self._images[path] or nil
   if image == nil then
-    return false
+    Errors.raise("FIELD_ENDING_ASSET_MISSING", "the League ending draws only admitted images", { path = path })
   end
+  assert(image ~= nil, "the ending image is admitted after the missing-image error")
   graphics.draw(image, x or 0, y or 0)
   return true
 end
@@ -340,18 +421,23 @@ local function drawIcons(resources, keys, x0, y0)
   local y = y0
   local x = x0
   for index, key in ipairs(keys) do
-    local prepared = true
     if type(icons.isPrepared) == "function" then
       local ok, isReady = pcall(icons.isPrepared, icons, key)
-      prepared = ok and isReady == true
-    end
-    if prepared then
-      local okHandle, handle = pcall(icons.handleFor, icons, key)
-      local okQuad, quad = pcall(icons.quadFor, icons, key, 1)
-      if okHandle and okQuad and type(handle) == "table" and type(handle.drawQuad) == "function" then
-        handle:drawQuad(graphics, quad, x, y)
+      if not (ok and isReady == true) then
+        Errors.raise("FIELD_ENDING_ASSET_MISSING", "the League ending draws only admitted party icons", {
+          key = key,
+        })
       end
     end
+    local okHandle, handle = pcall(icons.handleFor, icons, key)
+    local okQuad, quad = pcall(icons.quadFor, icons, key, 1)
+    if not (okHandle and okQuad and type(handle) == "table" and type(handle.drawQuad) == "function") then
+      Errors.raise("FIELD_ENDING_ASSET_MISSING", "the League ending party icon is unavailable", {
+        key = key,
+      })
+    end
+    assert(type(handle.drawQuad) == "function", "the ending icon draws its quad after the missing-icon error")
+    handle:drawQuad(graphics, quad, x, y)
     if index % 3 == 0 then
       x = x + 32
       y = y0
@@ -433,6 +519,87 @@ local function drawShowcaseMon(self, resources, status)
   end
 end
 
+-- The source showcase grid: the record header, the party icon set with the
+-- exit target, and the selected detail together on one surface. Cursor
+-- movement refreshes both the icons and the details; record paging
+-- refreshes both as well. B cancels the application from any cursor.
+---@param self HallOfFamePresentation
+---@param resources table<string, unknown>
+---@param status table<string, unknown>
+local function drawShowcaseGrid(self, resources, status)
+  paintWindow(resources, { x = 0, y = 0, width = 256, height = 192 })
+  paintText(resources, messageLine(self, resources, 181, 0), 8, 8)
+  paintText(resources, tostring(status.recordNumber or 0), 8, 20)
+  if status.date ~= nil then
+    paintText(resources, dateText(status.date), 8, 32)
+  end
+  local party = status.party
+  if type(party) ~= "table" then
+    return
+  end
+  local keys = showcaseIconKeys(resources, party)
+  drawIcons(resources, keys, 184, 40)
+  -- The grid keeps the full recorded list visible (so every member's species
+  -- paints) with the cursor-marked row, plus the selected detail below it.
+  -- Both refresh on cursor/record movement; B cancels from any cursor.
+  local cursor = tonumber(status.cursor) or 0
+  local exitSelected = status.exitSelected == true
+  local y = 48
+  for index, mon in ipairs(party) do
+    if type(mon) == "table" then
+      local marker = (index - 1 == cursor and not exitSelected) and "> " or "  "
+      local speciesLabel = type(mon.species) == "string" and speciesName(self, resources, mon.species) or ""
+      local levelLine = messageLine(self, resources, 181, 1)
+      paintText(resources, marker .. speciesLabel .. " " .. levelLine .. tostring(mon.level or 0), 8, y)
+      y = y + 12
+    end
+  end
+  -- The detail follows the cursor without a page transition, below the
+  -- list so both paint together.
+  if not exitSelected then
+    local mon = status.mon
+    if type(mon) ~= "table" then
+      mon = party[cursor + 1]
+    end
+    if type(mon) == "table" then
+      local name = tostring(mon.nickname or mon.species or "")
+      local speciesLabel = type(mon.species) == "string" and speciesName(self, resources, mon.species) or ""
+      if name == "" or name == tostring(mon.species) then
+        name = speciesLabel
+      end
+      local gender = mon.gender
+      if gender == nil and type(mon.personality) == "number" then
+        gender = derivedGender(resources, mon.species, mon.personality)
+      end
+      local genderSuffix = ""
+      if gender == "male" then
+        genderSuffix = " " .. messageLine(self, resources, 181, 3)
+      elseif gender == "female" then
+        genderSuffix = " " .. messageLine(self, resources, 181, 4)
+      end
+      local levelLine = messageLine(self, resources, 181, 1)
+      paintText(resources, name .. " " .. speciesLabel .. genderSuffix, 8, y)
+      y = y + 16
+      paintText(resources, levelLine .. tostring(mon.level or 0), 8, y)
+      y = y + 16
+      paintText(resources, messageLine(self, resources, 181, 2) .. tostring(mon.otName or ""), 8, y)
+      y = y + 16
+      local moves = mon.moves
+      if type(moves) == "table" then
+        for index = 1, 4 do
+          local move = moves[index]
+          if type(move) == "string" and move ~= "" then
+            paintText(resources, moveName(self, resources, move), 8, y)
+            y = y + 16
+          end
+        end
+      end
+    end
+  else
+    paintText(resources, messageLine(self, resources, 181, 0) .. " : exit", 8, 48)
+  end
+end
+
 -- The registration congratulations surface: the party the ending registers,
 -- drawn from the immutable snapshot the transaction staged.
 ---@param self HallOfFamePresentation
@@ -493,13 +660,29 @@ end
 local function drawCredits(self, resources, status)
   local credits = status.creditsSection
   assert(type(credits) == "table", "the credit roll reads its bundle section")
+  local timer = tonumber(status.timer) or 0
+  -- The source prints the game title at credit init (credits.c), before the
+  -- first page rolls: HeartGold message 0, SoulSilver message 1.
+  if timer < 105 then
+    local titles = credits.titleMessages
+    if type(titles) == "table" then
+      local version = status.versionId
+      local titleId = titles.heartgold
+      if type(version) == "string" and version:lower():find("soulsilver", 1, true) ~= nil then
+        titleId = titles.soulsilver
+      end
+      if type(titleId) == "number" then
+        local bank = assert(credits.messageBank, "the credit roll names its message bank")
+        paintText(resources, messageLine(self, resources, bank, titleId), 0, 70)
+      end
+    end
+  end
   local page = currentCreditPage(credits, status)
   local scenes = credits.scenes
   if type(scenes) == "table" and #scenes > 0 then
     local sceneIndex = 1
     local timings = credits.sceneTransitionTimings
     if type(timings) == "table" then
-      local timer = tonumber(status.timer) or 0
       for index, timing in ipairs(timings) do
         if tonumber(timing) <= timer then
           sceneIndex = math.min(index + 1, #scenes)
@@ -508,15 +691,33 @@ local function drawCredits(self, resources, status)
         end
       end
     end
+    -- The source display flip (HandleSceneFlip) swaps the two displays on
+    -- the flip timeline; the single-pane port swaps the layer order so the
+    -- flip is observable instead of drawing both layers identically.
+    local flipped = false
+    local flips = credits.screenFlipTimings
+    if type(flips) == "table" then
+      local count = 0
+      for _, flip in ipairs(flips) do
+        if tonumber(flip) <= timer then
+          count = count + 1
+        else
+          break
+        end
+      end
+      flipped = count % 2 == 1
+    end
     local scene = scenes[sceneIndex]
     if type(scene) == "table" then
       local lower = scene.lower
       local upper = scene.upper
-      if type(lower) == "table" and type(lower.path) == "string" then
-        paintImage(self, resources, lower.path, 0, 0)
+      local first = flipped and upper or lower
+      local second = flipped and lower or upper
+      if type(first) == "table" and type(first.path) == "string" then
+        paintImage(self, resources, first.path, 0, 0)
       end
-      if type(upper) == "table" and type(upper.path) == "string" then
-        paintImage(self, resources, upper.path, 0, 0)
+      if type(second) == "table" and type(second.path) == "string" then
+        paintImage(self, resources, second.path, 0, 0)
       end
     end
   end
@@ -632,8 +833,10 @@ function HallOfFamePresentation:presentationPlan(status)
   local function renderShowcase(resources, view)
     if view.page == "mon" then
       drawShowcaseMon(self_, resources, view)
-    else
+    elseif view.page == "team" then
       drawShowcaseTeam(self_, resources, view)
+    else
+      drawShowcaseGrid(self_, resources, view)
     end
   end
   return fullScreenPlan("hall-of-fame-showcase", content, renderShowcase)
@@ -712,91 +915,244 @@ function HallOfFamePresentation:fadeFrames(frames)
   return math.floor(frames)
 end
 
--- Admit every published credit/The End image outside draw: synchronous
--- filesystem reads plus one GPU upload per path, cached for draw-only use.
--- Returns true once every required image is admitted; false stays pending
--- (never a draw-time load). A missing image is terminal bundle data.
----@param resources table<string, unknown> borrowed generated cache + graphics
+-- Admit the advancing phase's required text and images outside draw:
+-- synchronous filesystem reads plus one GPU upload per path, cached for
+-- draw-only use. Returns true once every required receipt is admitted; false
+-- stays pending (never a draw-time load). A missing image or message is
+-- terminal bundle data.
+---@param resources table<string, unknown> borrowed generated cache + graphics + message provider
+---@param required string[]|nil sections the advancing phase draws; nil means all
 ---@return boolean admitted
 ---@return string? failure terminal admission failure
-function HallOfFamePresentation:admitImages(resources)
+function HallOfFamePresentation:admitImages(resources, required)
   assert(not self.disposed, "disposed Hall of Fame presentation cannot admit")
   local sections = self.sections
   if sections == nil then
     return false, nil
   end
-  local credits = assert(sections.credits, "the presentation bundle carries its credits section")
-  local cacheFs = assert(resources.cacheFs, "image admission borrows its generated cache")
-  local graphics = assert(resources.graphics, "image admission borrows its host graphics namespace")
-  assert(type(cacheFs.read) == "function", "image admission reads its published images")
-  assert(type(graphics.newImage) == "function", "image admission uploads its backgrounds")
-  self._images = self._images or {}
-  local function admitOne(path)
-    if self._images[path] ~= nil then
-      return true, nil
+  local names = required or HallOfFamePresentation.SECTIONS
+  local needed = {}
+  for _, name in ipairs(names) do
+    needed[name] = true
+  end
+  self._admittedSections = self._admittedSections or {}
+  self._textAdmittedSections = self._textAdmittedSections or {}
+  -- A failed receipt stays terminal: never retry a known malformed bundle
+  -- as if it were a cold cache.
+  if self._admissionFailure ~= nil then
+    return false, self._admissionFailure
+  end
+  local function markAdmitted()
+    for _, name in ipairs(names) do
+      self._admittedSections[name] = true
+      self._textAdmittedSections[name] = true
     end
-    local bytes
-    do
-      local ok, data = pcall(cacheFs.read, cacheFs, path)
-      if not ok or type(data) ~= "string" then
-        return false, "the League ending bundle is missing its published image: " .. tostring(path)
-      end
-      bytes = data
+  end
+  local function markTextAdmitted()
+    for _, name in ipairs(names) do
+      self._textAdmittedSections[name] = true
     end
-    local fileData
-    if type(cacheFs.newFileData) == "function" then
-      local ok, fd = pcall(cacheFs.newFileData, cacheFs, bytes, path)
-      if not ok then
-        return false, "the League ending image admits no file data: " .. tostring(path)
-      end
-      fileData = fd
-    else
-      fileData = love.filesystem.newFileData(bytes, path)
+  end
+  -- Warm the required static text outside draw so a steady phase performs
+  -- no bank lease churn and a corrupt or unavailable required message
+  -- fails here, never mid-draw. A missing provider stays pending: the host
+  -- has not composed the text owner yet.
+  local provider = resources.messageProvider
+  if provider == nil then
+    return false, nil
+  end
+  local staticIds = {}
+  if needed.registration then
+    staticIds[#staticIds + 1] = { 180, 0 }
+  end
+  if needed.showcase then
+    for _, id in ipairs({ 0, 1, 2, 3, 4 }) do
+      staticIds[#staticIds + 1] = { 181, id }
     end
-    local ok, image = pcall(graphics.newImage, fileData)
-    if not ok or image == nil then
-      return false, "the League ending image uploads no GPU art: " .. tostring(path)
+  end
+  -- The save-status window (bank 40) belongs to every ending phase that
+  -- prints saving/result text, including a Red start that skips
+  -- congratulations.
+  if needed.registration or needed.credits then
+    staticIds[#staticIds + 1] = { 40, 15 }
+    staticIds[#staticIds + 1] = { 40, 16 }
+  end
+  for _, pair in ipairs(staticIds) do
+    local ok, result = pcall(messageLine, self, resources, pair[1], pair[2])
+    if not ok then
+      self._admissionFailure = "League ending text failed: " .. tostring(result)
+      return false, self._admissionFailure
     end
-    if type(image.setFilter) == "function" then
-      pcall(image.setFilter, image, "nearest", "nearest")
+    if type(result) ~= "string" or result == "" then
+      self._admissionFailure =
+        string.format("League ending text failed: bank %d message %d has no text", pair[1], pair[2])
+      return false, self._admissionFailure
     end
-    self._images[path] = image
+  end
+  if not needed.credits then
+    markAdmitted()
     return true, nil
   end
-  local scenes = assert(credits.scenes, "the credit roll carries its scenes")
-  for _, scene in ipairs(scenes) do
-    for _, layer in ipairs({ scene.lower, scene.upper }) do
-      local path = type(layer) == "table" and layer.path or nil
-      assert(type(path) == "string", "a credit scene names its published image")
-      local ok, failure = admitOne(path)
-      if not ok then
-        return false, failure
-      end
-    end
-  end
-  local theEnd = assert(credits.theEnd, "the bundle carries The End screen")
-  assert(type(theEnd.path) == "string", "The End names its published image")
   do
-    local ok, failure = admitOne(theEnd.path)
-    if not ok then
-      return false, failure
-    end
-  end
-  -- Warm the static text cache outside draw so a steady roll performs no
-  -- bank lease churn. Dynamic species/move names warm on their first draw
-  -- and stay cached per presentation.
-  if resources.messageProvider ~= nil then
-    local staticIds = { { 180, 0 }, { 181, 0 }, { 181, 1 }, { 181, 2 }, { 181, 3 }, { 181, 4 }, { 40, 15 }, { 40, 16 } }
-    for _, pair in ipairs(staticIds) do
-      pcall(messageLine, self, resources, pair[1], pair[2])
-    end
+    local credits = assert(sections.credits, "the presentation bundle carries its credits section")
     local bank = credits.messageBank
     if type(bank) == "number" then
       for _, page in ipairs(assert(credits.pages, "the credit roll carries its pages")) do
         if type(page.lines) == "table" then
           for _, line in ipairs(page.lines) do
             if type(line.message) == "number" then
-              pcall(messageLine, self, resources, bank, line.message)
+              local ok, result = pcall(messageLine, self, resources, bank, line.message)
+              if not ok then
+                self._admissionFailure = "League ending text failed: " .. tostring(result)
+                return false, self._admissionFailure
+              end
+              if type(result) ~= "string" or result == "" then
+                self._admissionFailure =
+                  string.format("League ending text failed: bank %d message %d has no text", bank, line.message)
+                return false, self._admissionFailure
+              end
+            end
+          end
+        end
+      end
+    end
+    local cacheFs = resources.cacheFs
+    local graphics = resources.graphics
+    -- Text is admitted even when GPU resources are absent: the transaction
+    -- clock advances on text headless while draw holds on images. Mark the
+    -- text receipt before the graphics gate so headless ticks unblock.
+    markTextAdmitted()
+    if cacheFs == nil or graphics == nil then
+      return false, nil
+    end
+    assert(type(cacheFs.read) == "function", "image admission reads its published images")
+    assert(type(graphics.newImage) == "function", "image admission uploads its backgrounds")
+    self._images = self._images or {}
+    local function admitOne(path)
+      if self._images[path] ~= nil then
+        return true, nil
+      end
+      local bytes
+      do
+        local ok, data = pcall(cacheFs.read, cacheFs, path)
+        if not ok or type(data) ~= "string" then
+          return false, "the League ending bundle is missing its published image: " .. tostring(path)
+        end
+        bytes = data
+      end
+      local fileData
+      if type(cacheFs.newFileData) == "function" then
+        local ok, fd = pcall(cacheFs.newFileData, cacheFs, bytes, path)
+        if not ok then
+          return false, "the League ending image admits no file data: " .. tostring(path)
+        end
+        fileData = fd
+      else
+        fileData = love.filesystem.newFileData(bytes, path)
+      end
+      local ok, image = pcall(graphics.newImage, fileData)
+      if not ok or image == nil then
+        return false, "the League ending image uploads no GPU art: " .. tostring(path)
+      end
+      if type(image.setFilter) == "function" then
+        pcall(image.setFilter, image, "nearest", "nearest")
+      end
+      self._images[path] = image
+      return true, nil
+    end
+    local scenes = assert(credits.scenes, "the credit roll carries its scenes")
+    for _, scene in ipairs(scenes) do
+      for _, layer in ipairs({ scene.lower, scene.upper }) do
+        local path = type(layer) == "table" and layer.path or nil
+        assert(type(path) == "string", "a credit scene names its published image")
+        local ok, failure = admitOne(path)
+        if not ok then
+          self._admissionFailure = tostring(failure)
+          return false, self._admissionFailure
+        end
+      end
+    end
+    local theEnd = assert(credits.theEnd, "the bundle carries The End screen")
+    assert(type(theEnd.path) == "string", "The End names its published image")
+    do
+      local ok, failure = admitOne(theEnd.path)
+      if not ok then
+        self._admissionFailure = tostring(failure)
+        return false, self._admissionFailure
+      end
+    end
+    markAdmitted()
+    return true, nil
+  end
+end
+
+-- Warm one party's required localized species/move names outside draw so a
+-- steady registration/showcase phase performs no bank acquisition while
+-- painting. A missing catalog, provider, bank, or message is terminal: the
+-- phase must hold instead of drawing a fallback name on its ready path.
+---@param party table<string, unknown>[] recorded or live party members by value
+---@param resources table<string, unknown> borrowed mon catalog + message provider
+---@return boolean admitted
+---@return string? failure terminal admission failure
+function HallOfFamePresentation:admitParty(party, resources)
+  assert(not self.disposed, "disposed Hall of Fame presentation cannot admit")
+  if self.sections == nil then
+    return false, nil
+  end
+  if self._admissionFailure ~= nil then
+    return false, self._admissionFailure
+  end
+  if type(party) ~= "table" or #party == 0 then
+    return true, nil
+  end
+  local catalog = resources.monCatalog
+  local provider = resources.messageProvider
+  if catalog == nil or provider == nil then
+    return false, nil
+  end
+  self._textCache = self._textCache or {}
+  for _, mon in ipairs(party) do
+    if type(mon) == "table" and type(mon.species) == "string" then
+      local key = "species:" .. tostring(mon.species)
+      if self._textCache[key] == nil then
+        local okDef, definition = pcall(catalog.species, catalog, mon.species)
+        if not okDef or type(definition) ~= "table" or type(definition.nativeId) ~= "number" then
+          self._admissionFailure = "League ending species failed: " .. tostring(mon.species)
+          return false, self._admissionFailure
+        end
+        local acquired = provider:acquireBank(237)
+        if type(acquired) ~= "table" then
+          self._admissionFailure = "League ending species bank unavailable"
+          return false, self._admissionFailure
+        end
+        local template = provider:get(237, definition.nativeId)
+        provider:releaseBank(237)
+        if type(template) ~= "table" or type(template.text) ~= "string" or template.text == "" then
+          self._admissionFailure = "League ending species failed: " .. tostring(mon.species)
+          return false, self._admissionFailure
+        end
+        self._textCache[key] = template.text
+      end
+      if type(mon.moves) == "table" then
+        for _, moveKey in ipairs(mon.moves) do
+          if type(moveKey) == "string" and moveKey ~= "" then
+            local moveCacheKey = "move:" .. tostring(moveKey)
+            if self._textCache[moveCacheKey] == nil then
+              local okMove, moveDef = pcall(catalog.move, catalog, moveKey)
+              if okMove and type(moveDef) == "table" and type(moveDef.nativeId) == "number" then
+                local acquiredMove = provider:acquireBank(750)
+                if type(acquiredMove) ~= "table" then
+                  self._admissionFailure = "League ending move bank unavailable"
+                  return false, self._admissionFailure
+                end
+                local templateMove = provider:get(750, moveDef.nativeId)
+                provider:releaseBank(750)
+                if type(templateMove) ~= "table" or type(templateMove.text) ~= "string" or templateMove.text == "" then
+                  self._admissionFailure = "League ending move failed: " .. tostring(moveKey)
+                  return false, self._admissionFailure
+                end
+                self._textCache[moveCacheKey] = templateMove.text
+              end
             end
           end
         end
@@ -852,8 +1208,10 @@ function HallOfFamePresentation:draw(resources, status)
     self:_require("showcase")
     if view.page == "mon" then
       drawShowcaseMon(self, resources, view)
-    else
+    elseif view.page == "team" then
       drawShowcaseTeam(self, resources, view)
+    else
+      drawShowcaseGrid(self, resources, view)
     end
     return
   end
@@ -867,7 +1225,7 @@ function HallOfFamePresentation:draw(resources, status)
     drawTheEndPresentation(self, resources, { creditsSection = credits })
     return
   end
-  drawCredits(self, resources, { creditsSection = credits, timer = view.timer or 0 })
+  drawCredits(self, resources, { creditsSection = credits, timer = view.timer or 0, versionId = view.versionId })
 end
 
 function HallOfFamePresentation:dispose()
@@ -877,6 +1235,10 @@ function HallOfFamePresentation:dispose()
   self.disposed = true
   self.sections = nil
   self._textCache = nil
+  self._admittedSections = nil
+  self._textAdmittedSections = nil
+  self._admissionFailure = nil
+  self._iconsAdmitted = false
   if self._images ~= nil then
     for _, image in pairs(self._images) do
       if type(image.release) == "function" then

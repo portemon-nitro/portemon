@@ -452,9 +452,13 @@ DerivedAssetContract.fieldEffects = {
 -- The League ending's own bundle: the Hall of Fame registration and showcase
 -- text banks, the credit roll's backgrounds, "The End" screen, page timings and
 -- message lines, published as one selector-free artifact.
+-- Schema v2 requires the retail application art identities and the credit
+-- display choreography: registration/showcase background archives, credit
+-- screen-flip timings, and sprite/cutscene resource identities. A v1 cache
+-- without them is incomplete and must fail readiness.
 DerivedAssetContract.ending = {
   format = "ending-cache-v1",
-  indexSchema = "g4-ending-index-v1",
+  indexSchema = "g4-ending-index-v2",
 }
 
 DerivedAssetContract.fieldEmotes = {

@@ -188,6 +188,7 @@ function GameClearCoordinator:begin(vsRed)
   self._preparationFailure = nil
   self._candidate = nil
   self._entry = nil
+  self._stagedDate = nil
   local options = self._options
   -- The ending demands its own generated bundle: the registration, showcase and
   -- credit-roll sections. The demand retries every fixed tick until the bundle
@@ -233,6 +234,7 @@ function GameClearCoordinator:begin(vsRed)
   })
   self._candidate = nil
   self._entry = nil
+  self._stagedDate = nil
   self._vsRed = vsRed
   self._active = true
 end
@@ -251,6 +253,7 @@ function GameClearCoordinator:_stageCandidate()
     return nil, tostring(captureErr or "the field is not settled")
   end
   local date = options.date()
+  self._stagedDate = { year = date.year, month = date.month, day = date.day }
   local room = GameClearCoordinator.PLAYER_ROOM
   local destination = options.locate(room.mapSymbol, room.localX, room.localZ, room.facing)
   local outsideHome = GameClearCoordinator.OUTSIDE_PLAYER_HOME
@@ -299,7 +302,7 @@ function GameClearCoordinator:_stageCandidate()
 
   if not self._previouslyCleared then
     local info = SysInfoState.new(base.sysInfo)
-    info:setFirstClearAt(date)
+    info:setFirstClearAt(self._stagedDate)
     base.sysInfo = info:capture()
   end
 
@@ -307,7 +310,7 @@ function GameClearCoordinator:_stageCandidate()
     local stats = assert(base.gameStats, "a captured save carries its statistics bucket")
     assert(type(stats.leagueWins) == "number", "current statistics carry the League-win total")
     stats.leagueWins = math.min(GameStats.LEAGUE_WINS_CAP, stats.leagueWins + 1)
-    self._entry = GameClearCoordinator.buildEntry(options.monService, date)
+    self._entry = GameClearCoordinator.buildEntry(options.monService, self._stagedDate)
     local history = HallOfFameState.restore(base.hallOfFame)
     if not self._previouslyCleared then
       history:reset()
@@ -349,7 +352,8 @@ function GameClearCoordinator:_install()
     direction = outsideHome.facing,
   })
   if not self._previouslyCleared then
-    options.sysInfo:setFirstClearAt(options.date())
+    assert(self._stagedDate ~= nil, "a staged candidate carries its first-clear stamp")
+    options.sysInfo:setFirstClearAt(self._stagedDate)
   end
   if self._vsRed == 0 then
     options.gameStats:awardLeagueWin()
@@ -449,6 +453,7 @@ function GameClearCoordinator:cancel(_)
   self._state = nil
   self._candidate = nil
   self._entry = nil
+  self._stagedDate = nil
   self._preparationFailure = nil
 end
 
@@ -458,6 +463,7 @@ function GameClearCoordinator:finish()
   self._state = nil
   self._candidate = nil
   self._entry = nil
+  self._stagedDate = nil
   self._preparationFailure = nil
 end
 

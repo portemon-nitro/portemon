@@ -2206,6 +2206,44 @@ function FieldRuntime:_composeGameClear()
   local function loadEndingPresentation()
     return self:_loadEndingPresentation()
   end
+  -- Admit the advancing phase's required text receipt outside the fixed tick
+  -- so headless compositions (which never run FieldState admission) still
+  -- hold their phase clock on real text instead of publishing cold. Images
+  -- and icons stay draw-only in FieldState; this admits text only and never
+  -- requires graphics.
+  local function admitEndingText()
+    local presentation = self.endingPresentation
+    if presentation == nil or not presentation:isReady() then
+      return nil
+    end
+    local coordinator = self.gameClear
+    local phase = coordinator ~= nil and coordinator:phase() or nil
+    local required
+    if phase == "credits" or phase == "credits_fade" then
+      required = { "credits" }
+    elseif
+      phase == "the_end"
+      or phase == "the_end_music_box"
+      or phase == "the_end_fade_in"
+      or phase == "the_end_fade_out"
+    then
+      required = { "credits" }
+    else
+      required = { "registration" }
+    end
+    if type(presentation.admitImages) == "function" then
+      -- Text-only admission for the transaction clock: no graphics, so
+      -- headless ticks admit the same text receipt without attempting GPU
+      -- uploads. Images admit in FieldState draw preparation and gate draw.
+      local textResources = {
+        messageProvider = self.messageProvider,
+      }
+      local _, failure = presentation:admitImages(textResources, required)
+      return failure
+    end
+    return nil
+  end
+  self._admitEndingText = admitEndingText
   self.gameClear = GameClearCoordinator.new({
     capture = captureEndingCandidate,
     publish = publishEndingRecord,
@@ -2249,68 +2287,16 @@ function FieldRuntime:_prepareEndingPresentation(presentation)
   if presentation == nil then
     return nil, nil
   end
-  if presentation:isReady() then
-    return presentation, nil
-  end
-  -- The semantic demand is the pending/terminal distinction: an explicit
-  -- demand failure is terminal, a ready receipt means a later bundle or
-  -- image problem is terminal too, and only an unready receipt without a
-  -- failure stays pending.
-  local demandReady = false
+  local EndingPresentationLoader = require("game.hgss.src.ending.EndingPresentationLoader")
+  local requestEnding
   if self.derivedAssets ~= nil and type(self.derivedAssets.requestEnding) == "function" then
-    local ready, requestFailure = self.derivedAssets.requestEnding("required")
-    if requestFailure ~= nil then
-      return nil, "League ending demand failed: " .. tostring(requestFailure)
-    end
-    demandReady = ready == true
+    requestEnding = self.derivedAssets.requestEnding
   end
-  local cacheFs = self.cacheFs
-  if cacheFs == nil then
-    return presentation, nil
-  end
-  local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
-  local loadOk, bundle = pcall(EndingAssetCache.load, cacheFs)
-  if not loadOk or type(bundle) ~= "table" then
-    if demandReady then
-      return nil, "League ending bundle failed: " .. tostring(bundle)
-    end
-    return presentation, nil
-  end
-  -- Validate every published image before publishing readiness: a bundle
-  -- that loads but names a missing image is terminal, never pending, and
-  -- readiness must never be visible for a partially admitted presentation.
-  local function missingImage(path)
-    local existsOk, exists = pcall(function()
-      return cacheFs:exists(path)
-    end)
-    return not existsOk or not exists
-  end
-  local credits = bundle.credits
-  if type(credits) ~= "table" or type(credits.scenes) ~= "table" then
-    return nil, "League ending bundle failed: credit scenes are missing"
-  end
-  for _, scene in ipairs(credits.scenes) do
-    for _, layer in ipairs({ scene.lower, scene.upper }) do
-      if type(layer) ~= "table" or type(layer.path) ~= "string" then
-        return nil, "League ending bundle failed: a credit scene names no image"
-      end
-      if missingImage(layer.path) then
-        return nil, "League ending bundle failed: missing credit image " .. tostring(layer.path)
-      end
-    end
-  end
-  local theEnd = credits.theEnd
-  if type(theEnd) ~= "table" or type(theEnd.path) ~= "string" then
-    return nil, "League ending bundle failed: The End names no image"
-  end
-  if missingImage(theEnd.path) then
-    return nil, "League ending bundle failed: missing The End image " .. tostring(theEnd.path)
-  end
-  local prepareOk, prepareErr = pcall(presentation.prepare, presentation, bundle)
-  if not prepareOk then
-    return nil, "League ending bundle failed: " .. tostring(prepareErr)
-  end
-  return presentation, nil
+  return EndingPresentationLoader.prepare(presentation, {
+    cacheFs = self.cacheFs,
+    requestEnding = requestEnding,
+    requiredSections = EndingPresentationLoader.ENDING_SECTIONS,
+  })
 end
 
 -- Admit the generated ending bundle into the ending's own presentation owner.
@@ -2685,6 +2671,16 @@ function FieldRuntime:_startFieldSession(boot)
       connection = publishRoamerConnection,
     },
   })
+  -- New-sight admission rides the session's single ordinary-input arbiter,
+  -- immediately after a refused on-frame script (FieldInput_Process order).
+  -- Approach advancement stays here in the outer fixed loop; only admission
+  -- moves into the session so a simultaneously eligible script keeps the tick.
+  if self.trainerEncounter ~= nil and type(self.session.setTrainerSightClaim) == "function" then
+    local coordinator = assert(self.trainerEncounter, "the trainer coordinator owns sight admission")
+    self.session:setTrainerSightClaim(function()
+      return coordinator:tryEngage()
+    end)
+  end
   -- Native trainer sight runs inside the session's authoritative ordinary-input
   if boot.loadedGame and boot.loadedGame.weatherId ~= nil then
     self:_setLiveWeather(self.runtimeMap, boot.loadedGame.weatherId)
@@ -2896,14 +2892,13 @@ function FieldRuntime:update(dt)
     if self.mapNameBanner then
       self.mapNameBanner:updateFixed()
     end
-    -- The source checks trainer sight at the head of every field input
-    -- frame, before a step could start, and advances the running approaches
-    -- on the same fixed tick. The gate borrows the session's exact
-    -- ordinary-input admission decision, so no separate trainer lifecycle
-    -- policy lives here.
+    -- Advancing an already engaged approach rides the outer fixed loop.
+    -- New-sight admission rides the session's ordinary-input arbiter after
+    -- a refused on-frame script, so the coordinator never preempts a
+    -- simultaneously eligible map script. The gate still borrows the
+    -- session's exact ordinary-input admission decision.
     if self.trainerEncounter then
       self.trainerEncounter:updateFixed()
-      self.trainerEncounter:tryEngage()
     end
     -- The shortcut cluster slides out while the start menu is open and
     -- whenever a cutscene, dialogue, or other modal holds the field.
@@ -2923,8 +2918,19 @@ function FieldRuntime:update(dt)
         self.input:beginUi(self.session.tick + 1)
         self._endingUi = true
       end
+      -- Admit the advancing phase's text receipt before the coordinator
+      -- steps: headless ticks (which never run FieldState admission) hold
+      -- on real text instead of publishing cold. Draw-only images/icons
+      -- admit in FieldState and gate draw, not this clock.
+      if type(self._admitEndingText) == "function" then
+        local admitFailure = self:_admitEndingText()
+        if admitFailure ~= nil then
+          error("League ending text preparation failed: " .. tostring(admitFailure), 0)
+        end
+      end
       local endingStatus = self.gameClear:updateFixed({
         actionPressed = inputSnapshot.actionPressed == true,
+        cancelPressed = inputSnapshot.cancelPressed == true,
         menuPressed = inputSnapshot.menuPressed == true,
         uiEvents = self.input:uiSnapshot(self.session.tick + 1),
       })
@@ -6866,6 +6872,9 @@ function FieldRuntime:_releaseAll()
   self.rocketHideoutEffects = nil
   if self.trainerEncounter then
     self.trainerEncounter:dispose()
+  end
+  if self.session ~= nil and type(self.session.setTrainerSightClaim) == "function" then
+    pcall(self.session.setTrainerSightClaim, self.session, nil)
   end
   self.trainerEncounter = nil
   if self.gymMechanism then

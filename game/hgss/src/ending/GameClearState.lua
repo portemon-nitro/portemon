@@ -71,6 +71,15 @@ local function touched(input)
   return false
 end
 
+-- The source B key edge behind the registration and The End terminal
+-- acknowledgment (A/B/touch). The field forwards the raw cancel edge while
+-- the ending owns the modal lane.
+---@param input table<string, unknown>|nil
+---@return boolean pressed the source B key this tick
+local function pressedCancel(input)
+  return input ~= nil and input.cancelPressed == true
+end
+
 ---@param options { vsRed: integer, previouslyCleared: boolean, presentation: table<string, unknown>|nil, audio: table<string, unknown>|nil, partySize: integer? }
 ---@return GameClearState
 function GameClearState.new(options)
@@ -118,16 +127,55 @@ function GameClearState:isSaveSoundRunning()
   return self._phase == "save_se"
 end
 
--- Whether the composed presentation bundle is still pending: a composed
--- owner without its generated sections gates both frames and input, while a
--- composition without any presentation owner keeps the headless timeline.
+-- Whether the composed presentation is still pending its actual required
+-- receipt for the advancing phase: sections present is not enough. A
+-- composed owner without its admitted text receipt stays pending and holds
+-- phase clocks, presentation starts, and phase-owned input, while a
+-- composition without any presentation owner keeps the explicit headless
+-- timeline. Draw-only icons/images gate draw, not this clock. A terminal
+-- admission failure also blocks: the coordinator surfaces it instead of
+-- advancing with cold art.
 ---@return boolean
 function GameClearState:_presentationBlocked()
   local presentation = self._presentation
   if presentation == nil or type(presentation.isReady) ~= "function" then
     return false
   end
-  return not presentation:isReady()
+  if not presentation:isReady() then
+    return true
+  end
+  if type(presentation.isPhaseReady) == "function" then
+    return not presentation:isPhaseReady(self:_requiredSections())
+  end
+  if type(presentation.isDrawReady) == "function" then
+    return not presentation:isDrawReady(self:_requiredSections())
+  end
+  return false
+end
+
+-- The generated sections the current phase actually draws. Registration and
+-- saving print registration/save text; the roll and The End draw credited
+-- art. Requiring only the drawn receipt lets a Red start hold on its save
+-- text without demanding unrelated roll imagery, while a congratulations
+-- holds on its own reveal.
+---@return string[]
+function GameClearState:_requiredSections()
+  local phase = self._phase
+  if phase == "congratulations" then
+    return { "registration" }
+  end
+  if phase == "credits" or phase == "credits_fade" then
+    return { "credits" }
+  end
+  if
+    phase == "the_end"
+    or phase == "the_end_music_box"
+    or phase == "the_end_fade_in"
+    or phase == "the_end_fade_out"
+  then
+    return { "credits" }
+  end
+  return { "registration" }
 end
 
 -- The prepared bundle's frame count for one surface, or zero when no bundle is
@@ -223,23 +271,36 @@ function GameClearState:step(input)
     return "complete"
   end
   if phase == "saving" then
+    -- The transaction owns the write, but the source prints its saving
+    -- message and waits for completion before writing (game_clear.c). Never
+    -- publish while the presented save surface is cold; a Red start holds
+    -- here until its save text is admitted instead of publishing with no
+    -- surface.
+    if self:_presentationBlocked() then
+      return "wait"
+    end
     -- The coordinator owns the write; the state never advances past this
     -- phase until the transaction reports its outcome.
     return self._published == true and "wait" or "publish"
   end
   if phase == "save_failed" then
-    if pressedStart(input) or pressedAction(input) or touched(input) then
+    if self:_presentationBlocked() then
+      return "wait"
+    end
+    if pressedAction(input) or pressedCancel(input) or touched(input) then
       self._phase = "saving"
       return "publish"
     end
     return "wait"
   end
   if phase == "congratulations" then
-    -- The registration application shows the recorded party and returns after
-    -- the player acknowledges it. A pending bundle gates both the reveal
-    -- frames and the input; a headless composition has no frames to play,
-    -- so the acknowledgement alone advances the sequence. The source plays
-    -- its registration BGM (SEQ_GS_E_DENDOUIRI) over the reveal.
+    -- The registration application shows the recorded party and returns only
+    -- after the player's terminal acknowledgment. The source's final
+    -- whole-party acknowledgment accepts A/B/touch (never START); a pending
+    -- receipt gates both the reveal frames and the input. A headless
+    -- composition has no frames to play, so the acknowledgement alone
+    -- advances the sequence. The source plays its registration BGM
+    -- (SEQ_GS_E_DENDOUIRI) over the reveal.
     if self:_presentationBlocked() then
       return "wait"
     end
@@ -256,13 +317,16 @@ function GameClearState:step(input)
         frames = math.floor(resolved)
       end
     end
-    if self._timer > frames and (pressedStart(input) or pressedAction(input) or touched(input)) then
+    if self._timer > frames and (pressedAction(input) or pressedCancel(input) or touched(input)) then
       self._phase = "saving"
       return "publish"
     end
     return "wait"
   end
   if phase == "save_status" then
+    if self:_presentationBlocked() then
+      return "wait"
+    end
     self._timer = self._timer + 1
     if self._timer >= self:_presentationFrames("saveStatusFrames") then
       self._phase = "save_se"
@@ -272,6 +336,9 @@ function GameClearState:step(input)
     return "wait"
   end
   if phase == "save_se" then
+    if self:_presentationBlocked() then
+      return "wait"
+    end
     self._timer = self._timer + 1
     if self._timer >= GameClearState.WAIT_SE_SAVE_FRAMES then
       self:_beginFade("save_fade", SAVE_FADE_FRAMES)
@@ -305,6 +372,8 @@ function GameClearState:step(input)
     if self:_presentationBlocked() then
       return "wait"
     end
+    -- The End accepts START/A/touch (credits.c THE_END), unlike the
+    -- registration's A/B/touch terminal acknowledgment.
     if pressedStart(input) or pressedAction(input) or touched(input) then
       self:_beginFade("the_end_fade_out", THE_END_FADE_FRAMES)
       return "wait"
@@ -327,6 +396,11 @@ function GameClearState:step(input)
     return "wait"
   end
   -- Fade phases advance one frame each and then hand over to their successor.
+  -- A pending receipt holds the fade: fading with no admitted surface would
+  -- play the source timeline over nothing.
+  if self:_presentationBlocked() then
+    return "wait"
+  end
   local fadeTarget = self._fadeTarget or 0
   if self._timer < fadeTarget then
     self._timer = self._timer + 1

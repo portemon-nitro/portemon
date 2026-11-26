@@ -6625,4 +6625,52 @@ function T.trainer_sight_admission_mirrors_ordinary_input_gates()
   end
 end
 
+-- Retail input priority: an eligible on-frame map script keeps the tick even
+-- when trainer sight is also eligible. Sight admission rides the session's
+-- single ordinary-input arbiter immediately after a refused on-frame script,
+-- never before it. A test that only covers an already-active foreground
+-- script cannot catch this ordering bug.
+function T.trainer_sight_yields_to_eligible_on_frame_script()
+  local function idleSessionWithFrame(evaluateFrame)
+    local session = FieldSession.new(baseOptions({
+      initController = {
+        startLifecycle = function()
+          return false
+        end,
+        evaluateFrame = evaluateFrame,
+      },
+    }))
+    return session
+  end
+  local onFrameCalls = 0
+  local sightCalls = 0
+  local session = idleSessionWithFrame(function()
+    onFrameCalls = onFrameCalls + 1
+    return true
+  end)
+  session:setTrainerSightClaim(function()
+    sightCalls = sightCalls + 1
+    return true
+  end)
+  local tickBefore = session.tick
+  session:updateFixed({})
+  Assert.equal(session.tick, tickBefore + 1, "the eligible on-frame script consumes the tick")
+  Assert.equal(onFrameCalls, 1, "the on-frame table runs first")
+  Assert.equal(sightCalls, 0, "sight never runs when the frame script takes the tick")
+  -- Once the frame script refuses and sight stays eligible, sight claims
+  -- the next eligible tick.
+  local session2 = idleSessionWithFrame(function()
+    return false
+  end)
+  local sightCalls2 = 0
+  session2:setTrainerSightClaim(function()
+    sightCalls2 = sightCalls2 + 1
+    return true
+  end)
+  local tickBefore2 = session2.tick
+  session2:updateFixed({})
+  Assert.equal(session2.tick, tickBefore2 + 1, "sight consumes its eligible tick")
+  Assert.equal(sightCalls2, 1, "sight claims the tick the frame script refused")
+end
+
 return { tests = T }

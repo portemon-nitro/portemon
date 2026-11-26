@@ -362,29 +362,66 @@ function FieldState:update(dt)
       self.runtime:failPcApplicationPresentation("PC application presentation failed: " .. tostring(failure))
     end
   end
-  -- The League ending's registration party icons admit through the shared
-  -- mon icon provider alongside the bundle, and its credit/The End images
-  -- admit outside draw: a cold bundle or cold images hold their draw (the
-  -- presenter skips unadmitted art) instead of uploading mid-frame, and a
-  -- missing published image fails instead of drawing a partial roll.
-  -- Icons are best-effort for the mandatory story sequence: a cold icon
-  -- page draws tolerantly while the bundle gates the phases.
+  -- The League ending admits its actually required receipt before the next
+  -- draw and before the next fixed tick can advance its clock: published
+  -- images upload plus required source text warms outside draw, the live
+  -- party's species/move names warm outside draw, and cold icons hold their
+  -- registration/showcase phases exactly like cold images/text. A missing
+  -- published image or message fails instead of drawing a partial roll.
   if self.runtime.gameClear ~= nil and self.runtime.gameClear:isActive() then
-    local _, leagueFailure = self:_prepareLeagueEndingIcons()
+    local iconsReady, leagueFailure = self:_prepareLeagueEndingIcons()
     if leagueFailure ~= nil then
       error("League ending icon preparation failed: " .. tostring(leagueFailure), 0)
     end
     local leaguePresentation = self.runtime.endingPresentation
-    if leaguePresentation ~= nil and leaguePresentation:isReady() and self.runtime.cacheFs ~= nil then
-      local graphics = love ~= nil and love.graphics or nil
-      if graphics ~= nil and type(graphics.newImage) == "function" then
-        local _, admitFailure = leaguePresentation:admitImages({
-          cacheFs = self.runtime.cacheFs,
-          graphics = graphics,
-          messageProvider = self.runtime.messageProvider,
-        })
-        if admitFailure ~= nil then
-          error("League ending image preparation failed: " .. tostring(admitFailure), 0)
+    if leaguePresentation ~= nil and leaguePresentation:isReady() then
+      if iconsReady then
+        leaguePresentation:noteIconsAdmitted()
+      end
+      local phase = self.runtime.gameClear:phase()
+      local required
+      if phase == "credits" or phase == "credits_fade" then
+        required = { "credits" }
+      elseif
+        phase == "the_end"
+        or phase == "the_end_music_box"
+        or phase == "the_end_fade_in"
+        or phase == "the_end_fade_out"
+      then
+        required = { "credits" }
+      else
+        required = { "registration" }
+      end
+      local admitResources = {
+        cacheFs = self.runtime.cacheFs,
+        graphics = love ~= nil and love.graphics or nil,
+        messageProvider = self.runtime.messageProvider,
+      }
+      local _, admitFailure = leaguePresentation:admitImages(admitResources, required)
+      if admitFailure ~= nil then
+        error("League ending image preparation failed: " .. tostring(admitFailure), 0)
+      end
+      -- Warm the live registration party's localized names outside draw so
+      -- a steady congratulations phase performs no bank acquisition.
+      if self.runtime.monService ~= nil then
+        local party = {}
+        local countOk, count = pcall(self.runtime.monService.partyCount, self.runtime.monService)
+        if countOk and type(count) == "number" then
+          for slot0 = 0, count - 1 do
+            local monOk, mon = pcall(self.runtime.monService.partyMon, self.runtime.monService, slot0)
+            if monOk and type(mon) == "table" and mon.isEgg ~= true then
+              party[#party + 1] = mon
+            end
+          end
+        end
+        if #party > 0 then
+          local _, partyFailure = leaguePresentation:admitParty(party, {
+            monCatalog = self.runtime.monCatalog,
+            messageProvider = self.runtime.messageProvider,
+          })
+          if partyFailure ~= nil then
+            error("League ending text preparation failed: " .. tostring(partyFailure), 0)
+          end
         end
       end
     end
@@ -590,8 +627,10 @@ end
 
 -- Prepares the open Hall of Fame showcase through its own child: the
 -- generated ending bundle through the shared semantic demand, then the
--- recorded party's own icon pages. A cold bundle stays pending with no
--- failure and input stays gated; a malformed bundle attributes its failure.
+-- recorded party's own icon pages plus its required localized names. The
+-- showcase admits only its own section, so unrelated credit art never gates
+-- the history viewer. A cold bundle stays pending with no failure and input
+-- stays gated; a malformed bundle attributes its failure.
 ---@return boolean ready
 ---@return string? failure
 function FieldState:_prepareHallOfFameShowcase()
@@ -614,34 +653,47 @@ function FieldState:_prepareHallOfFameShowcase()
   if ready ~= true or failure ~= nil then
     return ready, failure
   end
-  -- Admit GPU images outside draw once the bundle is validated. Headless
-  -- compositions without a graphics namespace skip admission; draw then
-  -- skips backgrounds instead of uploading mid-frame.
+  -- Admit the showcase's own required receipt outside draw: required text
+  -- plus the recorded party's icons and localized names. Credit art is
+  -- never admitted here.
   local presentation = assert(child.presentation, "the showcase child carries its presentation")
-  if type(presentation.admitImages) == "function" and runtime.cacheFs ~= nil then
-    local graphics = love ~= nil and love.graphics or nil
-    if graphics ~= nil and type(graphics.newImage) == "function" then
-      local admitResources = {
-        cacheFs = runtime.cacheFs,
-        graphics = graphics,
+  if type(presentation.admitImages) == "function" then
+    local admitResources = {
+      cacheFs = runtime.cacheFs,
+      graphics = love ~= nil and love.graphics or nil,
+      messageProvider = runtime.messageProvider,
+    }
+    local admitted, admitFailure = presentation:admitImages(admitResources, { "showcase" })
+    if admitFailure ~= nil then
+      return false, admitFailure
+    end
+    if not admitted then
+      return false, nil
+    end
+  end
+  if type(presentation.admitParty) == "function" then
+    local status = child:status()
+    local party = status ~= nil and status.party or nil
+    if type(party) == "table" and #party > 0 then
+      local _, partyFailure = presentation:admitParty(party, {
+        monCatalog = runtime.monCatalog,
         messageProvider = runtime.messageProvider,
-      }
-      local admitted, admitFailure = presentation:admitImages(admitResources)
-      if admitFailure ~= nil then
-        return false, admitFailure
+      })
+      if partyFailure ~= nil then
+        return false, partyFailure
       end
-      if not admitted then
-        return false, nil
-      end
+    end
+    if type(presentation.noteIconsAdmitted) == "function" then
+      presentation:noteIconsAdmitted()
     end
   end
   return true, nil
 end
 
 -- Admits the League ending's registration party icons through the shared mon
--- icon provider. The bundle readiness gates the phases; icons admit
--- independently and draw tolerantly while pending, so a cold icon page never
--- fails the mandatory story sequence.
+-- icon provider. Icons are required draw resources for the mandatory story
+-- sequence: a cold icon page holds its phase like cold images/text, and a
+-- terminal icon demand fails instead of drawing tolerantly.
 ---@return boolean ready
 ---@return string? failure
 function FieldState:_prepareLeagueEndingIcons()

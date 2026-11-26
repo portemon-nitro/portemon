@@ -1407,6 +1407,27 @@ function FieldPresentationResources:drawEnding(runtime)
   end
   local status = coordinator:status()
   assert(type(status) == "table", "the active ending publishes its status")
+  -- A pending required receipt paints nothing: the field world stays
+  -- visible behind the held phase instead of drawing a partial surface.
+  if type(presentation.isDrawReady) == "function" then
+    local phase = status.phase
+    local required
+    if phase == "credits" or phase == "credits_fade" then
+      required = { "credits" }
+    elseif
+      phase == "the_end"
+      or phase == "the_end_music_box"
+      or phase == "the_end_fade_in"
+      or phase == "the_end_fade_out"
+    then
+      required = { "credits" }
+    else
+      required = { "registration" }
+    end
+    if not presentation:isDrawReady(required) then
+      return
+    end
+  end
   status.saveMessage = runtime.saveStatus
   if status.phase == "congratulations" and type(status.party) ~= "table" then
     status.party = self:_endingRegistrationParty(runtime)

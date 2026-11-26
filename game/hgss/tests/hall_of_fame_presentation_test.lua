@@ -16,14 +16,25 @@ local MUSIC_BOX_WAIT = 380
 local function bundle()
   return {
     signature = "ending-cache-v1:rom:deps",
-    registration = { messageBank = 180, memberFrames = MEMBER_FRAMES },
-    showcase = { messageBank = 181 },
+    registration = {
+      messageBank = 180,
+      memberFrames = MEMBER_FRAMES,
+      backgroundArchive = "NARC_a_1_0_1",
+      backgroundMembers = { 0, 1, 2, 3, 4, 5, 6, 7, 8 },
+      spriteMembers = { 16, 17, 18 },
+      spotlightArchive = "NARC_a_0_0_8",
+      spotlightMembers = { 76, 77, 78 },
+    },
+    showcase = { messageBank = 181, backgroundArchive = "NARC_a_0_9_7" },
     credits = {
       frames = CREDIT_FRAMES,
       musicBoxWaitFrames = MUSIC_BOX_WAIT,
       messageBank = 440,
       titleMessages = { heartgold = 0, soulsilver = 1 },
       sceneTransitionTimings = { 890, 1780, 2615, 3030, 4295 },
+      screenFlipTimings = { 890, 1780, 2615, 3030, 4295 },
+      spriteResources = { charMember = 1, paletteMember = 0, cellMember = 2, animMember = 3 },
+      cutsceneResources = { charBaseMember = 20, paletteMember = 149, count = 16 },
       scenes = {
         { index = 0, lower = { path = "data/generated/ending/images/a.png", sha1 = "aa" }, upper = { path = "data/generated/ending/images/b.png", sha1 = "bb" } },
       },
@@ -50,8 +61,10 @@ local function showcaseStatus()
       { species = "TYPHLOSION", level = 60, form = 0 },
       { species = "PIDGEOT", level = 55, form = 0 },
     },
-    selectedMon = nil,
-    page = "team",
+    cursor = 0,
+    exitSelected = false,
+    selectedMon = 0,
+    page = "grid",
     mon = nil,
   }
 end

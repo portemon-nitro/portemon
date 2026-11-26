@@ -37,6 +37,14 @@ local T = {
       -- The League ending's own generated bundle: registration, showcase
       -- and credit-roll sections the congratulations and roll draw.
       "ending:global",
+      -- The save-status window (bank 40) and the recorded party's icon
+      -- pages the registration receipt admits outside draw. Without them
+      -- the congratulations holds its phase instead of publishing cold.
+      "message-bank:40",
+      "mon-catalog:global",
+      "mon-layout:global",
+      "mon-icon-page:20",
+      "mon-icon-page:29",
     },
     tags = { "field", "script", "ending", "save" },
   },
@@ -218,10 +226,15 @@ local function advanceEnding(game, scriptId, label, done, maxTicks)
     if game:snapshot().dialogue.modal then
       game:pressAction()
     else
+      -- The registration and The End advance on A/B/touch (never START),
+      -- while a later clear's roll skips on START/touch. Drive both edges
+      -- so one driver covers every ending phase.
       if step % START_PRESS_INTERVAL == 0 then
         game.runtime:pressMenu()
         game:step()
         game.runtime:releaseMenu()
+      elseif step % 10 == 0 then
+        game:pressAction()
       else
         game:step()
       end
