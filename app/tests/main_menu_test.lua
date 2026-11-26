@@ -11,6 +11,8 @@ local MainMenuState = require("app.src.mainmenu.MainMenuState")
 
 local T = {}
 
+local RETURN_ICON_SIZE = 20
+
 local function globalActions()
   return { { id = "new-game", kind = "new_game" } }
 end
@@ -76,14 +78,20 @@ function T.controller_reaches_both_global_actions_and_returns_their_actual_kinds
   Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
   Assert.deepEqual(controller:activate(), { kind = "new_game" })
   controller:move("right")
-  Assert.deepEqual(
-    controller:snapshot().focus,
-    { region = "global", actionId = "game-selection" },
-    "the return action is independently reachable"
+  Assert.equal(
+    controller:snapshot().focus.actionId,
+    "new-game",
+    "Right from New Game with no saves must stay on New Game"
+  )
+  controller:move("left")
+  Assert.equal(
+    controller:snapshot().focus.actionId,
+    "game-selection",
+    "Left from New Game is the only route into Return"
   )
   Assert.deepEqual(controller:activate(), { kind = "game_selection" }, "activation preserves the action kind")
-  controller:move("left")
-  Assert.deepEqual(controller:snapshot().focus, { region = "global", actionId = "new-game" })
+  controller:move("right")
+  Assert.equal(controller:snapshot().focus.actionId, "new-game", "Right exits Return")
 end
 
 function T.state_filters_other_game_saves_and_keeps_unattributable_recovery_cards()
@@ -131,10 +139,11 @@ function T.state_filters_other_game_saves_and_keeps_unattributable_recovery_card
   local layout = view.layout
   local newGame = assert(layout.global.actions["new-game"], "New Game needs reachable geometry")
   local back = assert(layout.global.actions["game-selection"], "the return action needs reachable geometry")
-  Assert.isTrue(
-    newGame.y + newGame.height <= back.y or back.y + back.height <= newGame.y,
-    "global actions do not overlap at the compact height"
-  )
+  Assert.equal(newGame.y, back.y, "global actions share one footer row at the compact height")
+  Assert.equal(newGame.height, back.height, "global actions share one footer height")
+  Assert.equal(back.width, back.height, "Return is an icon-sized square")
+  Assert.isTrue(back.x + back.width <= newGame.x, "Return sits left of New Game")
+  Assert.isTrue(newGame.width > back.width, "New Game consumes the rest of the footer row")
   Assert.isTrue(
     layout.saves.viewport.y + layout.saves.viewport.height <= math.min(newGame.y, back.y),
     "the save list never renders behind either global action"
@@ -154,7 +163,7 @@ function T.gamepad_can_return_from_the_start_menu_without_quitting()
     end,
   })
   menu.controller:focusGlobal("new-game")
-  menu:gamepadpressed({}, "dpright")
+  menu:gamepadpressed({}, "dpleft")
   Assert.equal(menu:view().focusedId, "game-selection")
   menu:gamepadpressed({}, "a")
   Assert.deepEqual(results, { { kind = "game_selection" } })
@@ -1134,7 +1143,7 @@ local function menuRenderer(text, graphics)
 end
 
 local function drawnMenu(entries, width, height, setup)
-  local graphics = FakeGraphics.new()
+  local graphics = FakeGraphics.new({ imageSizes = { { RETURN_ICON_SIZE, RETURN_ICON_SIZE } } })
   local calls = {}
   local renderer = menuRenderer(recordingText(calls), graphics)
   local menu = state({
@@ -1296,7 +1305,7 @@ function T.scroll_indicators_track_viewport_edge_availability()
   local marks = assert(scrolled.view.layout.saves.scrollIndicators)
   Assert.notNil(marks.up, "content above the viewport needs an indicator")
   local function drawWithMarks(up, down)
-    local graphics = FakeGraphics.new()
+    local graphics = FakeGraphics.new({ imageSizes = { { RETURN_ICON_SIZE, RETURN_ICON_SIZE } } })
     local renderer = menuRenderer(recordingText({}), graphics)
     local shaped = scrolled.view
     shaped.layout.saves.scrollIndicators = { up = up, down = down }
@@ -1825,7 +1834,7 @@ function T.launcher_copy_uses_neutral_gray_text_shadow()
 end
 
 local function versionedBackgroundDraw(versionId)
-  local graphics = FakeGraphics.new()
+  local graphics = FakeGraphics.new({ imageSizes = { { RETURN_ICON_SIZE, RETURN_ICON_SIZE } } })
   local calls = {}
   local renderer = MainMenuRenderer.new({
     text = recordingText(calls),
@@ -2037,7 +2046,7 @@ local function scaledRecordingText(calls, graphics)
 end
 
 local function scaledDrawnMenu(entries, width, height)
-  local graphics = FakeGraphics.new()
+  local graphics = FakeGraphics.new({ imageSizes = { { RETURN_ICON_SIZE, RETURN_ICON_SIZE } } })
   local calls = {}
   local renderer =
     MainMenuRenderer.new({ text = scaledRecordingText(calls, graphics), graphics = graphics, versionId = "heartgold" })
@@ -2199,7 +2208,7 @@ function T.unavailable_saves_show_error_summary_without_profile_rows()
 end
 
 function T.overflow_focus_keeps_the_parent_card_neutral()
-  local graphics = FakeGraphics.new()
+  local graphics = FakeGraphics.new({ imageSizes = { { RETURN_ICON_SIZE, RETURN_ICON_SIZE } } })
   local calls = {}
   local renderer = menuRenderer(recordingText(calls), graphics)
   local menu = state({
@@ -2772,6 +2781,300 @@ function T.successive_accepted_inputs_cue_again_and_dispose_releases_borrowed_au
   menu:keypressed("return")
   Assert.equal(cues, 2, "a disposed menu never cues again")
   Assert.equal(#results, 2, "a disposed menu sends no further result")
+end
+
+function T.return_action_is_a_square_footer_button_left_of_new_game()
+  local cases = {
+    { width = 320, height = 180 },
+    { width = 256, height = 192 },
+    { width = 640, height = 480 },
+    { width = 1024, height = 320 },
+    { width = 320, height = 640 },
+  }
+  for _, case in ipairs(cases) do
+    local layout = MainMenuLayout.compute(
+      twoGlobalActions(),
+      {},
+      { region = "global", actionId = "new-game" },
+      case.width,
+      case.height,
+      0,
+      nil,
+      nil,
+      false
+    )
+    local newGame = assert(layout.global.actions["new-game"])
+    local back = assert(layout.global.actions["game-selection"])
+    local label = case.width .. "x" .. case.height
+    Assert.equal(newGame.y, back.y, "footer actions share a row at " .. label)
+    Assert.equal(newGame.height, back.height, "footer actions share a height at " .. label)
+    Assert.equal(back.width, back.height, "Return is a square at " .. label)
+    Assert.isTrue(back.x + back.width <= newGame.x, "Return sits left of New Game at " .. label)
+    Assert.isTrue(newGame.width > back.width, "New Game consumes the remaining row at " .. label)
+    Assert.isTrue(
+      layout.saves.viewport.y + layout.saves.viewport.height <= math.min(newGame.y, back.y),
+      "the save viewport stays above both footer buttons at " .. label
+    )
+  end
+
+  local single = MainMenuLayout.compute(
+    globalActions(),
+    {},
+    { region = "global", actionId = "new-game" },
+    320,
+    180,
+    0,
+    nil,
+    nil,
+    false
+  )
+  local only = assert(single.global.actions["new-game"])
+  Assert.isNil(single.global.actions["game-selection"])
+  Assert.isTrue(only.width > only.height, "a lone New Game keeps the full footer row")
+end
+
+local function expectAction(controller, actionId, message)
+  Assert.equal(controller:snapshot().focus.actionId, actionId, message)
+end
+
+local function expectReturnIsLeaf(controller)
+  for _, direction in ipairs({ "left", "up", "down" }) do
+    controller:move(direction)
+    expectAction(controller, "game-selection", "Return must not move on " .. direction)
+  end
+end
+
+function T.return_action_has_an_exact_directional_graph_without_saves()
+  local empty = MainMenuController.new(twoGlobalActions(), {})
+  empty:move("right")
+  expectAction(empty, "new-game", "Right with no saves must stay on New Game")
+  empty:move("left")
+  expectAction(empty, "game-selection", "Left from New Game must enter Return with no saves")
+  expectReturnIsLeaf(empty)
+  empty:move("right")
+  expectAction(empty, "new-game", "Right exits Return")
+end
+
+function T.return_action_has_an_exact_directional_graph_with_saves()
+  for _, ids in ipairs({ { "one" }, { "one", "two", "three" } }) do
+    local controller = MainMenuController.new(twoGlobalActions(), saves(ids))
+    controller:focusGlobal("new-game")
+    controller:move("left")
+    expectAction(controller, "game-selection", "Left from New Game must enter Return")
+    expectReturnIsLeaf(controller)
+    controller:move("right")
+    expectAction(controller, "new-game", "Right exits Return")
+    controller:move("right")
+    Assert.equal(controller:snapshot().focus.saveId, ids[1], "Right from New Game must restore the remembered save")
+    for _, id in ipairs(ids) do
+      for _, lane in ipairs({ "body", "overflow" }) do
+        controller:focusSave(id, lane)
+        for _, direction in ipairs({ "up", "down", "left", "right" }) do
+          controller:move(direction)
+          local focus = controller:snapshot().focus
+          Assert.isFalse(
+            focus.region == "global" and focus.actionId == "game-selection",
+            "no save lane may lead directly to Return: " .. id .. "/" .. lane .. " " .. direction
+          )
+          controller:focusSave(id, lane)
+        end
+      end
+    end
+  end
+end
+
+local function datedEntry(saveId, name, modifiedAt, versionId)
+  local entry = catalogEntry(saveId, name, 60)
+  entry.versionId = versionId or "heartgold"
+  entry.modifiedAt = modifiedAt
+  return entry
+end
+
+function T.saves_are_ordered_by_modification_time_with_a_stable_undated_tail()
+  local entries = {
+    datedEntry("save-00000010", "TENTH", 50),
+    datedEntry("save-00000009", "NINTH", math.huge),
+    datedEntry("save-00000008", "EIGHTH", nil),
+    datedEntry("save-00000007", "SEVENTH", 100),
+    datedEntry("save-00000006", "SIXTH", 200),
+    datedEntry("save-00000005", "FIFTH", 0 / 0),
+    datedEntry("save-00000004", "FOURTH", 100),
+    datedEntry("save-00000003", "THIRD", -5),
+    datedEntry("save-00000002", "SECOND", 99999, "soulsilver"),
+    datedEntry("save-00000001", "FIRST", 100),
+    { versionId = "heartgold", playTimeSeconds = 0, error = Errors.new("GAME_SAVE_SCHEMA_UNSUPPORTED", "unreadable") },
+  }
+  local function delete(_, saveId)
+    for index, entry in ipairs(entries) do
+      if entry.saveId == saveId then
+        table.remove(entries, index)
+        break
+      end
+    end
+    return true
+  end
+  local menu = state({
+    saveStore = {
+      listMetadata = function()
+        return entries
+      end,
+      delete = delete,
+    },
+  })
+  local current = menu:view()
+  local ids = {}
+  for _, item in ipairs(current.saves) do
+    ids[#ids + 1] = item.saveId or item.id
+  end
+  Assert.deepEqual(ids, {
+    "save-00000006",
+    "save-00000007",
+    "save-00000004",
+    "save-00000001",
+    "save-00000010",
+    "save-00000003",
+    "save-00000009",
+    "save-00000008",
+    "save-00000005",
+    "unavailable-save-11",
+  }, "dated saves descend, ties keep catalog order, undated and recovery cards stay last")
+  Assert.equal(current.focusedId, "save-00000006", "the newest saved card starts focused")
+  Assert.equal(#entries, 11, "catalog input must not be truncated")
+  Assert.equal(entries[1].saveId, "save-00000010", "catalog input order must not be rearranged in place")
+  Assert.equal(entries[5].modifiedAt, 200, "catalog timestamps must not be rewritten")
+
+  menu.controller:focusSave("save-00000004", "body")
+  entries[7].modifiedAt = 1000
+  menu:refresh()
+  local refreshed = menu:view()
+  Assert.equal(refreshed.saves[1].saveId, "save-00000004", "a refresh must reorder to the new last-saved card")
+  Assert.deepEqual(
+    refreshed.focus,
+    { region = "saves", saveId = "save-00000004", lane = "body" },
+    "semantic focus survives reordering"
+  )
+
+  menu:keypressed("right")
+  menu:keypressed("return")
+  menu:keypressed("down")
+  menu:keypressed("return")
+  menu:keypressed("right")
+  menu:keypressed("return")
+  local afterDelete = menu:view()
+  Assert.isNil(afterDelete.layout.saves.cards["save-00000004"], "the focused card must be removed once")
+  Assert.equal(afterDelete.focusedId, "save-00000006", "deletion must focus the adjacent remaining card")
+end
+
+function T.return_icon_is_acquired_on_first_draw_and_released_once()
+  local calls = {}
+  local graphics = FakeGraphics.new({ imageSizes = { { RETURN_ICON_SIZE, RETURN_ICON_SIZE } } })
+  local renderer = MainMenuRenderer.new({
+    text = recordingText(calls),
+    graphics = graphics,
+    versionId = "heartgold",
+  })
+  Assert.equal(#graphics.images, 0, "menu construction must not acquire a GPU icon")
+  local menu = state({ saveStore = {
+    listMetadata = function()
+      return {}
+    end,
+  } })
+  local current = menu:view()
+  local back = assert(current.layout.global.actions["game-selection"])
+
+  renderer:draw(current, current.presentation)
+  Assert.equal(#graphics.images, 1, "the icon is acquired lazily on the first actual draw")
+  local icon = assert(graphics.images[1])
+  Assert.deepEqual(
+    { icon:getDimensions() },
+    { RETURN_ICON_SIZE, RETURN_ICON_SIZE },
+    "the icon is a native 20x20 raster"
+  )
+  Assert.equal(#icon.filters, 1, "the icon sets one filter pair")
+  Assert.equal(icon.filters[1].min, "nearest", "the icon uses nearest minification")
+  Assert.equal(icon.filters[1].mag, "nearest", "the icon uses nearest magnification")
+  local iconDraw
+  for _, record in ipairs(graphics.draws) do
+    if record.image == icon then
+      iconDraw = record
+    end
+  end
+  iconDraw = assert(iconDraw, "the acquired icon must be drawn inside Return")
+  local drawX = iconDraw.x - (iconDraw.ox or 0) * (iconDraw.sx or 1)
+  local drawY = iconDraw.y - (iconDraw.oy or 0) * (iconDraw.sy or 1)
+  Assert.near(drawX, back.x + math.floor((back.width - RETURN_ICON_SIZE) / 2), 1, "the icon is centered in the square")
+  Assert.near(drawY, back.y + math.floor((back.height - RETURN_ICON_SIZE) / 2), 1, "the icon is centered in the square")
+  for _, call in ipairs(calls) do
+    Assert.isFalse(
+      call.text == "BACK TO GAME" or call.text == "SELECTION",
+      "Return must be icon-only without its superseded label"
+    )
+  end
+  local seenNewGame = false
+  for _, call in ipairs(calls) do
+    if call.text == "NEW GAME" then
+      seenNewGame = true
+    end
+  end
+  Assert.isTrue(seenNewGame, "New Game keeps its generated-font label")
+
+  local drawsBefore = #graphics.draws
+  renderer:draw(current, current.presentation)
+  Assert.equal(#graphics.images, 1, "subsequent draws reuse the cached icon")
+  Assert.equal(#graphics.draws - drawsBefore, 1, "each draw reuses the single cached icon once")
+
+  renderer:dispose()
+  renderer:dispose()
+  Assert.equal(icon.releaseCount, 1, "dispose releases the owned icon exactly once")
+end
+
+function T.failed_icon_acquisition_has_no_cached_image()
+  local graphics = FakeGraphics.new({ imageSizes = { { RETURN_ICON_SIZE, RETURN_ICON_SIZE } }, failOnImageCall = 1 })
+  local renderer = MainMenuRenderer.new({
+    text = recordingText({}),
+    graphics = graphics,
+    versionId = "heartgold",
+  })
+  local menu = state({ saveStore = {
+    listMetadata = function()
+      return {}
+    end,
+  } })
+  local current = menu:view()
+  local ok, err = pcall(function()
+    renderer:draw(current, current.presentation)
+  end)
+  Assert.isFalse(ok, "a failed icon acquisition must propagate")
+  Assert.isTrue(
+    tostring(err):find("sign-out-left.png", 1, true) ~= nil,
+    "the acquisition diagnostic names the required icon"
+  )
+  Assert.equal(#graphics.images, 0, "a failed image must not be cached")
+  renderer:dispose()
+end
+
+function T.a_wrong_size_icon_is_released_and_not_cached()
+  local graphics = FakeGraphics.new({ imageSizes = { { 16, 16 } } })
+  local renderer = MainMenuRenderer.new({
+    text = recordingText({}),
+    graphics = graphics,
+    versionId = "heartgold",
+  })
+  local menu = state({ saveStore = {
+    listMetadata = function()
+      return {}
+    end,
+  } })
+  local current = menu:view()
+  local ok, err = pcall(function()
+    renderer:draw(current, current.presentation)
+  end)
+  Assert.isFalse(ok, "a wrongly sized icon must fail at paint")
+  Assert.isTrue(tostring(err):find("sign-out-left.png", 1, true) ~= nil, "the size diagnostic names the required icon")
+  Assert.equal(#graphics.images, 1, "the rejected icon was acquired once")
+  Assert.equal(graphics.images[1].releaseCount, 1, "the rejected icon must be released before the error")
+  renderer:dispose()
+  Assert.equal(graphics.images[1].releaseCount, 1, "the rejected icon must not be released again")
 end
 
 return { tests = T }

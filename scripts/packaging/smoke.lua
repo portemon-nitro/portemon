@@ -100,6 +100,8 @@ local function runProbe()
     "assets/audio/launcher/back.ogg",
     "assets/audio/launcher/error.ogg",
     "assets/logo.png",
+    "assets/ui/mainmenu/sign-out-left.png",
+    "assets/ui/mainmenu/LICENSE.phosphor.txt",
     "libs/nds/src/love/shaders/map.glsl",
     "gen4/battle.lua",
     "data/scripts/overrides/common.pokecenter_pc.lua",
@@ -131,6 +133,14 @@ local function runProbe()
   local logoWidth, logoHeight = logo:getDimensions()
   assert(logoWidth == 451 and logoHeight == 115, "packaged boot logo must be 451x115")
   logo:release()
+
+  local iconPath = "assets/ui/mainmenu/sign-out-left.png"
+  local iconData = assert(love.filesystem.newFileData(readMember(iconPath), "sign-out-left.png"))
+  local icon = assert(love.graphics.newImage(iconData), "packaged Return icon must decode")
+  iconData:release()
+  local iconWidth, iconHeight = icon:getDimensions()
+  assert(iconWidth == 20 and iconHeight == 20, "packaged Return icon must be 20x20")
+  icon:release()
 
   local RepoFs = require("libs.storage.src.RepoFs")
   local source = RepoFs.new("outside-checkout", love.filesystem)

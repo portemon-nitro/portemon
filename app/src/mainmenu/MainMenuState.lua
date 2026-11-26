@@ -185,6 +185,30 @@ local function semanticStateChanged(before, after)
     or not sameModal(before.confirmation, after.confirmation)
 end
 
+local function publishedSaveTime(entry)
+  if type(entry) ~= "table" then
+    return nil
+  end
+  local value = entry.modifiedAt
+  if type(value) ~= "number" or value ~= value or math.abs(value) == math.huge then
+    return nil
+  end
+  return value
+end
+
+local function newerSave(left, right)
+  if left.modifiedAt == nil or right.modifiedAt == nil then
+    if left.modifiedAt == right.modifiedAt then
+      return left.ordinal < right.ordinal
+    end
+    return right.modifiedAt == nil
+  end
+  if left.modifiedAt == right.modifiedAt then
+    return left.ordinal < right.ordinal
+  end
+  return left.modifiedAt > right.modifiedAt
+end
+
 ---@param seconds number
 ---@return string
 function MainMenuState.formatPlayTime(seconds)
@@ -305,15 +329,24 @@ function MainMenuState:_readSaves()
     error(entriesOrError, 0)
   end
   assert(type(entriesOrError) == "table", "save catalog list must return an array")
-  local saves = {}
+  local records = {}
   for ordinal, entry in ipairs(entriesOrError) do
     local otherGame = type(entry.versionId) == "string"
       and entry.versionId ~= ""
       and GameVersion.VERSIONS[entry.versionId] ~= nil
       and not self.readyVersions[entry.versionId]
     if not otherGame then
-      saves[#saves + 1] = validSaveItem(entry, self.readyVersions, ordinal)
+      records[#records + 1] = {
+        item = validSaveItem(entry, self.readyVersions, ordinal),
+        modifiedAt = publishedSaveTime(entry),
+        ordinal = ordinal,
+      }
     end
+  end
+  table.sort(records, newerSave)
+  local saves = {}
+  for index, record in ipairs(records) do
+    saves[index] = record.item
   end
   return saves, nil
 end

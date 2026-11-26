@@ -23,6 +23,7 @@ import time
 import unittest
 from unittest import mock
 import zipfile
+import zlib
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -84,6 +85,11 @@ LAUNCHER_FONT_FILES = (
 
 LAUNCHER_ICON_FILES: tuple[str, ...] = ()
 BOOT_LOGO_FILE = "assets/logo.png"
+MAIN_MENU_ICON_FILES = (
+    "assets/ui/mainmenu/sign-out-left.png",
+    "assets/ui/mainmenu/LICENSE.phosphor.txt",
+)
+MAIN_MENU_ICON_SOURCE = "assets/ui/mainmenu/sign-out.svg"
 OBSOLETE_LAUNCHER_FILES = tuple(
     f"assets/ui/launcher/icons/{name}.png"
     for name in ("add-game", "back", "check", "close", "play", "warning")
@@ -121,6 +127,23 @@ def write_file(root: Path, relative: str, data: bytes) -> None:
     target.write_bytes(data)
 
 
+def fixture_png(width: int, height: int) -> bytes:
+    """A decodable RGBA fixture so the archive probe can exercise real image decode."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(
+            ">I", zlib.crc32(kind + data) & 0xFFFFFFFF
+        )
+
+    scanlines = b"".join(b"\x00" + b"\x00\x00\x00\x00" * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + chunk(b"IDAT", zlib.compress(scanlines))
+        + chunk(b"IEND", b"")
+    )
+
+
 def make_fixture(root: Path) -> None:
     for tree in (
         "app/src", "game/src", "game/hgss/src", "romdump/src", "data/manifests",
@@ -133,7 +156,10 @@ def make_fixture(root: Path) -> None:
         shutil.copyfile(REPO_ROOT / relative, target)
     for relative in FONT_FILES + OBSOLETE_LAUNCHER_FILES + CUSTOM_BRANDING_FILES:
         write_file(root, relative, b"isolated packaging fixture\n")
-    shutil.copyfile(REPO_ROOT / BOOT_LOGO_FILE, root / BOOT_LOGO_FILE)
+    write_file(root, BOOT_LOGO_FILE, fixture_png(451, 115))
+    for relative in MAIN_MENU_ICON_FILES:
+        write_file(root, relative, fixture_png(20, 20) if relative.endswith(".png") else b"MIT fixture notice\n")
+    write_file(root, MAIN_MENU_ICON_SOURCE, b"source-only fixture\n")
     for relative in AUDIO_FILES:
         write_file(root, relative, b"TEST FIXTURE; synthetic bytes; not release provenance\n")
     for relative in EXCLUDED_FILES:
@@ -530,6 +556,7 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
             *FONT_FILES,
             *AUDIO_FILES,
             BOOT_LOGO_FILE,
+            *MAIN_MENU_ICON_FILES,
         }
         missing = sorted(required.difference(names))
         if missing:
@@ -907,8 +934,9 @@ class PackagingContractTest(unittest.TestCase):
                 self.assertIn("conf.lua", names)
                 self.assertNotIn("app/main.lua", names)
                 self.assertNotIn("app/conf.lua", names)
-                for relative in SOURCE_FILES[2:] + FONT_FILES + AUDIO_FILES + (BOOT_LOGO_FILE,):
+                for relative in SOURCE_FILES[2:] + FONT_FILES + AUDIO_FILES + (BOOT_LOGO_FILE,) + MAIN_MENU_ICON_FILES:
                     self.assertIn(relative, names)
+                self.assertNotIn(MAIN_MENU_ICON_SOURCE, names, "source artwork is not a runtime member")
                 self.assertEqual(
                     [name for name in names if name.startswith("assets/ui/launcher/icons/")],
                     list(LAUNCHER_ICON_FILES),
@@ -1060,6 +1088,30 @@ class PackagingContractTest(unittest.TestCase):
             self.assertIn(BOOT_LOGO_FILE, result.stderr + result.stdout)
             self.assertEqual(output.read_bytes(), previous_payload)
             self.assertEqual(listing.read_bytes(), previous_listing)
+
+    def test_main_menu_icon_members_are_required_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "portemon.love"
+            listing = root / "listing.txt"
+            for relative in MAIN_MENU_ICON_FILES:
+                with self.subTest(member=relative):
+                    make_fixture(root)
+                    result = run_packer(root, output, listing)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    with zipfile.ZipFile(output) as archive:
+                        self.assertIn(relative, archive.namelist(), "the licensed icon must join the payload")
+                    previous_payload = output.read_bytes()
+                    previous_listing = listing.read_bytes()
+
+                    (root / relative).unlink()
+
+                    result = run_packer(root, output, listing)
+
+                    self.assertNotEqual(result.returncode, 0, "a missing icon member must fail the build")
+                    self.assertIn(relative, result.stderr + result.stdout)
+                    self.assertEqual(output.read_bytes(), previous_payload)
+                    self.assertEqual(listing.read_bytes(), previous_listing)
 
     def test_missing_source_tree_or_aliased_listing_cannot_publish_a_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

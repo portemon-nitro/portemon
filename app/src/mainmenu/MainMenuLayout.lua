@@ -77,25 +77,28 @@ end
 
 local function globalActionRects(actions, x, bottom, width, heightAvailable)
   local height = heightAvailable < 240 and 32 or BASE_NEW_GAME_HEIGHT
-  local gap = BASE_REGION_GAP
+  local y = bottom - height
   local rects = {}
-  if #actions == 1 or width < 296 or heightAvailable < 240 then
-    local totalHeight = #actions * height + math.max(0, #actions - 1) * gap
-    local y = bottom - totalHeight
-    for index, action in ipairs(actions) do
-      rects[action.id] = { x = x, y = y + (index - 1) * (height + gap), width = width, height = height }
-    end
+  if #actions == 1 then
+    rects[assert(actions[1]).id] = { x = x, y = y, width = width, height = height }
   else
-    local actionWidth = math.floor((width - gap) / 2)
-    local y = bottom - height
-    for index, action in ipairs(actions) do
-      rects[action.id] = {
-        x = x + (index - 1) * (actionWidth + gap),
-        y = y,
-        width = index == #actions and width - (index - 1) * (actionWidth + gap) or actionWidth,
-        height = height,
-      }
+    assert(#actions == 2, "the Main Menu owns exactly two footer actions")
+    local newGame, gameSelection
+    for _, action in ipairs(actions) do
+      if action.id == "new-game" then
+        newGame = action
+      elseif action.id == "game-selection" then
+        gameSelection = action
+      end
     end
+    assert(newGame ~= nil and gameSelection ~= nil, "the Main Menu footer needs its two known actions")
+    rects[gameSelection.id] = { x = x, y = y, width = height, height = height }
+    rects[newGame.id] = {
+      x = x + height + BASE_REGION_GAP,
+      y = y,
+      width = math.max(1, width - height - BASE_REGION_GAP),
+      height = height,
+    }
   end
   for _, rect in pairs(rects) do
     rect.button = ProductMenuSkin.resolveCard(rect)

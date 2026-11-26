@@ -33,6 +33,10 @@ FONT_FILES = (
 AUDIO_FILES = tuple(
     f"assets/audio/launcher/{name}.ogg" for name in ("boot", "focus", "confirm", "back", "error")
 ) + ("assets/audio/launcher/README.md",)
+MAIN_MENU_ICON_FILES = (
+    "assets/ui/mainmenu/sign-out-left.png",
+    "assets/ui/mainmenu/LICENSE.phosphor.txt",
+)
 BOOT_LOGO_FILE = "assets/logo.png"
 REQUIRED_FILES = (
     "app/main.lua",
@@ -44,6 +48,7 @@ REQUIRED_FILES = (
     *FONT_FILES,
     *AUDIO_FILES,
     BOOT_LOGO_FILE,
+    *MAIN_MENU_ICON_FILES,
 )
 SEMVER_IDENTIFIER = r"[0-9A-Za-z-]+"
 SEMVER_NUMBER = r"(?:0|[1-9][0-9]*)"

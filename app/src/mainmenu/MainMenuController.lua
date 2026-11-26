@@ -199,28 +199,21 @@ local function buildFocusGraph(globalActions, saves, rememberedSaveId, remembere
     local node = globalNode(index)
     graph[node] = { up = {}, down = {}, left = {}, right = {} }
     targets[node] = { kind = "global", actionId = action.id }
-    if index > 1 then
-      local previous = globalNode(index - 1)
-      graph[previous].right = { node }
-      graph[node].left = { previous }
-    end
   end
-  local firstGlobal = globalNode(1)
+  local newGameIndex = assert(indexOf(globalActions, "new-game"), "the Main Menu needs its New Game action")
+  local firstGlobal = globalNode(newGameIndex)
+  local returnIndex = indexOf(globalActions, "game-selection")
+  if returnIndex ~= nil then
+    local returnNode = globalNode(returnIndex)
+    graph[firstGlobal].left = { returnNode }
+    graph[returnNode].right = { firstGlobal }
+  end
   local count = #saves
   if count == 0 then
     return graph, targets
   end
   graph[firstGlobal].up = { bodyNode(count) }
   graph[firstGlobal].down = { bodyNode(1) }
-  if #globalActions > 1 then
-    graph[firstGlobal].left = { globalNode(2) }
-    graph[globalNode(2)].left = {}
-    graph[globalNode(2)].right = { firstGlobal }
-  end
-  for index = 2, #globalActions do
-    graph[globalNode(index)].up = { bodyNode(count) }
-    graph[globalNode(index)].down = { bodyNode(1) }
-  end
   local rememberedIndex = rememberedSaveId and indexOf(saves, rememberedSaveId) or nil
   if rememberedIndex ~= nil then
     local remembered = assert(saves[rememberedIndex])
