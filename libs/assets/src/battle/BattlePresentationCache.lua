@@ -327,12 +327,12 @@ function BattlePresentationCache.scenePaletteSourcePath(sceneKey)
 end
 
 ---@param itemKey string semantic ball key
----@param kind "seal"|"burst" ball particle set
+---@param kind "seal"|"burst"|"genericBurst" ball particle set
 ---@param textureId integer texture id within the set
 ---@return string cache-relative staged ball particle texture image path
 function BattlePresentationCache.ballParticleTexturePath(itemKey, kind, textureId)
   assert(type(itemKey) == "string" and itemKey:match("^[A-Z][A-Z0-9_]*$"), "ball particle textures name a ball key")
-  assert(kind == "seal" or kind == "burst", "ball particle sets are seal or burst")
+  assert(kind == "seal" or kind == "burst" or kind == "genericBurst", "ball particle sets are seal, burst, or generic")
   assert(
     type(textureId) == "number" and textureId % 1 == 0 and textureId >= 0,
     "particle texture ids are non-negative integers"

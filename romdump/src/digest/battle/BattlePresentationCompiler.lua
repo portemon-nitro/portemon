@@ -3369,7 +3369,7 @@ end
 ---@param memberId integer SPL member
 ---@param emitterCount integer required retail emitter count
 ---@param itemKey string semantic ball key
----@param kind "seal"|"burst"
+---@param kind "seal"|"burst"|"genericBurst"
 ---@param pngs table<string, string> receives the staged texture PNG bytes by cache path
 ---@return BattlePresentationCache.BallParticleSet set
 local function compileBallParticleSet(archive, memberId, emitterCount, itemKey, kind, pngs)
@@ -3594,6 +3594,14 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
         "burst",
         particlePngs
       ),
+      genericBurst = compileBallParticleSet(
+        particleArchive,
+        particleSources.generic.member,
+        particleSources.generic.emitterCount,
+        itemKey,
+        "genericBurst",
+        particlePngs
+      ),
       clickEmitter = particleSource.burstClickEmitter,
       burstStartTick = sourceOpening.frames[1].duration + sourceOpening.frames[2].duration + 1,
     }
@@ -3612,7 +3620,11 @@ function BattlePresentationCompiler.compileBallForSelector(romFs, opts, selector
         character = resource.characterMember,
         palette = resource.paletteMember,
       },
-      particleMembers = { seal = particleSource.sealMember, burst = particleSource.burstMember },
+      particleMembers = {
+        seal = particleSource.sealMember,
+        burst = particleSource.burstMember,
+        genericBurst = particleSources.generic.member,
+      },
     },
     catalogIdentity = versionId .. ":" .. metadata.sha1,
   }

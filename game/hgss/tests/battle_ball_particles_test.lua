@@ -15,13 +15,18 @@ local function stagedParticles()
   second.emitters[1].position = { x = 0, y = 0, z = 0 }
   set.emitters[2] = second.emitters[1]
   set.emitters[1].position = { x = 0, y = 0, z = 0 }
-  return { seal = set, burst = set, clickEmitter = 1, burstStartTick = 5 }
+  local generic = Fixture.sets("grass/day/forest")[1]
+  generic.emitters[1].position = { x = 0, y = 0, z = 0 }
+  return { seal = set, burst = set, genericBurst = generic, clickEmitter = 1, burstStartTick = 5 }
 end
 
 local function resolver(particles, ready)
   return {
     particles = function(key)
       return key == "POKE_BALL" and particles or nil
+    end,
+    has = function(key)
+      return key == "POKE_BALL"
     end,
     texture = function()
       if ready.value then
@@ -158,6 +163,59 @@ function T.draw_systems_publish_the_pre_advance_frame()
     Assert.equal(#published.emitters[index].particles, 0, "newborn emitters carry no particles before their first tick")
   end
   Assert.isTrue(#live.emitters[1].particles > 0, "the live simulation advanced once underneath")
+end
+
+-- The breakout's mode-1 open plays the generic burst: every emitter of
+-- the generic set on its staged delay, never the ball's click-skipping
+-- opening burst.
+function T.generic_burst_plays_every_generic_emitter_on_its_delay()
+  local owner = BattleBallParticles.new({ splRandomState = { state = 0 } })
+  local res = resolver(stagedParticles(), { value = true })
+  owner:step({ { effect = "generic-burst", ballKey = "POKE_BALL", x = 129, y = 100 } }, {}, res)
+  for _ = 1, 5 do
+    Assert.equal(#owner:systems(), 0, "the generic burst waits for the mode-1 open")
+    owner:step({}, {}, res)
+  end
+  Assert.equal(#owner:systems(), 1, "the generic burst starts on its staged tick")
+  local ids = {}
+  for _, runtime in ipairs(owner:systems()[1].simulation.emitters) do
+    ids[#ids + 1] = runtime.id
+  end
+  Assert.isTrue(#ids >= 1, "the generic burst creates its emitters")
+end
+
+-- A required effect whose record never stages fails loudly after the
+-- wait limit instead of vanishing like completed work; the failure
+-- names its start while the queue still drains to idle.
+function T.missing_records_fail_loudly_after_the_wait_limit()
+  local owner = BattleBallParticles.new({ splRandomState = { state = 0 } })
+  local res = resolver(stagedParticles(), { value = true })
+  res.particles = function()
+    return nil
+  end
+  res.has = function()
+    return nil
+  end
+  owner:step({ { effect = "burst", ballKey = "MISSING_BALL", x = 0, y = 0 } }, {}, res)
+  for _ = 1, 61 do
+    owner:step({}, {}, res)
+  end
+  local failed = owner:failures()
+  Assert.equal(#failed, 1, "the missing record records one failure")
+  Assert.equal(failed[1].reason, "missing-particles", "the failure names its staging loss")
+  Assert.equal(failed[1].start.effect, "burst", "the failure names its effect")
+  Assert.isTrue(owner:isIdle(), "the failed start still drains the queue")
+end
+
+-- Balls the resolver affirmatively stages without particles keep their
+-- valid no-effect semantics: nothing starts and nothing fails.
+function T.staged_ballless_balls_keep_no_effect_semantics()
+  local owner = BattleBallParticles.new({ splRandomState = { state = 0 } })
+  local ready = { value = true }
+  local res = resolver(stagedParticles(), ready)
+  owner:step({ { effect = "seal", ballKey = "CHERISH_BALL", battlerType = 0 } }, {}, res)
+  Assert.isTrue(owner:isIdle(), "a staged ballless ball starts nothing")
+  Assert.deepEqual(owner:failures(), {}, "a staged ballless ball fails nothing")
 end
 
 -- Every particle consumer borrows the one boot stream instead of reading a

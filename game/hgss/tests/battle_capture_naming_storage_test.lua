@@ -102,7 +102,10 @@ local function screenManifest()
   -- The capture harness binds one launch view, never the global
   -- inventory: the exact backpic and ball behind these rigs stage as
   -- launch entries.
-  local manifest = BattlePresentationManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" })
+  local manifest = BattlePresentationManifestFixture.launchView(
+    { "back:PKMN_TRAINER_ETHAN" },
+    { "ball:POKE_BALL", "ball:MASTER_BALL" }
+  )
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
   return manifest
 end

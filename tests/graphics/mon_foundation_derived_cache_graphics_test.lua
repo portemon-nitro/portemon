@@ -197,12 +197,20 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
         local function step()
           state:update(SourceTick.DT)
         end
-        local function waitFor(label, predicate, bound)
+        local function waitFor(label, predicate, bound, yield)
           for _ = 1, bound do
             if predicate() then
               return
             end
             step()
+            -- Icon pages decode on worker threads in wall time: a tight
+            -- step loop can burn the whole bound before the workers
+            -- finish, so the icon wait yields briefly per iteration like
+            -- the battle warmup coverage does. Logical waits need no
+            -- wall time and stay tight.
+            if yield and love.timer ~= nil and love.timer.sleep ~= nil then
+              love.timer.sleep(0.005)
+            end
           end
           error("timed out waiting for " .. label, 0)
         end
@@ -266,7 +274,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
           local application = hostStatus().application
           local child = application ~= nil and application.child or nil
           return child ~= nil and child.preparationState == "ready" and child.phase == "interactive"
-        end, 300)
+        end, 300, true)
         -- The handover and its settling tick carry no cover; draw only
         -- once the screen forwards so the sample reads party chrome.
         step()

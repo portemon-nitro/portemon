@@ -657,6 +657,26 @@ function T.ready_card_projects_type_and_footprint_intents()
   child:dispose()
 end
 
+-- The completed card freezes the departure end state instead of snapping
+-- back home: the picture stays centered, the popup sprites stay hidden,
+-- and the terminal cover stays black until the owning screen releases it.
+function T.completed_card_keeps_departure_end_state()
+  local Child = requirePresent("frozen departure end state")
+  local registration = frozenRegistration()
+  local pokedex = newPokedexFake({ "ready" })
+  local audio = newAudioFake()
+  audio.cryDone = true
+  local child, timeline = newChild(Child, registration, pokedex, audio)
+  Assert.isTrue(driveToDismissal(child, timeline, 2000), "the card reaches its ready phase")
+  child:input({ { type = "confirm" } })
+  Assert.isTrue(pump(child, timeline, 1200), "a fresh edge completes the dismissed card")
+  local view = child:view()
+  Assert.equal(view.pictureX, 128, "the completed card keeps the centered picture")
+  Assert.isTrue(view.spritesHidden == true, "the completed card keeps its sprites hidden")
+  Assert.equal(view.paletteFade, 16, "the completed card holds its terminal cover")
+  child:dispose()
+end
+
 -- The banner strip free-runs from card creation: palette 7 on the 16th
 -- source update, back to palette 0 on the 32nd, independent of the cry
 -- and of dismissal. The first update only resolves preparation, so the

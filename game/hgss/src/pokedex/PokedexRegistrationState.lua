@@ -396,12 +396,16 @@ local function completeCard(self)
     self._palette = fadeInit(FADE_MAX, FADE_MAX, true)
     self._picture = fadeInit(FADE_MAX, FADE_MAX, false)
   else
-    -- The frozen final exit keeps the centered captured picture under the
-    -- terminal cover: the departure slides away, the completed card stays.
+    -- The frozen final exit keeps the departure end state under the
+    -- terminal cover: the picture stays centered, the popup sprites stay
+    -- hidden, and the completed card holds black until its owner releases
+    -- it. Never snap back home: the departure already retired the card
+    -- pose, and a reset would blink the whole overlay and its mon sprite
+    -- for the single frozen frame.
     self._palette = fadeInit(FADE_MAX, FADE_MAX, true)
     self._picture = fadeInit(0, 0, false)
-    self._pictureX = CARD_PICTURE_X
-    self._spritesHidden = false
+    self._pictureX = DEPART_PICTURE_END
+    self._spritesHidden = true
   end
   self._dismissible = false
   self._dismissRequested = false

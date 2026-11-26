@@ -4358,7 +4358,7 @@ local function checkBallEntry(selector, record, checkImage, context, field)
     local particleField = field .. ".particles"
     SchemaCheck.checkRecord(
       particles,
-      { seal = true, burst = true, clickEmitter = true, burstStartTick = true },
+      { seal = true, burst = true, genericBurst = true, clickEmitter = true, burstStartTick = true },
       context,
       CODE_MANIFEST,
       particleField
@@ -4366,6 +4366,7 @@ local function checkBallEntry(selector, record, checkImage, context, field)
     local itemKey = selector:sub(6)
     checkBallParticleSet(particles.seal, itemKey, "seal", context, particleField .. ".seal")
     checkBallParticleSet(particles.burst, itemKey, "burst", context, particleField .. ".burst")
+    checkBallParticleSet(particles.genericBurst, itemKey, "genericBurst", context, particleField .. ".genericBurst")
     checkInt(
       particles.clickEmitter,
       0,

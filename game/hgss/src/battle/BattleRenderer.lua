@@ -1951,11 +1951,14 @@ local function drawKeypadCursor(graphics, assets, view, layout, regions)
   if view.cursorVisible ~= true or type(view.selection) ~= "string" then
     return
   end
-  -- The Shift and use-next prompts track Yes/No while the source
+  -- The Shift, use-next, and capture-nickname prompts track Yes/No while the source
   -- two-option planes name their confirm/back cells: resolve the answer
   -- onto its cell.
   local wanted = view.selection
-  if (view.mode == "shift" or view.mode == "use-next") and type(wanted) == "string" then
+  if
+    (view.mode == "shift" or view.mode == "use-next" or (view.mode == "outcome" and view.completionQuestion == true))
+    and type(wanted) == "string"
+  then
     wanted = wanted == "yes" and "confirm" or wanted == "no" and "back" or wanted
   end
   local selected = nil
@@ -3140,7 +3143,7 @@ local function drawControls(resources, view, layout, regions)
         label("menu", menuText.cancel, CANCEL_ANCHOR, true, offsetY, sourcePalette(view, "menu", 2, 10, 11, 12))
       elseif
         layout == "two-option"
-        and (view.mode == "shift" or view.mode == "use-next")
+        and (view.mode == "shift" or view.mode == "use-next" or (view.mode == "outcome" and view.completionQuestion == true))
         and (id == "confirm" or id == "back")
         and type(view.twoOption) == "table"
       then
@@ -3416,10 +3419,12 @@ end
 -- visible browser page composites first, disabled button faces repaint
 -- over empty controls (DrawPageButtons frame 3) and the staged press
 -- dip repaints the pressed button (UpdateButtonAnim frames 1-2) ahead
--- of the row text. Item icons ride their center-anchored spots, the
--- lesson finger and the d-pad cursor corners ride their spots while
--- active, then each projected row paints its label through its retail
--- font and window colors. List names ride font 4 MAKE_TEXT_COLOR(3,2,1) centered on their button with quantities in
+-- of the row text. Item icons ride their center-anchored spots, then
+-- each projected row paints its label through its retail font and
+-- window colors, and the lesson finger and the d-pad cursor corners
+-- ride above them all while active like the retail OBJ sprites above
+-- the BG text (battle_bag_menu.c UpdateTutorialFinger).
+-- List names ride font 4 MAKE_TEXT_COLOR(3,2,1) centered on their button with quantities in
 -- font 0 MAKE_TEXT_COLOR(1,2,0) at the template slot right of the icon
 -- (PrintItemListEntry y=7/y=4); pocket-menu and USE rows center font 4
 -- (3,2,1) in their buttons (PrintPocketMenuPage y=7/23, PrintCenteredText
@@ -3551,29 +3556,11 @@ local function drawBagChild(resources, view, child)
       drawArtwork(graphics, iconArt, nil, icon.x - math.floor(width / 2), icon.y + dy - math.floor(height / 2))
     end
   end
-  -- The lesson finger centers on its per-page spot while the tutorial
-  -- auto-plays (battle_bag_menu.c UpdateTutorialFinger, staged like the
-  -- item spots).
-  local finger = BattleBagPockets.fingerDraw(native)
-  if finger ~= nil then
-    drawTutorialFinger(graphics, assets, finger.x, finger.y)
-  end
-  -- D-pad cursor corners frame the focused box while the cursor is
-  -- active (BattleDpadCursor_SetRect over the page cursor boxes; set by
-  -- keys, cleared by touch). Sprites center on the corners like the
-  -- item spots. A missing staged corner draws nothing under the
-  -- existing pending path, never a substitute or a text marker.
-  local bagTick = view.bagCursorTick --[[@as integer?]] or 0
-  for _, corner in ipairs(BattleBagPockets.cursorDraws(native, bagPage, child.focusId, bagTick, view.bagCursorFrames)) do
-    local cornerArt = assets:drawable(corner.key)
-    if cornerArt ~= nil then
-      local width, height = drawableDims(cornerArt)
-      if type(width) ~= "number" or type(height) ~= "number" then
-        width, height = 32, 32
-      end
-      drawArtwork(graphics, cornerArt, nil, corner.x - math.floor(width / 2), corner.y - math.floor(height / 2))
-    end
-  end
+  -- The lesson finger and the d-pad cursor corners paint after the row
+  -- text at the end of this function: both are OBJ sprites above the BG
+  -- text planes (battle_bag_menu.c UpdateTutorialFinger, staged like the
+  -- item spots), so painting them here would leave the row labels
+  -- covering the indicator they are supposed to highlight.
   -- Window template palettes behind each page (battle_menu_data.s):
   -- pocket-menu windows all ride palette 0; item-list name windows
   -- ride palette 0 while quantity windows 1/3/5/7/9/11 plus the
@@ -3813,6 +3800,31 @@ local function drawBagChild(resources, view, child)
         drawRoleText(text, "hud", currentText, slashX - currentWidth, 160 + 4, bagListQtyPalette())
         drawRoleText(text, "hud", lastText, slashX + slashWidth, 160 + 4, bagListQtyPalette())
       end
+    end
+  end
+  -- The lesson finger centers on its per-page spot while the tutorial
+  -- auto-plays (battle_bag_menu.c UpdateTutorialFinger, staged like the
+  -- item spots). Both the finger and the d-pad cursor corners are OBJ
+  -- sprites above the BG text planes, so they paint after every row
+  -- label and the bottom bar instead of under them.
+  local finger = BattleBagPockets.fingerDraw(native)
+  if finger ~= nil then
+    drawTutorialFinger(graphics, assets, finger.x, finger.y)
+  end
+  -- D-pad cursor corners frame the focused box while the cursor is
+  -- active (BattleDpadCursor_SetRect over the page cursor boxes; set by
+  -- keys, cleared by touch). Sprites center on the corners like the
+  -- item spots. A missing staged corner draws nothing under the
+  -- existing pending path, never a substitute or a text marker.
+  local bagTick = view.bagCursorTick --[[@as integer?]] or 0
+  for _, corner in ipairs(BattleBagPockets.cursorDraws(native, bagPage, child.focusId, bagTick, view.bagCursorFrames)) do
+    local cornerArt = assets:drawable(corner.key)
+    if cornerArt ~= nil then
+      local width, height = drawableDims(cornerArt)
+      if type(width) ~= "number" or type(height) ~= "number" then
+        width, height = 32, 32
+      end
+      drawArtwork(graphics, cornerArt, nil, corner.x - math.floor(width / 2), corner.y - math.floor(height / 2))
     end
   end
 end
@@ -4642,12 +4654,14 @@ local function drawInteraction(resources, view, content, placement)
   -- palettes carry the flash), but the controls belong to command input:
   -- intro, narration, resolution, and outcome panes show gauges alone,
   -- so the reveal never replays over already-visible controls. The held
-  -- offers own their two-option controls the same way.
+  -- offers and the capture-nickname question own their two-option
+  -- controls the same way.
   local inputMode = view.mode == "command"
     or view.mode == "moves"
     or view.mode == "target"
     or view.mode == "shift"
     or view.mode == "use-next"
+    or (view.mode == "outcome" and view.completionQuestion == true)
   -- Retail hides every plane but SUB_2 while no menu is open
   -- (BattleInput_ShowOnlySubBgLayer2): the plain backdrop without
   -- the button tilemaps.
@@ -4768,13 +4782,33 @@ local function drawCompactScene(resources, view, content, compactUI)
     local windowDraw = ui.window --[[@as fun()]]
     planes.window = { draw = windowDraw }
   end
+  -- The thrown ball rides the shared present like the detail objects:
+  -- captures, send-outs, and break-outs own the field in compact mode
+  -- too, and dropping the fragment hides the ball behind its own
+  -- sounds and messages. The world fit applies to source geometry, so
+  -- the native sprite coordinates land on the fitted battlers.
+  local objects = {}
+  local opening = type(view.openingPresentation) == "table" and view.openingPresentation or nil
+  if type(opening) == "table" and type(opening.ballThrow) == "table" then
+    local graphics = assert(resources.graphics, "the compact scene borrows its host graphics")
+    local assets = assert(resources.assets, "the compact scene borrows its asset holder")
+    local function drawCompactBall()
+      drawThrownBall(graphics, assets, view)
+    end
+    objects[#objects + 1] = {
+      objPriority = view.levelUpStats ~= nil and 1 or 0,
+      submissionOrder = 1,
+      oamMode = "normal",
+      draw = drawCompactBall,
+    }
+  end
   -- Compact HUD rides at its planned target coordinates after the
   -- shared present: the world fit applies only to source geometry,
   -- never to HUD placement. During live effects the HUD still enters
   -- through the compositor via the typed frame; static command views
   -- carry no active blend or window state, so direct target drawing
   -- preserves placement without clipping into the world padding.
-  presentMainFrame(resources, view, layout, planes, {})
+  presentMainFrame(resources, view, layout, planes, objects)
   if type(ui.hud) == "function" then
     local hudDraw = ui.hud --[[@as fun()]]
     hudDraw()

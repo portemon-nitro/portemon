@@ -1531,6 +1531,14 @@ function BattleScreenState.new(opts)
     slotGeometry = self._manifest.battlefield.slots,
     faintAppearance = faintAppearance,
   })
+  -- Capture joins gate on the ball particle systems' retirement: the
+  -- owning screen consumes started effects on its own frame, so the
+  -- timeline holds its open/click joins until the systems drain instead
+  -- of guessing an emitter lifetime. Headless drivers without a screen
+  -- keep their explicit probe behind the same join.
+  self._timeline:setParticleIdleProbe(function()
+    return self._ballParticles:isIdle()
+  end)
   local cases = nil
   if type(overrides.cases) == "table" then
     cases = overrides.cases
@@ -2807,6 +2815,11 @@ function BattleScreenState:_snapshot(borrowStatic)
     side[visual.kind] = self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, visual.sideType)
   end
   local childView, completionPrompt, buttonFeedback, armed = snapshotCompletionViews(self)
+  local completionQuestion = self:_completionQuestionActive()
+  local questionTwoOption = nil
+  if completionQuestion and type(childView) == "table" then
+    questionTwoOption = (childView --[[@as table<string, unknown>]]).twoOption
+  end
   local terrainSpritesView = snapshotTerrainSprites(self, terrainSprites)
   return {
     battleKind = self._kind,
@@ -2876,7 +2889,7 @@ function BattleScreenState:_snapshot(borrowStatic)
       target = self._manifest.menus.target.screens,
       twoOption = self._manifest.menus.twoOption.screens,
     },
-    twoOption = copyValue(self:_shiftTwoOption() or self:_useNextTwoOption()),
+    twoOption = copyValue(self:_shiftTwoOption() or self:_useNextTwoOption() or questionTwoOption),
     hudPatchSpans = self._manifest.hud.patchSpans,
     cursor = self._manifest.hud.cursor,
     menuText = self:_menuText(),
@@ -2899,6 +2912,7 @@ function BattleScreenState:_snapshot(borrowStatic)
     stagedChoices = staged,
     childIntent = self._child ~= nil and copyValue(self._child) or nil,
     childView = childView,
+    completionQuestion = completionQuestion,
   }
 end
 
@@ -3403,6 +3417,14 @@ function BattleScreenState:openCompletion(intent)
   self._completionChild = nil
   self._evolution = nil
   self._completionResult = nil
+  if self._completion ~= nil and self._completion.kind == "capture_nickname" then
+    self._selection = "yes"
+    -- The nickname handoff disposes the completed registration card
+    -- atomically: the terminal black cover leaves with the question's
+    -- arrival, so no battle-UI frame flashes in between and the prompt
+    -- owns input from its first tick.
+    self:_disposeRegistrationChild()
+  end
   self:_invalidatePublishedView()
   return true
 end
@@ -3691,6 +3713,7 @@ function BattleScreenState:_consumeCompletion(event)
   if completion.stage == "question" then
     if event.type == "navigate" then
       completion.answer = completion.answer == 1 and 2 or 1
+      self._selection = completion.answer == 1 and "yes" or "no"
       return true
     end
     if event.type == "confirm" then
@@ -3763,6 +3786,16 @@ function BattleScreenState:_drainCompletion()
       nickname = result.choice.text,
     })
   end
+end
+
+---@return boolean active true while the capture-nickname Yes/No question owns the outcome prompt
+function BattleScreenState:_completionQuestionActive()
+  local completion = self._completion
+  return completion ~= nil
+    and completion.kind == "capture_nickname"
+    and completion.stage == "question"
+    and self._completionResult == nil
+    and self._outcomeDone == true
 end
 
 ---@param current table<string, unknown>? action child view under projection
@@ -4386,10 +4419,12 @@ function BattleScreenState:input(events)
       self:cancelPointerCapture()
       self._signature = signature
     end
-    -- An open registration card owns its input exclusively: the raw host
-    -- batch routes straight to the child, never through the stale battle
-    -- plan. Layout remeasure and pointer cancellation above still apply.
-    if self._registrationChild ~= nil then
+    -- An open registration card owns its input exclusively while it runs:
+    -- the raw host batch routes straight to the child, never through the
+    -- stale battle plan. A completed card waiting for the nickname handoff
+    -- falls through so the open capture-nickname completion answers.
+    -- Layout remeasure and pointer cancellation above still apply.
+    if self._registrationChild ~= nil and self._registrationComplete ~= true then
       local card = self._registrationChild --[[@as table<string, unknown>]]
       local takeInput = card.input --[[@as fun(self: table<string, unknown>, events: table<integer, table<string, unknown>>)?]]
       if type(takeInput) == "function" then
@@ -5956,7 +5991,13 @@ end
 -- Polls the open registration card after the parent timeline: a card
 -- failure fails the screen exactly once, completion releases the readiness hold, and the active
 -- card steps on accepted time. Never replays the creating edge into the
--- card and never advances battle choices behind it.
+-- card and never advances battle choices behind it. A completed card is
+-- released at once like the retail popup delete: keeping it would paint
+-- its frozen black cover over the nickname prompt and swallow every input
+-- edge meant for the open capture-nickname completion. The completed card
+-- keeps its frozen departure end state under its terminal cover until the
+-- capture-nickname completion opens and disposes it, so the swap is atomic
+-- with no battle-UI flash in between.
 ---@param dt number accepted presentation seconds
 function BattleScreenState:_pollRegistrationChild(dt)
   local child = self._registrationChild --[[@as table<string, unknown>?]]
@@ -5985,6 +6026,8 @@ function BattleScreenState:_pollRegistrationChild(dt)
     if self._registrationComplete ~= true then
       self._registrationComplete = true
     end
+    -- Keeps the frozen terminal cover for the nickname handoff; the
+    -- capture-nickname open disposes it atomically.
     return
   end
   local okStep, stepErr = pcall(stepChild, child, dt)
@@ -5999,8 +6042,11 @@ function BattleScreenState:_pollRegistrationChild(dt)
     self._error = "battle registration failed for launch " .. self._launchId .. ": " .. done.error
     return
   end
-  if okDone and type(done) == "table" and done.complete == true and self._registrationComplete ~= true then
-    self._registrationComplete = true
+  if okDone and type(done) == "table" and done.complete == true then
+    if self._registrationComplete ~= true then
+      self._registrationComplete = true
+    end
+    -- Keeps the completed card for the nickname handoff (see above).
   end
 end
 
@@ -6225,8 +6271,17 @@ function BattleScreenState:_consume(event)
       -- A dialogue tap arms exactly like a command press so the matched
       -- release can acknowledge the shown page; an unmatched press never
       -- arms and its release falls away through the shared capture check.
+      -- The capture-nickname question answers its tapped cell directly
+      -- instead: Yes opens naming, No declines, like the held offers.
       local control = event.control --[[@as table<string, unknown>?]]
-      if type(control) == "table" and control.scope == self._mode then
+      if
+        self:_completionQuestionActive()
+        and type(control) == "table"
+        and control.scope == "two-option"
+        and (control.id == "confirm" or control.id == "back")
+      then
+        self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
+      elseif type(control) == "table" and control.scope == self._mode then
         self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
       end
     end
@@ -6248,7 +6303,14 @@ function BattleScreenState:_consume(event)
     then
       if self._mode == "narration" or self._mode == "outcome" then
         local control = event.control --[[@as table<string, unknown>?]]
-        if type(control) == "table" and control.scope == self._mode then
+        if
+          self:_completionQuestionActive()
+          and type(control) == "table"
+          and control.scope == "two-option"
+          and (control.id == "confirm" or control.id == "back")
+        then
+          self:_answerCompletionQuestion(control.id ~= "confirm")
+        elseif type(control) == "table" and control.scope == self._mode then
           self._timeline:ack()
         end
       elseif self._mode == "shift" then
@@ -7986,8 +8048,17 @@ function BattleScreenState:firstNativeBattleFrameReady()
     end
   end
   local opening = self._timeline:openingPresentation()
-  if type(opening) ~= "table" or opening.encounterFrame == nil then
+  if type(opening) ~= "table" then
     return false
+  end
+  if opening.encounterFrame == nil then
+    -- The encounter fade retired (or never ran) before the entry cover
+    -- released: above single battle speed with slow staging the
+    -- fifty-frame encounter can complete before the first staged fade
+    -- upload publishes, and requiring its per-frame uploads then holds
+    -- the opaque cover forever while the battle runs behind it. The
+    -- staged scene above is the first presentable frame from here.
+    return true
   end
   if self._paletteDrawableFrame ~= opening.encounterFrame then
     return false
@@ -8055,10 +8126,18 @@ end
 
 -- Steps the ball particles with the cue timeline: effects the timeline
 -- started this tick are placed and played from the staged ball records.
+-- The idle fast-path also requires empty draw systems: retired systems
+-- leave their final pre-advance frame published, and skipping the step
+-- would freeze that frame on screen forever as stuck stars.
 function BattleScreenState:_stepBallParticles()
   local starts = self._timeline:takeBallParticleStarts()
   local queued = self._timeline:queuedParticleBalls()
-  if next(starts) == nil and next(queued) == nil and self._ballParticles:isIdle() then
+  if
+    next(starts) == nil
+    and next(queued) == nil
+    and self._ballParticles:isIdle()
+    and #self._ballParticles:drawSystems() == 0
+  then
     return
   end
   local entries = self._manifest.battleBalls.entries
@@ -8069,7 +8148,7 @@ function BattleScreenState:_stepBallParticles()
     return entry ~= nil and entry.particles or nil
   end
   ---@param ballKey string
-  ---@param kind "seal"|"burst"
+  ---@param kind "seal"|"burst"|"genericBurst"
   ---@param textureId integer
   ---@return table<string, unknown>|userdata|nil
   local function textureOf(ballKey, kind, textureId)

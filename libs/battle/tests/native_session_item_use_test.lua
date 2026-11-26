@@ -93,11 +93,14 @@ local function scenarioSpeciesFacts(seeds)
     end
     bucket[form] = {
       baseStats = catalog:form(species, form).baseStats,
+      catchRate = speciesRecord.catchRate,
       growthCurve = catalog:growthCurve(speciesRecord.growthCurve --[[@as string]]),
       types = copyFormTypes(catalog:form(species, form)),
       levelUpMoves = catalog:form(species, form).levelUpMoves,
       baseExpYield = speciesRecord.baseExpYield,
       evYield = speciesRecord.evYield,
+      genderRatio = speciesRecord.genderRatio,
+      weightHg = speciesRecord.weight,
     }
   end
   return facts
@@ -1124,6 +1127,106 @@ function T.trapped_dolls_bypass_the_trap_gate()
   session:dispose()
 end
 
+-- Builds one ordinary wild scenario for capture wiring: the fixed EEVEE
+-- content with staged catalog facts the test may restage (catch rates)
+-- and a foe condition the test may apply (canonical persistent keys).
+-- The throw permission, stock, and the staged target facts all resolve
+-- through the live session owners, never the flat combatant records.
+---@param pack table battle inventory seed for the owning side
+---@param itemFacts table<string, table<string, unknown>> detached semantic facts for the stocked items
+---@param catchRate integer staged catalog catch rate for the foe species
+---@param foeCondition string? canonical persistent condition key applied to the foe
+---@return table detached wild battle setup record for the throw
+local function wildThrowScenario(pack, itemFacts, catchRate, foeCondition)
+  local Executor = executorOwner()
+  local lead = leveledCombatant(1, 23, "EEVEE", 20)
+  local foeSeed = leveledCombatant(2, 41, "EEVEE", 5)
+  if foeCondition ~= nil then
+    local StatusCodec = require("libs.mons.src.gen4.StatusCodec")
+    local foeMon = foeSeed.mon --[[@as table<string, unknown>]]
+    local condition = foeMon.condition --[[@as table<string, unknown>]]
+    condition.effects = {
+      { key = foeCondition, version = StatusCodec.VERSION, state = { turns = 3 } },
+    }
+  end
+  local seeds = { lead, foeSeed }
+  local alphaSpec = SessionFixture.participant(1, 1, "alpha", { lead })
+  alphaSpec.inventoryId = (pack --[[@as table<string, unknown>]]).id
+  local facts = scenarioSpeciesFacts(seeds)
+  local bucket = facts.EEVEE --[[@as table<integer, table<string, unknown>>]]
+  for _, formFacts in pairs(bucket) do
+    (formFacts --[[@as table<string, unknown>]]).catchRate = catchRate
+  end
+  return {
+    ruleset = Executor.RULESET,
+    format = WILD_FORMAT,
+    kind = "wild",
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = { alphaSpec, SessionFixture.participant(2, 2, "beta", { foeSeed }) },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, lead.id),
+      SessionFixture.position(2, 2, { 2 }, foeSeed.id),
+    },
+    inventories = { pack },
+    environment = { weather = "none" },
+    random = { seed = NATIVE_SEED },
+    formatState = {},
+    moveFacts = scenarioMoveFacts(),
+    speciesFacts = facts,
+    itemFacts = itemFacts,
+    boxHasSpace = true,
+  }
+end
+
+-- Ordinary throws resolve every capture fact through the live session
+-- owners (C01-C03): the staged catalog rate (never a 45 fallback), the
+-- effective battle types, the derived levels, and the canonical
+-- persistent condition. Three sessions over one seed prove the wiring:
+-- the staged rate rides the capture context, and sleep doubles the
+-- condition the flat combatant record cannot even name.
+function T.ordinary_throws_resolve_session_facts_not_flat_records()
+  local contracts = SessionFixture.sessionContracts()
+  local content = actionContent()
+  local function thrownTarget(catchRate, foeCondition)
+    local pack = SessionFixture.inventory("party", { 1 }, { POKE_BALL = 20 })
+    local scenario = wildThrowScenario(pack, {}, catchRate, foeCondition)
+    local session = contracts.Battle.newSession(scenario, content)
+    local opening = SessionFixture.driveUntilSettled(session)
+    local alpha = requestFor(opening, "alpha")
+    local beta = requestFor(opening, "beta")
+    local actor = assert(alpha.actors[1], "the throw addresses its lead")
+    local foeActor = assert(beta.actors[1], "the throw addresses its foe")
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "POKE_BALL", 2) })),
+      "the throw seals"
+    )
+    Assert.isTrue(
+      session:submit(SessionFixture.replyFor(beta, {
+        SessionFixture.attackChoice(foeActor, 0, SessionFixture.positionTarget(1)),
+      })),
+      "the foe reply seals"
+    )
+    session:advance(64)
+    local settled = session:capture()
+    local captures = settled.captures --[[@as table<integer, table<string, unknown>>]]
+    Assert.isTrue(type(captures) == "table" and #captures == 1, "the throw ledgers one capture")
+    local result = captures[1] --[[@as table<string, unknown>]]
+    local context = assert(result.context, "the ledger keeps the staged capture context")
+    session:dispose()
+    return (context --[[@as table<string, unknown>]]).target --[[@as table<string, unknown>]]
+  end
+  local healthy = thrownTarget(150, nil)
+  Assert.equal(healthy.catchRate, 150, "the throw stages the catalog rate, never 45")
+  Assert.equal(healthy.status, "healthy", "an unaffected target stages healthy")
+  Assert.equal(healthy.level, 5, "the target level derives from growth and experience")
+  Assert.deepEqual(healthy.types, { "normal" }, "the target types follow the effective projection")
+  local asleep = thrownTarget(150, "sleep")
+  Assert.equal(asleep.catchRate, 150, "the condition never disturbs the staged rate")
+  Assert.equal(asleep.status, "sleep", "the throw reads the canonical persistent condition")
+  local hard = thrownTarget(3, nil)
+  Assert.equal(hard.catchRate, 3, "a second species rate stages exactly")
+end
+
 -- Builds one tutorial scenario (scripted kind with the lesson marker)
 -- carrying the fixed Marill/Rattata content and 20 balls for the
 -- throw gate. The kernel derives its wild-like capture policy from
@@ -1158,9 +1261,10 @@ local function tutorialScenario(pack, itemFacts)
 end
 -- Retail lessons skip their rolls (battle_controller_player.c:2425 and
 -- battle_command.c:7185 under TUTORIAL): throws always catch without
--- spending stock, shakes, or draws, and strikes always miss without
--- spending accuracy or critical draws. One lesson scenario proves both
--- halves without building the native content twice.
+-- spending stock, shakes, or draws, and strikes skip their accuracy
+-- rolls (landing) without spending accuracy or critical draws. One
+-- lesson scenario proves both halves without building the native
+-- content twice.
 function T.tutorial_lessons_skip_their_rolls_and_spend_nothing()
   local contracts = SessionFixture.sessionContracts()
   local content = actionContent()
@@ -1229,10 +1333,13 @@ function T.tutorial_lessons_skip_their_rolls_and_spend_nothing()
         struck = true
       end
     end
-    Assert.isFalse(struck, "the lesson strikes never land")
+    Assert.isTrue(struck, "the lesson strikes land without an accuracy roll")
     local settled = session:capture()
-    Assert.equal(settled.combatants[1].hp, before.combatants[1].hp, "the lesson deals no damage")
-    Assert.equal(settled.rng.calls, before.rng.calls + 4, "the lesson spends no accuracy or critical draws")
+    Assert.isTrue(
+      settled.combatants[2].hp --[[@as integer]] < before.combatants[2].hp --[[@as integer]],
+      "the lesson strike deals damage"
+    )
+    Assert.equal(settled.rng.calls, before.rng.calls + 1, "the lesson spends only the damage draw")
     session:dispose()
   end
 end

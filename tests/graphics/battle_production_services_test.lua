@@ -540,6 +540,56 @@ local function canvasSize(plan, versionId)
   return width, height
 end
 
+-- Runs one battle draw under decode/upload counters: silent while the
+-- frame reuses its resolved images, noisy while it still adopts late
+-- arrivals.
+---@param render fun() one production frame under measurement
+---@return integer decoded ImageData constructions behind the frame
+---@return integer uploaded GPU images behind the frame
+local function countFrameDraws(render)
+  local realNewImageData, realNewImage = love.image.newImageData, love.graphics.newImage
+  local decoded, uploaded = 0, 0
+  love.image.newImageData = function(...)
+    decoded = decoded + 1
+    return realNewImageData(...)
+  end
+  love.graphics.newImage = function(...)
+    uploaded = uploaded + 1
+    return realNewImage(...)
+  end
+  local ok, failure = pcall(render)
+  love.image.newImageData, love.graphics.newImage = realNewImageData, realNewImage
+  if not ok then
+    error(failure, 0)
+  end
+  return decoded, uploaded
+end
+
+-- Settles the live battle to a genuinely steady frame before a
+-- steadiness assertion: battler portrait cells resolve on their own
+-- draws (a pending page draws nothing and its ticket lands on a later
+-- draw), so the frame right after the command drive can still be
+-- missing late arrivals that the next frame resolves. Pumps bounded
+-- draws, yielding briefly for worker decodes between unsettled frames,
+-- until one draw decodes and uploads nothing; the frames after it reuse
+-- the resolved images.
+---@param versionId string ready game version under test
+---@param render fun() one production frame under measurement
+local function settleBattleFrames(versionId, render)
+  local settled = false
+  for _ = 1, 120 do
+    local decoded, uploaded = countFrameDraws(render)
+    if decoded == 0 and uploaded == 0 then
+      settled = true
+      break
+    end
+    if love.timer ~= nil and love.timer.sleep ~= nil then
+      love.timer.sleep(0.005)
+    end
+  end
+  Assert.isTrue(settled, versionId .. " settles its battle frame without late image resolves")
+end
+
 -- A full presented launch renders production frames with real staged
 -- assets: the envelope uploads the staged scene, menu, HUD, and portrait
 -- pixels through the live host graphics, the exact demand carries the
@@ -646,6 +696,7 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
       love.graphics.setCanvas()
       return scope:own(canvas:newImageData())
     end
+    settleBattleFrames(versionId, render)
     local firstPixels = render()
     local secondPixels = render()
 
@@ -883,6 +934,7 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
         love.graphics.setCanvas()
         return scope:own(canvas:newImageData())
       end
+      settleBattleFrames(versionId, render)
       local firstPixels = render()
       local secondPixels = render()
       Assert.equal(
@@ -913,8 +965,10 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
 end
 
 -- Native frames draw both battler portraits every frame, so a steady
--- command view must draw from the images its first frame resolved: no
--- second frame decodes or uploads anything.
+-- command view must draw from the images its settled frame resolved: no
+-- later frame decodes or uploads anything. The test settles first because
+-- portrait cells land on their own draws, then the counted frame must be
+-- silent.
 function T.native_steady_frames_reuse_resolved_images(scope, context)
   local versions = readyVersions()
   if #versions == 0 then
@@ -971,22 +1025,8 @@ function T.native_steady_frames_reuse_resolved_images(scope, context)
       love.graphics.setCanvas()
       Assert.isTrue(drawn, versionId .. " draws its live battle")
     end
-    render()
-    local realNewImageData, realNewImage = love.image.newImageData, love.graphics.newImage
-    local decoded, uploaded = 0, 0
-    love.image.newImageData = function(...)
-      decoded = decoded + 1
-      return realNewImageData(...)
-    end
-    love.graphics.newImage = function(...)
-      uploaded = uploaded + 1
-      return realNewImage(...)
-    end
-    local ok, failure = pcall(render)
-    love.image.newImageData, love.graphics.newImage = realNewImageData, realNewImage
-    if not ok then
-      error(failure, 0)
-    end
+    settleBattleFrames(versionId, render)
+    local decoded, uploaded = countFrameDraws(render)
     Assert.equal(decoded, 0, versionId .. " decodes no image data on a steady native frame")
     Assert.equal(uploaded, 0, versionId .. " uploads no image on a steady native frame")
   end

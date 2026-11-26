@@ -29,6 +29,8 @@ local CaptureFormats = require("libs.battle.src.gen4.formats.CaptureFormats")
 ---@field inventoryId string?
 ---@field ball string
 ---@field target CombatantRef
+---@field sessionTarget table<string, unknown>? authoritative target facts from the session boundary
+---@field sessionAttacker table<string, unknown>? authoritative attacker facts from the session boundary
 
 ---@class CaptureResult
 ---@field id integer
@@ -56,7 +58,6 @@ Capture.MAX_SHAKES = 3
 --- Probability checks a non-guaranteed throw must pass to land the catch.
 Capture.PROBABILITY_CHECKS = 4
 Capture.GUARANTEED_ODDS = 255
-Capture.DEFAULT_CATCH_RATE = 45
 
 ---@param code string refusal code under report
 ---@param message string human-readable reason under report
@@ -85,17 +86,21 @@ local function hasAnyType(types, wanted)
   return false
 end
 
+--- Native Nest Ball law (battle_command.c): below level 40 the tenths
+--- multiplier is 40 minus the target level, floored at one ball; level 40
+--- and above throws plain 1x. Native anchor: NEST_BALL case, `40 - level`
+--- with the `< 10` floor, defaulting to the plain multiplier otherwise.
 ---@param level number target level under staging
----@return integer tenths-fixed nest multiplier from the staged level bands
+---@return integer tenths-fixed nest multiplier from the source law
 local function nestMultiplier(level)
-  local staged = math.floor((41 - level) / 10)
-  if staged > 3 then
-    staged = 3
+  if level >= 40 then
+    return 10
   end
-  if staged < 1 then
-    staged = 1
+  local staged = math.floor(40 - level)
+  if staged < 10 then
+    staged = 10
   end
-  return staged * 10
+  return staged
 end
 
 ---@param attackerLevel number thrower level under staging
@@ -193,6 +198,18 @@ local function ballMultiplier(ball, target, env)
   return 10
 end
 
+--- Balls whose rate adjustment runs inside the native conditional branch
+--- (itemTemp > ITEM_SAFARI_BALL): only their adjusted rate is clamped to
+--- 255. The standard table balls (Poke, Great, Ultra, Safari) skip the
+--- clamp, so a Safari stage can push the rate past 255 before the 1.5x
+--- multiplier. Native anchor: the `catchRate > 0xFF` clamp sits inside the
+--- conditional branch, while the table branch below it has none.
+---@param ball string staged ball key under inspection
+---@return boolean true when the native conditional branch clamps the rate
+local function clampsRate(ball)
+  return ball ~= "POKE_BALL" and ball ~= "GREAT_BALL" and ball ~= "ULTRA_BALL" and ball ~= "SAFARI_BALL"
+end
+
 ---@param ball string staged ball key under staging
 ---@param rate number rate before the ball adjusts it
 ---@param target table<string, unknown> staged target facts under staging
@@ -230,12 +247,40 @@ local function stageRateAndMultiplier(ball, target, env)
     rate = math.floor((pair[1] * rate) / pair[2])
   end
   rate = ballAdjustedRate(ball, rate, target, env)
-  if rate > 0xFF then
-    rate = 0xFF
-  elseif rate < 0 then
-    rate = 1
+  if clampsRate(ball) then
+    if rate > 0xFF then
+      rate = 0xFF
+    elseif rate < 0 then
+      rate = 1
+    end
   end
   return rate, ballMultiplier(ball, target, env)
+end
+
+--- Native status law (battle_command.c): sleep or freeze doubles the
+--- modified rate, while burn, paralysis, poison, or bad poison adds half
+--- with integer truncation; both clauses apply when both hold. The status
+--- fact carries the canonical persistent-condition key (sleep, freeze,
+--- burn, paralysis, poison, toxic); legacy capture vocabulary maps onto it.
+---@param status unknown staged status fact under normalization
+---@return string normalized canonical capture status, "healthy" when none
+local function normalizeStatus(status)
+  if status == "sleep" or status == "asleep" then
+    return "sleep"
+  end
+  if status == "freeze" or status == "frozen" then
+    return "freeze"
+  end
+  if status == "burn" or status == "burned" then
+    return "burn"
+  end
+  if status == "paralysis" or status == "paralyzed" then
+    return "paralysis"
+  end
+  if status == "poison" or status == "poisoned" or status == "toxic" or status == "badly_poisoned" then
+    return "poison"
+  end
+  return "healthy"
 end
 
 ---@param target table<string, unknown> staged target facts under staging
@@ -247,10 +292,11 @@ local function stageOdds(target, rate, multiplier)
   local lostHp = maxHp * 3 - target.hp --[[@as number]] * 2
   local staged = math.floor((rate * multiplier) / 10)
   local odds = math.floor((staged * lostHp) / (maxHp * 3))
-  if target.status == "asleep" or target.status == "frozen" then
+  local status = normalizeStatus(target.status)
+  if status == "sleep" or status == "freeze" then
     odds = odds * 2
   end
-  if target.status == "burned" or target.status == "paralyzed" or target.status == "poisoned" then
+  if status == "burn" or status == "paralysis" or status == "poison" then
     odds = math.floor((odds * 15) / 10)
   end
   return odds
@@ -365,23 +411,24 @@ local function requireBall(attempt, battle, policy)
   end
 end
 
---- Reads the target facts, preferring combatant values over the mon's own.
----@param combatant table<string, unknown>
----@param mon table<string, unknown>
----@return table<string, unknown>
-local function targetFactsFor(combatant, mon)
-  return {
-    catchRate = combatant.catchRate or mon.catchRate or Capture.DEFAULT_CATCH_RATE,
-    maxHp = combatant.maxHp,
-    hp = combatant.hp,
-    status = combatant.status or mon.status or "healthy",
-    species = mon.species,
-    types = combatant.types or mon.types,
-    level = combatant.level or mon.level,
-    weight = combatant.weight or mon.weight,
-    baseSpeed = combatant.baseSpeed or mon.baseSpeed,
-    gender = combatant.gender or mon.gender,
-  }
+--- Resolves the single typed target staging path: the session boundary
+--- owns every capture fact, so the attempt carries the staged target
+--- record resolved from the authoritative species, type, level, gender,
+--- and condition owners (C01-C03). Combatant and mon records are never
+--- scraped for flat capture fields; a missing staging record refuses as
+--- a composition defect instead of guessing a species rate. Guaranteed
+--- throws read no odds, so they stage without target facts.
+---@param attempt CaptureAttempt throw under staging
+---@return table<string, unknown> staged target facts from the session boundary
+local function sessionTargetFor(attempt)
+  local target = attempt.sessionTarget
+  if type(target) ~= "table" then
+    if CaptureContext.isGuaranteed(attempt.ball) then
+      return {}
+    end
+    refuse("missing_fact", "the throw carries no staged target facts", { ball = attempt.ball })
+  end
+  return target --[[@as table<string, unknown>]]
 end
 
 -- The encounter facts the conditional balls read, from the battle's
@@ -399,6 +446,10 @@ local function envFactsFor(attempt, battle, policy, species)
   local actorSlot = (battle.combatants --[[@as table<integer, unknown>]])[attempt.actor]
   local holder = type(actorSlot) == "table" and actorSlot --[[@as table<string, unknown>]] or {}
   local actorMon = type(holder.mon) == "table" and holder.mon --[[@as table<string, unknown>]] or {}
+  local sessionAttacker = attempt.sessionAttacker
+  if type(sessionAttacker) ~= "table" then
+    sessionAttacker = {}
+  end
   local round = battle.round
   assert(type(round) == "number" and round % 1 == 0 and round >= 1, "throws read the live battle round")
   local environment = battle.environment
@@ -409,9 +460,9 @@ local function envFactsFor(attempt, battle, policy, species)
     mode = policy.mode,
     turns = round - 1,
     pokedexCaught = type(caught) == "table" and caught[species] == true,
-    attackerLevel = holder.level or actorMon.level,
-    attackerSpecies = actorMon.species,
-    attackerGender = holder.gender or actorMon.gender,
+    attackerLevel = sessionAttacker.level or holder.level or actorMon.level,
+    attackerSpecies = sessionAttacker.species or actorMon.species,
+    attackerGender = sessionAttacker.gender or holder.gender or actorMon.gender,
     method = environment.terrain == "water" and "surf" or "land",
     fished = environment.fished == true,
     timeOfDay = environment.timeOfDay or "day",
@@ -441,7 +492,7 @@ local function stageThrow(attempt, battle)
   local targetId, combatant, mon = resolveTarget(attempt, battle)
   local policy = resolvePolicy(attempt, battle, combatant, targetId)
   local context =
-    CaptureContext.forBall(ball, targetFactsFor(combatant, mon), envFactsFor(attempt, battle, policy, mon.species))
+    CaptureContext.forBall(ball, sessionTargetFor(attempt), envFactsFor(attempt, battle, policy, mon.species))
   requireBall(attempt, battle, policy)
   return context, policy, targetId, combatant
 end

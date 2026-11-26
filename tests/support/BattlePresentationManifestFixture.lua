@@ -997,6 +997,49 @@ local function fullManifest()
             },
           },
         },
+        -- Capture balls thrown from the bag stage as explicit leaf
+        -- entries; fixture leaves stage no particle sets, so the
+        -- particle owner keeps the contract's valid no-effect semantics
+        -- for these rigs while production stages the full sets.
+        ["ball:MASTER_BALL"] = {
+          fadeColor = 0x7ADF,
+          frames = {
+            {
+              drawableKey = "battle-ball:MASTER_BALL:0",
+              image = "assets/generated/battle/battle-ball-MASTER_BALL-0.png",
+              width = 16,
+              height = 16,
+              durationTicks = 2,
+            },
+          },
+          opening = {
+            playMode = "forward",
+            loopStartFrameIdx = 0,
+            frames = {
+              {
+                drawableKey = "battle-ball-open:MASTER_BALL:0",
+                image = "assets/generated/battle/balls/MASTER_BALL-open-0.png",
+                width = 16,
+                height = 16,
+                durationTicks = 10,
+              },
+              {
+                drawableKey = "battle-ball-open:MASTER_BALL:1",
+                image = "assets/generated/battle/balls/MASTER_BALL-open-1.png",
+                width = 16,
+                height = 16,
+                durationTicks = 10,
+              },
+              {
+                drawableKey = "battle-ball-open:MASTER_BALL:2",
+                image = "assets/generated/battle/balls/MASTER_BALL-open-2.png",
+                width = 32,
+                height = 32,
+                durationTicks = 50,
+              },
+            },
+          },
+        },
       },
     },
     evolutionParticles = {

@@ -319,7 +319,7 @@ function T.capture_shake_matches_the_source_frame_cycle()
     end
   end
   Assert.isTrue(timeline:settled(), "the lone shake drains")
-  Assert.equal(ticks, 38, "the shake holds fourteen plus five, then seven plus twelve frames")
+  Assert.equal(ticks, 33, "the row-1 wobble holds fourteen plus six plus one, then twelve frames")
 end
 
 -- battle_command.c STATE_GET_POKEMON_BALL_BLOCKED/_NO_STEALING: each

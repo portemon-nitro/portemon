@@ -4413,9 +4413,10 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
   -- Fixed-point truncation lands one pixel above the nominal spot with
   -- no snap (BattleAnimUtil_UpdateLinearMotion), matching the source.
   Assert.equal(ball.y, 87, "the ball rests where it fell")
-  -- BREAK_OUT re-sends the target with the same capture ball: the
-  -- resting ball opens again where it fell, then the seal, the ball
-  -- sound, and the cry follow exactly like a send-out.
+  -- BREAK_OUT hijacks the send-out with mode 1: the old capture ball
+  -- stays two frames while the attempted ball opens in place with the
+  -- generic burst, then the seal, the ball sound, and the cry follow
+  -- from the open.
   timeline:takeBallParticleStarts()
   local queued = #timeline._queue
   local broke = event("broke_free", { shakes = 1 }, { [1] = 52, [3] = 57 })
@@ -4425,33 +4426,20 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
     timeline:present(packet(2, { broke }, after), { [2] = "Aargh! Almost had it!" }),
     "the break-out is accepted with its selected wording"
   )
-  local opens, sounds, seals, reveals = {}, {}, {}, {}
+  local opens, reveals = {}, {}
   for index = queued + 1, #timeline._queue do
     local cue = timeline._queue[index]
-    if cue.kind == "ball-throw" then
+    if cue.kind == "ball-breakout-open" then
       opens[#opens + 1] = cue
-    elseif cue.kind == "sound" then
-      sounds[#sounds + 1] = cue
-    elseif cue.kind == "ball-particles" and cue.effect == "seal" then
-      seals[#seals + 1] = cue
     elseif cue.kind == "reveal" then
       reveals[#reveals + 1] = cue
     end
   end
   Assert.equal(#opens, 1, "the break-out re-opens the resting ball")
-  Assert.isTrue(opens[1].trainerless == true, "no trainer tracks the re-opened ball")
-  Assert.isTrue(opens[1].openOnly == true, "the fresh ball opens in place")
-  Assert.equal(opens[1].targetX, 192, "the re-open plays at the foe's source spot")
-  Assert.equal(opens[1].targetY, 86, "the re-open plays at the foe's source spot")
-  local resendSound = false
-  for _, cue in ipairs(sounds) do
-    if type(cue.cue) == "table" and cue.cue.kind == "effect" then
-      resendSound = resendSound or cue.cue.symbol == BattleAudio.SINK_SOUNDS.ballOpen
-    end
-  end
-  Assert.isTrue(resendSound, "the re-open voices the ball sound")
-  Assert.equal(#seals, 1, "the re-open starts the capture ball's seal")
-  Assert.equal(seals[1].ballKey, "GREAT_BALL", "the seal rides the capture ball, not the origin ball")
+  Assert.equal(opens[1].ballKey, "GREAT_BALL", "the re-open plays the attempted ball")
+  Assert.equal(opens[1].oldBallKey, "GREAT_BALL", "the overlapped ball is the capture ball")
+  Assert.equal(opens[1].x, 192, "the re-open plays at the foe's source spot")
+  Assert.equal(opens[1].y, 86, "the re-open plays at the foe's source spot")
   Assert.equal(#reveals, 1, "the break-out reveals its battler")
   Assert.isTrue(reveals[1].fadeColor ~= nil, "the re-open poofs with the capture ball's color")
   Assert.notNil(reveals[1].sendOutCry, "the re-open cries with the reveal")
@@ -4460,13 +4448,22 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
   Assert.isTrue(battler(timeline:battlers(), 3).visible, "the target comes back out")
   local ball = timeline:openingPresentation().ballThrow
   Assert.isFalse(ball.visible, "the re-opened ball hides behind the poof")
-  local bursts = {}
+  local bursts, generics, seals = {}, {}, {}
   for _, start in ipairs(timeline:takeBallParticleStarts()) do
     if type(start) == "table" and start.effect == "burst" then
       bursts[#bursts + 1] = start
     end
+    if type(start) == "table" and start.effect == "generic-burst" then
+      generics[#generics + 1] = start
+    end
+    if type(start) == "table" and start.effect == "seal" then
+      seals[#seals + 1] = start
+    end
   end
-  Assert.equal(#bursts, 0, "the re-open starts no burst stand-in")
+  Assert.equal(#bursts, 0, "the re-open starts no ball-specific opening burst")
+  Assert.equal(#generics, 1, "the mode-1 open starts the generic burst")
+  Assert.equal(#seals, 1, "the re-open starts the capture ball's seal from the open")
+  Assert.equal(seals[1].ballKey, "GREAT_BALL", "the seal rides the capture ball, not the origin ball")
 end
 
 return { tests = T }

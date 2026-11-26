@@ -132,9 +132,17 @@ local function wildBattle(mon, ball, balls)
 end
 
 ---@param ball string ball key under test
----@return table throw attempt at the live target slot
-local function wildAttempt(ball)
-  return { actor = 1, inventoryId = "party", ball = ball, target = { combatant = 2, activation = 5 } }
+---@param targetOverrides table<string, unknown>|nil staged target fact replacements
+---@return table throw attempt at the live target slot carrying its staged session facts
+local function wildAttempt(ball, targetOverrides)
+  return {
+    actor = 1,
+    inventoryId = "party",
+    ball = ball,
+    target = { combatant = 2, activation = 5 },
+    sessionTarget = targetFacts(targetOverrides),
+    sessionAttacker = { level = 20, species = "PIDGEY", gender = "female" },
+  }
 end
 
 ---@param err unknown raised value under test
@@ -206,12 +214,8 @@ function T.success_records_each_thrown_ball_and_friendship()
     local mon = wildMon(101)
     mon.friendship = 70
     local battle = wildBattle(mon, ball, 1)
-    local target = battle.combatants[2]
-    for key, value in pairs(targetFacts({ hp = 1 })) do
-      target[key] = value
-    end
-    battle.combatants[1].mon = { level = 20, species = "PIDGEY", gender = "female" }
-    local outcome = Capture.execute(wildAttempt(ball), battle, scriptedStream({ 0, 0, 0 }))
+    local attempt = wildAttempt(ball, { hp = 1 })
+    local outcome = Capture.execute(attempt, battle, scriptedStream({ 0, 0, 0 }))
     Assert.isTrue(outcome.result.success, ball .. " succeeds on the guaranteed target")
     Assert.equal(outcome.result.ball, ball, ball .. " is named by the result")
     Assert.equal(outcome.result.mon.origin.ball, ball, ball .. " is recorded on the caught mon")
@@ -237,13 +241,8 @@ function T.friend_ball_success_sets_friendship_without_changing_target()
     local mon = wildMon(102)
     mon.friendship = friendship
     local battle = wildBattle(mon, ball, 1)
-    for key, value in pairs(targetFacts({ hp = 1 })) do
-      battle.combatants[2][key] = value
-    end
-    battle.combatants[1].level = 20
-    battle.combatants[1].species = "PIDGEY"
-    battle.combatants[1].gender = "female"
-    local outcome = Capture.execute(wildAttempt(ball), battle, scriptedStream({ 0, 0, 0 }))
+    local attempt = wildAttempt(ball, { hp = 1 })
+    local outcome = Capture.execute(attempt, battle, scriptedStream({ 0, 0, 0 }))
     Assert.isTrue(outcome.result.success, ball .. " succeeds deterministically")
     Assert.equal(
       outcome.result.mon.friendship,
@@ -333,7 +332,11 @@ function T.conditional_balls_read_the_launch_environment_and_round()
     { ball = "LURE_BALL", boosted = { { fished = true }, 1 }, plain = { { fished = false }, 1 } },
     { ball = "QUICK_BALL", boosted = { {}, 1 }, plain = { {}, 2 } },
     { ball = "TIMER_BALL", boosted = { {}, 31 }, plain = { {}, 1 } },
-    { ball = "REPEAT_BALL", boosted = { { caughtSpecies = { [species] = true } }, 1 }, plain = { { caughtSpecies = {} }, 1 } },
+    {
+      ball = "REPEAT_BALL",
+      boosted = { { caughtSpecies = { [species] = true } }, 1 },
+      plain = { { caughtSpecies = {} }, 1 },
+    },
     { ball = "DUSK_BALL", boosted = { { timeOfDay = "night" }, 1 }, plain = { { timeOfDay = "day" }, 1 } },
     { ball = "DUSK_BALL", boosted = { { terrain = "cave" }, 1 }, plain = { { terrain = "plain" }, 1 } },
     { ball = "DIVE_BALL", boosted = { { terrain = "water" }, 1 }, plain = { { terrain = "plain" }, 1 } },
@@ -385,6 +388,26 @@ function T.events_tell_throw_shakes_and_outcome_in_order()
       Assert.isNil(event.expAwarded, "captures award no experience")
     end
   end
+end
+
+-- A throw without staged session facts refuses as a composition defect
+-- instead of guessing a species rate: validation and execution fail with
+-- a missing fact, no draw is spent, and the shared stack is untouched.
+function T.throws_without_staged_session_facts_refuse_without_mutation()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local mon = wildMon(97)
+  local battle = wildBattle(mon, "POKE_BALL", 1)
+  local attempt = { actor = 1, inventoryId = "party", ball = "POKE_BALL", target = { combatant = 2, activation = 5 } }
+  local stream = scriptedStream({ 0, 0, 0 })
+  local ok, err = pcall(Capture.validate, attempt, battle)
+  Assert.isFalse(ok, "an unstaged throw never validates")
+  Assert.equal(failureCode(err), "missing_fact", "an unstaged throw names its missing facts")
+  local settled, settleErr = pcall(Capture.execute, attempt, battle, stream)
+  Assert.isFalse(settled, "an unstaged throw never executes")
+  Assert.equal(failureCode(settleErr), "missing_fact", "execution names the same missing facts")
+  Assert.deepEqual(stream:capture(), { used = 0 }, "an unstaged throw spends no draw")
+  Assert.equal(battle.inventories.party.quantities.POKE_BALL, 1, "an unstaged throw spends no ball")
+  Assert.deepEqual(battle.ledger, {}, "an unstaged throw records no consumption")
 end
 
 -- Trainer targets are refused without cost: validation fails, no draw is
@@ -555,6 +578,30 @@ function T.fourth_shake_check_decides_the_catch_after_three_visible_shakes()
   Assert.deepEqual(missedStream:capture(), { used = 4 }, "a fourth-check breakout spends all four checks")
 end
 
+-- Canonical persistent conditions reshape the modified rate (C02):
+-- sleep and freeze double it, while burn, paralysis, poison, and bad
+-- poison (toxic) add half with integer truncation. The fact carries the
+-- canonical condition key; legacy vocabulary maps onto the same law.
+function T.canonical_conditions_reshape_capture_odds()
+  local Capture = captureOwner("throwing, calculating, and settling own captures")
+  local Context = contextOwner("typed capture environments own the facts each ball reads")
+  local attempt = { actor = 1, inventoryId = "party", ball = "POKE_BALL", target = { combatant = 2 } }
+  local function oddsFor(status, hp)
+    local context = Context.forBall("POKE_BALL", targetFacts({ catchRate = 100, hp = hp, status = status }), wildEnv())
+    return Capture.calculate(attempt, context, scriptedStream({ 0, 0, 0, 0 })).odds
+  end
+  Assert.equal(oddsFor("healthy", 100), 33, "a healthy full-health target stages its plain odds")
+  Assert.equal(oddsFor("sleep", 100), 66, "sleep doubles the modified rate")
+  Assert.equal(oddsFor("freeze", 100), 66, "freeze doubles the modified rate")
+  Assert.equal(oddsFor("burn", 100), 49, "burn adds half with truncation")
+  Assert.equal(oddsFor("paralysis", 100), 49, "paralysis adds half with truncation")
+  Assert.equal(oddsFor("poison", 100), 49, "poison adds half with truncation")
+  Assert.equal(oddsFor("toxic", 100), 49, "bad poison adds half with truncation")
+  Assert.equal(oddsFor("asleep", 100), 66, "legacy sleep vocabulary doubles")
+  Assert.equal(oddsFor("sleep", 1), 198, "sleep doubles damaged odds")
+  Assert.equal(oddsFor("burn", 1), 148, "burn truncates damaged odds")
+end
+
 -- Level and Love bonuses stage on the rate before the neutral multiplier:
 -- an eightfold bonus on rate 45 clamps to 255, so both balls stage the same
 -- odds as a flat 255 rate while a mismatched Love pairing stages no bonus.
@@ -625,6 +672,20 @@ function T.safari_balls_read_the_staged_catch_stage()
   Assert.equal(oddsAt(0), 5, "stage 0 stages the low rate")
   Assert.equal(oddsAt(6), 22, "stage 6 stages the neutral rate")
   Assert.equal(oddsAt(12), 90, "stage 12 stages the high rate")
+  -- Safari sits in the standard-ball branch, so the 255 clamp never
+  -- applies before its 1.5x multiplier: a rate-255 target at maximum
+  -- stage stages 510 odds and catches automatically.
+  local overflow = Context.forBall(
+    "SAFARI_BALL",
+    targetFacts({ catchRate = 255 }),
+    wildEnv({ mode = "safari", safariCatchRateStage = 12 })
+  )
+  local overflowStream = scriptedStream({ 0, 0, 0, 0 })
+  local overflowed =
+    Capture.calculate({ actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }, overflow, overflowStream)
+  Assert.equal(overflowed.odds, 510, "the unstaged safari rate crosses 255")
+  Assert.isTrue(overflowed.success, "the crossed safari rate catches automatically")
+  Assert.deepEqual(overflowStream:capture(), { used = 0 }, "the automatic catch spends no draw")
   local env = wildEnv({ mode = "safari", safariCatchRateStage = 6 })
   local staged = Context.forBall("SAFARI_BALL", targetFacts(), env)
   env.safariCatchRateStage = 12

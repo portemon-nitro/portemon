@@ -579,4 +579,192 @@ function T.restricted_bags_refuse_with_their_retail_message()
   end
 end
 
+-- Drives the scripted lesson through its scripted fight until the
+-- auto-played bag opens behind the tutorial finger.
+---@param fixture table open screen fixture under driving
+---@return table live lesson screen with its bag open
+local function driveToLessonBag(fixture)
+  local screen = fixture.screen
+  local function holdFor(ticks, mode, what)
+    for _ = 1, ticks do
+      screen:input({ { type = "navigate", direction = "down" }, { type = "cancel" }, { type = "confirm" } })
+      Assert.equal(screen:status().mode, mode, what)
+      screen:updateFixed(SourceTick.DT)
+    end
+  end
+  local opened = 0
+  while not screen:view().menuInputEnabled do
+    screen:updateFixed(SourceTick.DT)
+    opened = opened + 1
+    Assert.isTrue(opened < 30, "setup: the command menu opens")
+  end
+  holdFor(75, "command", "the finger owns FIGHT until its touch")
+  local pressed = 0
+  while screen:status().mode == "command" do
+    screen:updateFixed(SourceTick.DT)
+    pressed = pressed + 1
+    Assert.isTrue(pressed < 10, "the finger touches FIGHT")
+  end
+  Assert.equal(screen:status().mode, "moves", "the touch opens the move menu")
+  while not screen:view().menuInputEnabled do
+    screen:updateFixed(SourceTick.DT)
+  end
+  holdFor(75, "moves", "the finger owns the move menu until its touch")
+  pressed = 0
+  while #fixture.submitted == 0 do
+    screen:updateFixed(SourceTick.DT)
+    pressed = pressed + 1
+    Assert.isTrue(pressed < 10, "the finger touches the first move")
+  end
+  presentCommandPacket(fixture, ordinaryChoices(), 2)
+  for _ = 1, DRIVE_BUDGET do
+    screen:updateFixed(SourceTick.DT)
+    if screen:status().mode == "command" and screen:view().menuInputEnabled then
+      break
+    end
+  end
+  holdFor(61, "command", "the BAG finger waits out its lead")
+  holdFor(75, "command", "the finger owns BAG until its touch")
+  pressed = 0
+  while screen:status().mode == "command" do
+    screen:updateFixed(SourceTick.DT)
+    pressed = pressed + 1
+    Assert.isTrue(pressed < 10, "the finger touches BAG")
+  end
+  Assert.equal(screen:status().mode, "child", "the touch opens the lesson bag")
+  Assert.equal(screen:view().childView.kind, "bag", "the lesson bag opens")
+  return screen
+end
+
+-- The lesson finger paints over its button labels in the tutorial bag:
+-- the hand is a retail OBJ sprite above the BG text planes, so painting
+-- it before the row labels leaves the text covering the indicator it
+-- is supposed to point at. The shared paint log proves the hand draws
+-- after every row label.
+function T.tutorial_bag_finger_paints_over_its_row_labels()
+  local fixture = openScreen("special-context-tutorial-finger-order")
+  Assert.isTrue(
+    fixture.port.enter({ launchId = fixture.launchId, kind = "scripted", tutorial = true }),
+    "setup: the marked scripted launch enters"
+  )
+  presentCommandPacket(fixture, ordinaryChoices())
+  driveToCommand(fixture, "tutorial-finger-order")
+  local screen = driveToLessonBag(fixture)
+  local order = {}
+  local graphics = FakeGraphics.new({})
+  local realDraw = graphics.draw
+  graphics.draw = function(image, ...)
+    if type(image) == "table" and image.handle == "battle:finger" then
+      order[#order + 1] = "finger"
+    end
+    return realDraw(image, ...)
+  end
+  local realTextDraw = fixture.text.drawText
+  fixture.text.drawText = function(content, x, y)
+    order[#order + 1] = "text"
+    return realTextDraw(content, x, y)
+  end
+  local ok, err = pcall(function()
+    screen:draw({ graphics = graphics })
+  end)
+  fixture.text.drawText = realTextDraw
+  Assert.isTrue(ok, "the lesson bag paints: " .. tostring(err))
+  local fingerAt, texts = nil, 0
+  for index, entry in ipairs(order) do
+    if entry == "finger" then
+      fingerAt = index
+    else
+      texts = texts + 1
+      Assert.isTrue(fingerAt == nil, "no row label paints after the hand")
+    end
+  end
+  Assert.notNil(fingerAt, "the lesson bag paints its hand indicator")
+  Assert.isTrue(texts >= 1, "the lesson bag paints its row labels")
+  screen:dispose()
+end
+
+-- The detail bag paints the same lesson finger over its row labels:
+-- the fabricated pocket menu proves the hand draws after every label
+-- on the native sprite path too.
+function T.detail_bag_finger_paints_over_its_row_labels()
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local order = {}
+  local graphics = FakeGraphics.new({})
+  local realDraw = graphics.draw
+  graphics.draw = function(image, ...)
+    if type(image) == "table" and image.handle == "battle:finger" then
+      order[#order + 1] = "finger"
+    end
+    return realDraw(image, ...)
+  end
+  local function colors()
+    local list = {}
+    for _ = 1, 256 do
+      list[#list + 1] = { r = 0, g = 0, b = 0 }
+    end
+    return list
+  end
+  local text = {
+    measure = function(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end,
+    drawText = function(content, _, _)
+      order[#order + 1] = "text"
+    end,
+  }
+  local images = {}
+  local assets = {
+    drawable = function(_, key)
+      if images[key] == nil then
+        images[key] = {
+          handle = key,
+          getDimensions = function()
+            return 80, 80
+          end,
+        }
+      end
+      return images[key]
+    end,
+  }
+  local windows = {
+    drawWindow = function(_, _, _) end,
+  }
+  local view = {
+    mode = "child",
+    childView = {
+      kind = "bag",
+      bagPage = "pocket_menu",
+      native = { open = true, tutorial = true, fingerTicks = 0, bagPage = "pocket_menu" },
+      rows = {
+        { id = "bagpocket:2", label = "Balls" },
+      },
+    },
+    textPalettes = {
+      bag = { colors = colors() },
+      hud = { colors = colors() },
+      menu = { colors = colors() },
+      narration = { colors = colors() },
+    },
+    bagCursorTick = 0,
+  }
+  BattleRenderer.drawPane(
+    { graphics = graphics, text = text, windows = windows, assets = assets },
+    view,
+    "interaction",
+    {},
+    {}
+  )
+  local fingerAt, texts = nil, 0
+  for index, entry in ipairs(order) do
+    if entry == "finger" then
+      fingerAt = index
+    else
+      texts = texts + 1
+      Assert.isTrue(fingerAt == nil, "no row label paints after the hand")
+    end
+  end
+  Assert.notNil(fingerAt, "the detail bag paints its hand indicator")
+  Assert.isTrue(texts >= 1, "the detail bag paints its row labels")
+end
+
 return { tests = T }

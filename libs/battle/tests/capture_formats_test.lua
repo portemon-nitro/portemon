@@ -157,7 +157,8 @@ function T.safari_throws_spend_the_safari_counter_once()
   local target = targetFacts({ catchRate = 255, hp = 1 })
   local env = modeEnv("safari", { safariBalls = 1, safariCatchRateStage = 6 })
   local context = Context.forBall("SAFARI_BALL", target, env)
-  local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }
+  local attempt =
+    { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 }, sessionTarget = targetFacts({ hp = 1 }) }
   local battle = {
     mode = "safari",
     safariBalls = 1,
@@ -182,7 +183,7 @@ function T.exhausted_safari_counters_fail_before_any_draw()
   local Capture = captureOwner("exact catch and shake arithmetic owns thrown balls")
   local Context = contextOwner("typed capture environments own the facts each ball reads")
   local Formats = formatsOwner("capture-only and special mechanics own their mode policies")
-  local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }
+  local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 }, sessionTarget = targetFacts() }
   local battle = {
     mode = "safari",
     safariBalls = 0,
@@ -211,7 +212,7 @@ function T.safari_without_its_counter_is_rejected()
   local Capture = captureOwner("exact catch and shake arithmetic owns thrown balls")
   local Context = contextOwner("typed capture environments own the facts each ball reads")
   local Formats = formatsOwner("capture-only and special mechanics own their mode policies")
-  local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 } }
+  local attempt = { actor = 1, ball = "SAFARI_BALL", target = { combatant = 2 }, sessionTarget = targetFacts() }
   local battle = {
     mode = "safari",
     formatState = Formats.initialState("safari"),
@@ -238,7 +239,8 @@ function T.contest_throws_record_the_candidate_for_judging()
   local Context = contextOwner("typed capture environments own the facts each ball reads")
   local target = targetFacts({ catchRate = 255, hp = 1, species = "SCYTHER", level = 14 })
   local context = Context.forBall("SPORT_BALL", target, modeEnv("contest", { sportBalls = 1 }))
-  local attempt = { actor = 1, ball = "SPORT_BALL", target = { combatant = 2 } }
+  local attempt =
+    { actor = 1, ball = "SPORT_BALL", target = { combatant = 2 }, sessionTarget = targetFacts({ hp = 1 }) }
   local battle = {
     mode = "contest",
     sportBalls = 1,

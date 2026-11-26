@@ -55,6 +55,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _inBall integer? capture target drawn into the thrown ball, awaiting its outcome
 ---@field _captureBall { ballKey: string, x: integer, y: integer }? thrown capture ball key and its resting source-pixel position after the fall
 ---@field _ballParticleStarts table<string, unknown>[] started ball particle effects awaiting their consumer
+---@field _particleIdleProbe (fun(): boolean)? borrowed ball particle idle probe behind capture joins
 ---@field _foeHpMark integer? lead foe health at the last switch-in (source hpTemp)
 ---@field _ownMoves table<string, string> own move display names by combatant and move identity
 ---@field _moveName (fun(move: string): string?)? borrowed move display-name resolver for foe narration
@@ -265,6 +266,7 @@ end
 ---@field faintAppearance (fun(battler: table<string, unknown>): { height: integer, shadowHeight: integer }?)? source picture facts for fainting
 ---@field trainerPictures table<string, table<string, unknown>>? staged source trainer metadata
 ---@field slotGeometry table<integer, table<string, number>>? published native slot rows behind request selection, supplied by the screen or test fixture
+---@field particleIdleProbe (fun(): boolean)? borrowed ball particle idle probe behind capture joins, supplied by the screen owner
 ---@field messageText fun(context: unknown, key: string, substitutions: string[]): string staged retail battle message resolver
 ---@field messageTextContext unknown? explicit owner passed to the staged retail message resolver
 
@@ -309,6 +311,7 @@ function BattleTimeline.new(opts)
     _motionFacts = opts.motionFacts,
     _effects = opts.effects,
     _ballParticleStarts = {},
+    _particleIdleProbe = opts.particleIdleProbe,
     _pendingCries = {},
     _ledger = {},
     _launchId = nil,
@@ -3737,6 +3740,140 @@ local BALL_BOUNCE_SOUNDS = {
   { frame = 20, symbol = BattleAudio.SINK_SOUNDS.ballBounce4 },
 }
 
+-- gBallThrowBounceSteps (asm/battle_anim_data.s, {dy, frame} rows): the
+-- native bounce reads one row per tick, sets the animation cell, voices
+-- the sounds above at frames 1/8/14/18/20, and ends after the sentinel
+-- row (dy == 0xFF) without applying it. Rows 0..19 apply and sum to a
+-- zero net offset, so the ball returns to its resting spot.
+local CaptureActor = {}
+
+CaptureActor.BOUNCE_STEPS = {
+  { -7, 1 },
+  { -5, 0 },
+  { -3, 0 },
+  { -2, 0 },
+  { 2, 0 },
+  { 3, 0 },
+  { 5, 0 },
+  { 7, 1 },
+  { -5, 1 },
+  { -3, 0 },
+  { -2, 0 },
+  { 2, 0 },
+  { 3, 0 },
+  { 5, 1 },
+  { -2, 0 },
+  { -1, 0 },
+  { 1, 0 },
+  { 2, 0 },
+  { -2, 1 },
+  { 2, 1 },
+}
+CaptureActor.BOUNCE_TICKS = 21
+
+-- gBallThrowShakeOffsets (asm/battle_anim_data.s, 12 s16s per shake): the
+-- applied per-tick X deltas; each row ends at its 0xFF sentinel. The
+-- fifth applied update voices BOWA; rotation accumulates
+-- trunc(0x1FFFE * dx / 360) per update and resets on completion. The
+-- command holds 14 ticks before each wobble and 12 after (the shake
+-- cue owns the lead-in; the translator enqueues the trailing hold).
+CaptureActor.SHAKE_ROWS = {
+  { -2, 0, 2, 2, 0, -2 },
+  { -1, 0, 1, 1, 0, -1 },
+  { -1, 0, 1, 1, 0, -1, 0, 0, 0, 0, 0 },
+}
+CaptureActor.SHAKE_LEAD_TICKS = 14
+CaptureActor.SHAKE_TRAIL_TICKS = 12
+-- CaptureStateShake voices BOWA on its fifth applied position update.
+CaptureActor.SHAKE_SOUND_TICK = 5
+-- STATE_GET_POKEMON_CALCULATE_SHAKES counts 23 frames after starting
+-- the open before the target enters the ball.
+CaptureActor.ENTRY_TICKS = 23
+-- STATE_GET_POKEMON_BALL_CLICK counts 12 frames after the last shake
+-- before the click starts.
+CaptureActor.CLICK_LEAD_TICKS = 12
+-- CaptureStateClick darkens the ball toward black 0 -> 10, and
+-- RestorePalette returns 10 -> 0 after the Gotcha print.
+CaptureActor.CLICK_PEAK = 10
+-- CaptureStateFlash goes yellow RGB(31,27,0) 0 -> 12 -> 0 around the drop.
+CaptureActor.FLASH_PEAK = 12
+CaptureActor.FLASH_YELLOW = { 1, 27 / 31, 0 }
+CaptureActor.CLICK_BLACK = { 0, 0, 0 }
+-- CaptureStateFadeOut steps its translucent OBJ alpha 15 -> 0.
+CaptureActor.FADE_TICKS = 16
+-- Ticks a completion join waits past its effect start before trusting
+-- an idle particle probe: the owning screen consumes started effects
+-- on its own frame, so the guard only bridges that handoff, never a
+-- guessed emitter lifetime.
+CaptureActor.JOIN_GUARD_TICKS = 2
+-- BallThrow_OpenInPlace creates the generic burst at step 2 (tick 5)
+-- and starts it at step 3 (tick 6): five ticks after the open starts.
+CaptureActor.BREAKOUT_BURST_START_TICKS = 5
+
+--- Names the tick of the open cue that starts the opening burst:
+--- staged cell durations, exactly like the producer-side burstStartTick
+--- (frames[1] + frames[2] + 1). Unstaged art falls back to the native
+--- frame-2 boundary.
+---@param opening table<string, unknown>? staged ball opening cells
+---@return integer burst start tick within the open cue
+function CaptureActor.openBurstTick(opening)
+  if type(opening) == "table" and type(opening.frames) == "table" then
+    local frames = opening.frames --[[@as table<integer, table<string, unknown>>]]
+    local first = frames[1]
+    local second = frames[2]
+    local firstTicks = type(first) == "table" and first.durationTicks or nil
+    local secondTicks = type(second) == "table" and second.durationTicks or nil
+    if type(firstTicks) == "number" and type(secondTicks) == "number" then
+      return firstTicks + secondTicks + 1
+    end
+  end
+  return 3
+end
+
+-- Ensures the capture actor's sprite stage: the capture owns its ball
+-- lifetime from the incoming arc through the outcome, independent of
+-- whether an intro presentation installed one.
+---@param self BattleTimeline
+---@return table<string, unknown> ball sprite stage for the capture actor
+function CaptureActor.ensureStage(self)
+  if self._openingPresentation == nil then
+    self._openingPresentation = {}
+  end
+  return self._openingPresentation
+end
+
+-- Reports whether a started capture effect retired: the owning screen
+-- lends its particle idle probe, and the queue holds no unstarted
+-- effect that the probe has not seen yet. Headless drivers without a
+-- probe join on the guard hold alone.
+---@param self BattleTimeline
+---@param elapsed integer ticks since the join cue started
+---@param minHold integer ticks the join always holds
+---@return boolean true when the effect retired
+function CaptureActor.effectJoined(self, elapsed, minHold)
+  if elapsed < minHold then
+    return false
+  end
+  -- Later queued effects never gate an earlier join: each join only
+  -- waits for its own retired effect. The guard bridges the owning
+  -- screen's one-frame consume handoff; headless drivers without a
+  -- probe join on the guard hold alone.
+  if self._particleIdleProbe ~= nil and self._particleIdleProbe() ~= true then
+    return false
+  end
+  return true
+end
+
+--- Lends the particle idle probe the capture joins gate on: the owning
+--- screen reports whether its ball particle systems retired. Headless
+--- drivers without a probe join on the guard hold alone.
+---@param self BattleTimeline
+---@param probe (fun(): boolean)? idle probe, nil to clear
+function BattleTimeline:setParticleIdleProbe(probe)
+  assert(probe == nil or type(probe) == "function", "the particle idle probe is callable")
+  self._particleIdleProbe = probe
+end
+
 -- BallThrow_BallAnimThrow for the player's ball (battle_anim_ball.c, kinds
 -- 15-17): the ball starts off screen at (-30, 160) and arcs 64 pixels high
 -- to the foe's sBattleAnimScreenPositions entry plus 8 pixels in 16 frames.
@@ -3868,32 +4005,71 @@ local function translateThrow(self, event)
     enqueueMessage(self, messageText(self, "battle/narration/no-stealing", {}), false, 30)
     return
   end
-  -- Task_GetPokemon draws the target into the ball before any shake.
+  -- Task_GetPokemon draws the target into the ball before any shake:
+  -- the kind-15/16/17 incoming arc lands at the foe, the ball opens
+  -- with SEQ_SE_DP_BOWA4, the target enters 23 frames after the open
+  -- starts, and the closed ball flashes yellow, drops 32 pixels, and
+  -- bounces at its resting spot.
   local target = captureTargetOf(self, event)
   if target ~= nil then
+    CaptureActor.ensureStage(self)
     self._inBall = target
-    -- BtlCmd_ThrowPokeball opens the ball with SEQ_SE_DP_BOWA4 at the
-    -- throw's end.
-    enqueue(self, { kind = "sound", cue = ballCue(BattleAudio.SINK_SOUNDS.captureOpen), duration = 0 })
-    -- BallThrow_CaptureStateOpen bursts the ball open where the arc ended;
-    -- the fall then drops it 32 pixels and the bounce returns to that height.
     local resting = ballThrowTarget(self, event)
+    -- The normal throw arcs exactly like the blocked throw's incoming
+    -- leg; only the impact branches.
     enqueue(self, {
-      kind = "ball-particles",
-      effect = "burst",
+      kind = "ball-flight",
+      selector = "ball:" .. ballKey,
+      startX = BALL_THROW_START_X,
+      startY = BALL_THROW_START_Y,
+      targetX = resting.x,
+      targetY = resting.y,
+      arcHeight = BALL_THROW_ARC_HEIGHT,
+      motionTicks = BALL_THROW_MOTION_TICKS,
+      leadTicks = BALL_THROW_LEAD_TICKS,
+      duration = BALL_THROW_TICKS,
+      hideAtEnd = false,
+      requiresImage = "battle-ball:" .. ballKey .. ":0",
+    })
+    -- BtlCmd_ThrowPokeball opens the ball with SEQ_SE_DP_BOWA4 once the
+    -- arc lands; the open cue owns the cell sequence, the staged burst
+    -- start, and the burst completion barrier.
+    enqueue(self, { kind = "sound", cue = ballCue(BattleAudio.SINK_SOUNDS.captureOpen), duration = 0 })
+    local opening = self._ballOpening ~= nil and self._ballOpening(ballKey) or nil
+    local burstTick = CaptureActor.openBurstTick(opening)
+    enqueue(self, {
+      kind = "ball-capture-open",
+      selector = "ball:" .. ballKey,
       ballKey = ballKey,
       x = resting.x,
       y = resting.y,
-      duration = 0,
+      opening = opening,
+      burstTick = burstTick,
     })
     self._captureBall = { ballKey = ballKey, x = resting.x, y = resting.y + BALL_DROP_PIXELS }
-    -- BallThrow_CaptureStateDrop lowers the opened ball 32 pixels over 10
-    -- ticks: the shakes, the click, and a break-out all play at the
-    -- resting spot, not the arc landing. The script's 23-frame hold
-    -- covers the fall and the pause before the target enters the ball.
-    -- The fall continues the arc's already-visible sprite, so it carries
-    -- no image gate: re-gating a continuation on transiently staged bag
-    -- art can park the queue after the arc already drew it.
+    -- STATE_GET_POKEMON_CALCULATE_SHAKES draws the target in once the
+    -- open completes (23 frames after it started when the burst is
+    -- short); the withdraw cue owns the shrink-out.
+    enqueue(self, {
+      kind = "withdraw",
+      combatant = target,
+      duration = BattleTimeline.VANISH_TICKS,
+      requiresImage = self:_imageKeyFor(target),
+    })
+    -- CaptureStateFlash yellows the closed ball 0 -> 12 -> 0 before the
+    -- drop; the flash cue owns the coefficient ramp and its color.
+    enqueue(self, {
+      kind = "ball-flash",
+      selector = "ball:" .. ballKey,
+      color = CaptureActor.FLASH_YELLOW,
+      peak = CaptureActor.FLASH_PEAK,
+    })
+    -- BallThrow_CaptureStateDrop lowers the opened ball 32 pixels over
+    -- 10 ticks: the bounce, the shakes, the click, and a break-out all
+    -- play at the resting spot, not the arc landing. The fall continues
+    -- the arc's already-visible sprite, so it carries no image gate:
+    -- re-gating a continuation on transiently staged bag art can park
+    -- the queue after the arc already drew it.
     enqueue(self, {
       kind = "ball-flight",
       selector = "ball:" .. ballKey,
@@ -3908,43 +4084,37 @@ local function translateThrow(self, event)
       hideAtEnd = false,
       spin = false,
     })
-    -- STATE_GET_POKEMON_CALCULATE_SHAKES counts 23 frames before the
-    -- target enters the ball.
-    enqueue(self, { kind = "wait", duration = 12 })
+    -- CaptureStateBounce runs the source row table with its cells,
+    -- offsets, and sounds; the bounce cue owns all three.
     enqueue(self, {
-      kind = "withdraw",
-      combatant = target,
-      duration = BattleTimeline.VANISH_TICKS,
-      requiresImage = self:_imageKeyFor(target),
+      kind = "ball-bounce",
+      selector = "ball:" .. ballKey,
+      ballKey = ballKey,
+      opening = opening,
     })
-    -- sBallThrowBounceSounds: frames 1, 8, 14, 18 and 20 of the ground bounce.
-    local previous = 0
-    for _, bounce in ipairs(BALL_BOUNCE_SOUNDS) do
-      if bounce.frame > previous then
-        enqueue(self, { kind = "wait", duration = bounce.frame - previous })
-      end
-      previous = bounce.frame
-      enqueue(self, { kind = "sound", cue = ballCue(bounce.symbol), duration = 0 })
-    end
   end
 end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown> capture shake event under translation
 local function translateShake(self, event)
-  local _ = event
-  -- The source shakes the ball with its sound only; no line prints.
-  -- BallThrow_CaptureStateShakeWait holds 14 frames, the wobble sounds
-  -- BOWA on its fifth frame and ends on its twelfth (19 frames to the
-  -- sound, 7 more to the end), and
-  -- STATE_GET_POKEMON_BALL_SHAKE_DECREMENT then waits 12 frames.
-  enqueue(self, { kind = "wait", duration = 19 })
+  local payload = event.payload --[[@as table<string, unknown>?]]
+  local index = type(payload) == "table" and payload.index or nil
+  local row = type(index) == "number" and CaptureActor.SHAKE_ROWS[index] or CaptureActor.SHAKE_ROWS[1]
+  -- The mechanics event ordinal selects the wobble row; the renderer
+  -- never rolls for a catch. BallThrow_CaptureStateShakeWait holds 14
+  -- frames, the wobble applies its source X deltas with incremental
+  -- rotation (BOWA on the fifth applied update), and
+  -- STATE_GET_POKEMON_BALL_SHAKE_DECREMENT waits 12 frames after each
+  -- completed wobble.
+  local resting = self._captureBall
   enqueue(self, {
-    kind = "sound",
-    cue = ballCue(BattleAudio.SINK_SOUNDS.shake),
-    duration = 0,
+    kind = "ball-shake",
+    selector = resting ~= nil and ("ball:" .. resting.ballKey) or "ball:POKE_BALL",
+    ballKey = resting ~= nil and resting.ballKey or "POKE_BALL",
+    row = row,
   })
-  enqueue(self, { kind = "wait", duration = 19 })
+  enqueue(self, { kind = "wait", duration = CaptureActor.SHAKE_TRAIL_TICKS })
 end
 
 ---@param self BattleTimeline
@@ -3969,11 +4139,25 @@ end
 ---@param self BattleTimeline
 ---@param event table<string, unknown> native capture success event under translation
 local function translateCaught(self, event)
-  -- STATE_GET_POKEMON_BALL_CLICK runs BALL_ANIM_CLICK, whose burst plays the
-  -- ball's click emitter at the ball's resting spot.
+  -- STATE_GET_POKEMON_BALL_CLICK counts 12 frames after the last shake,
+  -- then runs BALL_ANIM_CLICK: the click voices SEQ_SE_DP_GETTING, the
+  -- ball darkens toward black 0 -> 10, only the ball's designated click
+  -- emitter plays at the resting spot, and the sequence gates on the
+  -- effect completion. Gotcha text and the capture BGM start only after
+  -- the click retires; the palette restores 10 -> 0 once printing ends
+  -- and the ball fades through its translucent OBJ transition.
   local ball = self._captureBall
   self._captureBall = nil
   if ball ~= nil then
+    enqueue(self, { kind = "wait", duration = CaptureActor.CLICK_LEAD_TICKS })
+    enqueue(self, { kind = "sound", cue = ballCue(BattleAudio.SINK_SOUNDS.ballClick), duration = 0 })
+    enqueue(self, {
+      kind = "ball-flash",
+      selector = "ball:" .. ball.ballKey,
+      color = CaptureActor.CLICK_BLACK,
+      peak = CaptureActor.CLICK_PEAK,
+      hold = true,
+    })
     enqueue(self, {
       kind = "ball-particles",
       effect = "click",
@@ -3982,6 +4166,7 @@ local function translateCaught(self, event)
       y = ball.y,
       duration = 0,
     })
+    enqueue(self, { kind = "particles-idle", minHold = CaptureActor.JOIN_GUARD_TICKS })
   end
   enqueue(self, {
     kind = "sound",
@@ -3995,6 +4180,19 @@ local function translateCaught(self, event)
     false,
     BattleTimeline.AUTO_SCROLL_TICKS + 30
   )
+  if ball ~= nil then
+    enqueue(self, {
+      kind = "ball-flash",
+      selector = "ball:" .. ball.ballKey,
+      color = CaptureActor.CLICK_BLACK,
+      peak = CaptureActor.CLICK_PEAK,
+      reverse = true,
+    })
+    enqueue(self, {
+      kind = "ball-fade",
+      selector = "ball:" .. ball.ballKey,
+    })
+  end
   -- The target already entered the ball at the throw; a capture that
   -- never threw still hides it here.
   local target = captureTargetOf(self, event)
@@ -4010,12 +4208,11 @@ local function translateCaught(self, event)
   end
 end
 
--- BattleController_EmitPokemonSendOut with breakOut re-sends the target
--- with its capture ball before the outcome line prints: a fresh ball
--- opens at the foe's in-place spot (GetStartPosition kind 1/3/5), then
--- the seal, the ball sound, and the cry follow exactly like a send-out.
--- The script never waits on the cry; the outcome line's own hold
--- absorbs it.
+-- STATE_GET_POKEMON_BREAK_OUT hijacks the send-out with mode 1: the old
+-- capture ball stays two frames while the attempted ball opens in place
+-- (2-frame cells, then the generic burst, then 6-frame cells); the seal
+-- and the tinted zero-affine growth start from the open, and only then
+-- does the selected 0-3 shake failure line print.
 ---@param self BattleTimeline
 ---@param event table<string, unknown> native capture event under translation
 local function translateBrokeFree(self, event)
@@ -4024,30 +4221,26 @@ local function translateBrokeFree(self, event)
   local target = captureTargetOf(self, event)
   if target ~= nil and self._inBall == target then
     local resting = self._captureBall
-    if resting ~= nil and self._openingPresentation ~= nil then
+    self._captureBall = nil
+    local sendOutBall = resting ~= nil and resting.ballKey or ballKeyOf(self, target)
+    if resting ~= nil and sendOutBall ~= nil then
+      CaptureActor.ensureStage(self)
       -- The fresh ball opens where the foe send-outs open; the capture
       -- ball's art is already on screen from the fall, so the open
       -- carries no image gate.
       local spot =
         assert(FOE_BALL_START_BY_BATTLER_TYPE[battlerTypeOf(self, target)], "break-outs open at a staged foe ball spot")
       enqueue(self, {
-        kind = "ball-throw",
-        selector = "ball:" .. resting.ballKey,
-        trainerless = true,
-        openOnly = true,
-        combatant = target,
-        openPan = BattleAudio.SIDE_PAN.foe,
-        throwAnimated = false,
-        fromX = spot.x,
-        fromY = spot.y,
-        targetX = spot.x,
-        targetY = spot.y,
-        nominalTicks = BattleTimeline.BALL_IN_PLACE_ARC_TICKS + BattleTimeline.THROW_OPEN_TICKS,
+        kind = "ball-breakout-open",
+        selector = "ball:" .. sendOutBall,
+        ballKey = sendOutBall,
+        oldBallKey = resting.ballKey,
+        battlerType = battlerTypeOf(self, target),
+        x = spot.x,
+        y = spot.y,
+        opening = self._ballOpening ~= nil and self._ballOpening(sendOutBall) or nil,
       })
-    end
-    self._captureBall = nil
-    local sendOutBall = resting ~= nil and resting.ballKey or ballKeyOf(self, target)
-    if sendOutBall ~= nil then
+    elseif sendOutBall ~= nil then
       enqueueBallSound(self, target)
       enqueue(self, {
         kind = "ball-particles",
@@ -5106,7 +5299,7 @@ local function startCue(self, cue)
     local modeZero = cue.trainerless == true or cue.arcOnly == true
     cue.modeZero = modeZero
     local function resolveBall()
-      local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key")
+      local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key") --[[@as string]]
       cue.ballKey = ballKey
       cue.opening = self._ballOpening ~= nil and self._ballOpening(ballKey) or nil
       cue.throwFrames = self._ballThrow ~= nil and self._ballThrow(ballKey) or nil
@@ -5237,7 +5430,7 @@ local function startCue(self, cue)
         slide.phase = "exit-slide"
       end
     end
-    local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key")
+    local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key") --[[@as string]]
     cue.ballKey = ballKey
     cue.opening = self._ballOpening ~= nil and self._ballOpening(ballKey) or nil
     cue.modeZero = true
@@ -5248,7 +5441,7 @@ local function startCue(self, cue)
   elseif cue.kind == "ball-flight" then
     local state = self._openingPresentation
     if state ~= nil then
-      local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key")
+      local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key") --[[@as string]]
       cue.ballKey = ballKey
       cue.throwFrames = self._ballThrow ~= nil and self._ballThrow(ballKey) or nil
       cue.throwAnimated = true
@@ -5269,6 +5462,31 @@ local function startCue(self, cue)
       x = cue.x,
       y = cue.y,
     }
+  elseif cue.kind == "ball-shake" then
+    -- The wobble shows the closed ball with staged throw art: the bounce
+    -- leaves an opening cell selected, whose staged art the bag may no
+    -- longer hold, so the shake would inherit an unstaged drawable and
+    -- vanish behind its own sounds and rotation. Resetting to the gated
+    -- throw cell keeps the resting ball visible through every wobble.
+    CaptureActor.ensureStage(self)
+    local state = self._openingPresentation
+    if state ~= nil then
+      local ballKey = assert(type(cue.ballKey) == "string" and cue.ballKey, "capture shakes name their staged ball key") --[[@as string]]
+      local ball = state.ballThrow
+      if ball == nil then
+        ball = {
+          selector = cue.selector,
+          x = 0,
+          y = 0,
+          drawableKey = ballCellKey(ballKey, 0),
+          rotation = 0,
+          visible = true,
+        }
+        state.ballThrow = ball
+      end
+      ball.visible = true
+      ball.drawableKey = ballCellKey(ballKey, 0)
+    end
   elseif cue.kind == "sound" then
     emitSound(self, cue.cue --[[@as table<string, unknown>]])
   elseif cue.kind == "exp" then
@@ -5963,6 +6181,300 @@ local function tickWaitCue(_, cue)
   return elapsed >= duration
 end
 
+-- Names the staged opening cell for one capture-actor tick: the opening
+-- animation's own cells in staged durations, falling back to the throw
+-- cell when the ball stages no opening art.
+---@param cue table<string, unknown> cue carrying the staged opening
+---@param ballKey string staged ball behind the cells
+---@param animTick integer one-based animation tick
+---@return string drawableKey of the shown cell
+function CaptureActor.cellKey(cue, ballKey, animTick)
+  local opening = cue.opening
+  if type(opening) == "table" and type(opening.frames) == "table" then
+    local frames = opening.frames --[[@as table<integer, table<string, unknown>>]]
+    local elapsed = 0
+    for _, frame in ipairs(frames) do
+      local record = frame --[[@as table<string, unknown>]]
+      elapsed = elapsed + (
+          record.durationTicks --[[@as integer]]
+          or 0
+        )
+      if animTick <= elapsed and type(record.drawableKey) == "string" then
+        return record.drawableKey --[[@as string]]
+      end
+    end
+    local last = frames[#frames]
+    if type(last) == "table" and type(last.drawableKey) == "string" then
+      return last.drawableKey --[[@as string]]
+    end
+  end
+  return ballCellKey(ballKey, 0)
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> active capture open cue under advancement
+---@return boolean finished
+function CaptureActor.tickBallCaptureOpenCue(self, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local burstTick = cue.burstTick --[[@as integer]]
+  local ballKey = cue.ballKey --[[@as string]]
+  local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  if ball == nil then
+    return CaptureActor.effectJoined(
+      self,
+      elapsed,
+      math.max(CaptureActor.ENTRY_TICKS, burstTick + CaptureActor.JOIN_GUARD_TICKS)
+    )
+  end
+  ball.x = cue.x
+  ball.y = cue.y
+  ball.visible = true
+  ball.rotation = 0
+  ball.paletteFlash = nil
+  ball.paletteFlashColor = nil
+  -- The open runs the staged animation cells; the burst starts once
+  -- the animation reaches its second frame (burstTick), and the open
+  -- completes 23 frames after it started once the burst retired: the
+  -- entry and the fall wait on both barriers like BALL_FALL does.
+  ball.drawableKey = CaptureActor.cellKey(cue, ballKey, math.max(1, elapsed))
+  if elapsed == 1 then
+    -- The particle system owns the staged start tick (burstTick): the
+    -- open only cues the burst, exactly like CaptureStateOpen creating
+    -- the effect at step 0 and starting it at frame 2.
+    self._ballParticleStarts[#self._ballParticleStarts + 1] = {
+      effect = "burst",
+      ballKey = ballKey,
+      x = cue.x,
+      y = cue.y,
+    }
+  end
+  if elapsed < CaptureActor.ENTRY_TICKS then
+    return false
+  end
+  return CaptureActor.effectJoined(self, elapsed, burstTick + CaptureActor.JOIN_GUARD_TICKS)
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> active palette flash cue under advancement
+---@return boolean finished
+function CaptureActor.tickBallFlashCue(self, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local peak = cue.peak --[[@as integer]]
+  local upTicks = math.ceil(peak / 2)
+  local downTicks = math.ceil(peak / 2)
+  local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  if cue.reverse == true then
+    -- RestorePalette returns peak -> 0 after the Gotcha print.
+    local left = math.max(0, peak - elapsed * 2)
+    if ball ~= nil then
+      ball.paletteFlash = left > 0 and left or nil
+      ball.paletteFlashColor = left > 0 and cue.color or nil
+    end
+    return elapsed >= downTicks
+  end
+  local coefficient
+  if elapsed <= upTicks then
+    coefficient = math.min(peak, elapsed * 2)
+  else
+    coefficient = math.max(0, peak - (elapsed - upTicks) * 2)
+  end
+  if ball ~= nil then
+    ball.paletteFlash = coefficient > 0 and coefficient or nil
+    ball.paletteFlashColor = coefficient > 0 and cue.color or nil
+  end
+  if cue.hold == true then
+    return elapsed >= upTicks
+  end
+  return elapsed >= upTicks + downTicks
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> active ground bounce cue under advancement
+---@return boolean finished
+function CaptureActor.tickBallBounceCue(self, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  if ball ~= nil then
+    ball.visible = true
+  end
+  if elapsed >= CaptureActor.BOUNCE_TICKS then
+    if ball ~= nil then
+      ball.rotation = 0
+    end
+    return true
+  end
+  if ball == nil then
+    return false
+  end
+  for _, bounce in ipairs(BALL_BOUNCE_SOUNDS) do
+    if elapsed == bounce.frame then
+      emitSound(self, ballCue(bounce.symbol))
+    end
+  end
+  -- Rows 0..19 apply; the sentinel row only ends the bounce.
+  if elapsed <= #CaptureActor.BOUNCE_STEPS then
+    local row = CaptureActor.BOUNCE_STEPS[elapsed]
+    ball.y = ball.y + row[1]
+    ball.drawableKey = CaptureActor.cellKey(cue, cue.ballKey --[[@as string]], row[2] + 1)
+  end
+  return false
+end
+
+-- Truncating C division for the wobble rotation: 0x1FFFE * dx / 360
+-- truncates toward zero.
+---@param dx integer applied X delta under rotation
+---@return integer incremental 16-bit rotation
+function CaptureActor.shakeRotation(dx)
+  local scaled = 0x1FFFE * dx / 360
+  if scaled >= 0 then
+    return math.floor(scaled)
+  end
+  return math.ceil(scaled)
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> active wobble cue under advancement
+---@return boolean finished
+function CaptureActor.tickBallShakeCue(self, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local row = cue.row --[[@as table<integer, integer>]]
+  local total = CaptureActor.SHAKE_LEAD_TICKS + #row + 1
+  local applied = elapsed - CaptureActor.SHAKE_LEAD_TICKS
+  local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  if ball ~= nil then
+    -- The resting ball stays visible through the lead, the wobble, and
+    -- the trail: only the X deltas and rotation animate it.
+    ball.visible = true
+  end
+  if elapsed >= total then
+    if ball ~= nil then
+      ball.rotation = 0
+    end
+    return true
+  end
+  if ball == nil or applied < 1 or applied > #row then
+    return false
+  end
+  local dx = row[applied]
+  ball.x = ball.x + dx
+  ball.rotation = (ball.rotation + CaptureActor.shakeRotation(dx)) % 0x10000
+  if applied == CaptureActor.SHAKE_SOUND_TICK then
+    emitSound(self, ballCue(BattleAudio.SINK_SOUNDS.shake))
+  end
+  return false
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> active breakout open cue under advancement
+---@return boolean finished
+function CaptureActor.tickBallBreakoutOpenCue(self, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  local ballKey = cue.ballKey --[[@as string]]
+  local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  if ball == nil then
+    return CaptureActor.effectJoined(self, elapsed, 6 + CaptureActor.JOIN_GUARD_TICKS)
+  end
+  if elapsed <= 2 then
+    -- BREAK_OUT_CLEANUP keeps the old capture ball two frames before
+    -- deleting it.
+    ball.x = cue.x
+    ball.y = cue.y
+    ball.visible = true
+    ball.rotation = 0
+    ball.paletteFlash = nil
+    ball.paletteFlashColor = nil
+    ball.drawableKey = ballCellKey(cue.oldBallKey --[[@as string]], 0)
+    return false
+  end
+  local openElapsed = elapsed - 2
+  ball.x = cue.x
+  ball.y = cue.y
+  ball.visible = true
+  ball.rotation = 0
+  -- BallThrow_OpenInPlace: 2-frame cells 0 and 2, the generic burst,
+  -- then 6-frame cells 2, 1 and 0, joining the burst completion.
+  local frame = 0
+  if openElapsed <= 2 then
+    frame = 0
+  elseif openElapsed <= 4 then
+    frame = 2
+  elseif openElapsed <= 10 then
+    frame = 2
+  elseif openElapsed <= 16 then
+    frame = 1
+  else
+    frame = 0
+  end
+  local opening = cue.opening
+  if type(opening) == "table" and type(opening.frames) == "table" then
+    local staged = opening.frames --[[@as table<integer, table<string, unknown>>]]
+    local cell = staged[frame + 1]
+    if type(cell) == "table" and type(cell.drawableKey) == "string" then
+      ball.drawableKey = cell.drawableKey --[[@as string]]
+    end
+  else
+    ball.drawableKey = ballCellKey(ballKey, frame)
+  end
+  if openElapsed == 1 then
+    -- The particle system owns the staged start delay: OpenInPlace
+    -- creates the generic burst at step 2 and starts it at step 3.
+    self._ballParticleStarts[#self._ballParticleStarts + 1] = {
+      effect = "generic-burst",
+      ballKey = ballKey,
+      x = cue.x,
+      y = cue.y,
+    }
+  end
+  if openElapsed == CaptureActor.BREAKOUT_BURST_START_TICKS then
+    -- The opened ball voices its sound and starts its seal from the
+    -- open, exactly like the send-out open's event tick.
+    emitSound(self, ballCue(BattleAudio.SINK_SOUNDS.ballOpen))
+    self._ballParticleStarts[#self._ballParticleStarts + 1] = {
+      effect = "seal",
+      ballKey = ballKey,
+      battlerType = cue.battlerType,
+    }
+  end
+  if
+    CaptureActor.effectJoined(
+      self,
+      openElapsed,
+      CaptureActor.BREAKOUT_BURST_START_TICKS + CaptureActor.JOIN_GUARD_TICKS
+    )
+  then
+    -- The retired open releases its sprite like the send-out open:
+    -- the emerged mon owns the field from here.
+    ball.visible = false
+    return true
+  end
+  return false
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> active effect join cue under advancement
+---@return boolean finished
+function CaptureActor.tickParticlesIdleCue(self, cue)
+  return CaptureActor.effectJoined(self, cue.elapsed --[[@as integer]], cue.minHold --[[@as integer]] or 0)
+end
+
+---@param self BattleTimeline
+---@param cue table<string, unknown> active translucent fade cue under advancement
+---@return boolean finished
+function CaptureActor.tickBallFadeCue(self, cue)
+  local elapsed = cue.elapsed --[[@as integer]]
+  -- CaptureStateFadeOut steps its translucent OBJ alpha 15 -> 0 over
+  -- 16 ticks; the host blend path stages no OBJ alpha, so the cue
+  -- preserves the source duration and the hidden lifecycle here.
+  if elapsed >= CaptureActor.FADE_TICKS then
+    local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+    if ball ~= nil then
+      ball.visible = false
+    end
+    return true
+  end
+  return false
+end
+
 local function tickHpCue(self, cue)
   local shown = self:_shown(cue.combatant --[[@as integer]])
   local from = cue.from --[[@as integer]]
@@ -6191,6 +6703,13 @@ local TICK_CUE_HANDLERS = {
   ["message"] = tickMessageCue,
   ["sound"] = tickSoundCue,
   ["ball-particles"] = tickImmediateCue,
+  ["particles-idle"] = CaptureActor.tickParticlesIdleCue,
+  ["ball-capture-open"] = CaptureActor.tickBallCaptureOpenCue,
+  ["ball-flash"] = CaptureActor.tickBallFlashCue,
+  ["ball-bounce"] = CaptureActor.tickBallBounceCue,
+  ["ball-shake"] = CaptureActor.tickBallShakeCue,
+  ["ball-breakout-open"] = CaptureActor.tickBallBreakoutOpenCue,
+  ["ball-fade"] = CaptureActor.tickBallFadeCue,
   ["stats-window"] = tickStatsWindowCue,
   ["opening-presentation"] = tickImmediateCue,
   ["trainer-exit"] = tickTrainerExitCue,
@@ -6462,10 +6981,15 @@ end
 function BattleTimeline:queuedParticleBalls()
   local keys = {}
   for _, cue in ipairs(self._queue) do
-    if cue.kind == "ball-particles" and cue.started ~= true then
-      keys[
-        cue.ballKey --[[@as string]]
-      ] = true
+    -- Capture-actor cues start their bursts/seals through the tick's
+    -- particle-start handoff, not through ball-particles cues, but their
+    -- textures still warm while queued like the legacy burst cues.
+    if cue.started ~= true and type(cue.ballKey) == "string" then
+      if cue.kind == "ball-particles" or cue.kind == "ball-capture-open" or cue.kind == "ball-breakout-open" then
+        keys[
+          cue.ballKey --[[@as string]]
+        ] = true
+      end
     end
   end
   return keys
