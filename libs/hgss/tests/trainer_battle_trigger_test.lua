@@ -181,4 +181,28 @@ function T.source_order_selects_the_first_sighted_trainer()
   Assert.equal(plan.slots[1].id, "a")
 end
 
+-- Source-order short-circuiting: once the first trainer sights the player and
+-- the shape needs no second ray, a later candidate never runs its collision
+-- probe. An irrelevant later ray that would surface a resolver error native
+-- code would never hit must not change the first trainer's valid selection.
+function T.a_later_candidate_never_probes_once_the_shape_is_decided()
+  local calls = {}
+  local plan = Trigger.check(facts({
+    trainer({ id = "a" }),
+    trainer({ id = "b", trainerId = 81, fieldX = 10, fieldZ = 5 }),
+  }, false, {
+    sightBlocked = function(sightedTrainer, direction, distance)
+      calls[#calls + 1] = sightedTrainer.id
+      if sightedTrainer.id == "b" then
+        error("an irrelevant later probe must never run", 0)
+      end
+      return false
+    end,
+  }))
+  plan = assert(plan, "the first trainer still sights the player")
+  Assert.equal(plan.encounterType, Trigger.ENCOUNTER_SINGLE)
+  Assert.equal(plan.slots[1].id, "a")
+  Assert.deepEqual(calls, { "a" }, "only the first trainer probes its ray")
+end
+
 return { tests = T }

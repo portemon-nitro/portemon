@@ -39,11 +39,20 @@ end
 function HallOfFamePresentation:prepare(bundle)
   assert(not self.disposed, "disposed Hall of Fame presentation cannot prepare")
   assert(type(bundle) == "table", "the ending presentation needs its generated bundle")
+  local signature = assert(bundle.signature, "the ending presentation bundle names its source signature")
   for _, section in ipairs(HallOfFamePresentation.SECTIONS) do
     assert(type(bundle[section]) == "table", "the ending presentation bundle carries its " .. section .. " section")
   end
+  if self._images ~= nil then
+    for _, image in pairs(self._images) do
+      if type(image.release) == "function" then
+        pcall(image.release, image)
+      end
+    end
+    self._images = nil
+  end
+  self.signature = signature
   self.sections = bundle
-  self.signature = assert(bundle.signature, "the ending presentation bundle names its source signature")
 end
 
 ---@return boolean
@@ -77,6 +86,45 @@ local function paintText(resources, text, x, y)
   textRenderer:drawText(text, x, y)
 end
 
+-- One rasterized source background through the borrowed generated cache and
+-- host graphics namespace, cached per presentation so the roll draws real
+-- GPU art instead of placeholder paths. A missing image is a terminal
+-- bundle fault, never a skipped layer.
+---@param self HallOfFamePresentation
+---@param resources table<string, unknown>
+---@param path string content-addressed generated image path
+---@param x number?
+---@param y number?
+local function paintImage(self, resources, path, x, y)
+  assert(type(path) == "string" and path ~= "", "the ending image names its published path")
+  local cacheFs = assert(resources.cacheFs, "the ending presentation borrows its generated cache")
+  local graphics = assert(resources.graphics, "the ending presentation borrows its host graphics namespace")
+  assert(type(cacheFs.read) == "function", "the ending cache reads its published images")
+  assert(type(graphics.draw) == "function", "the ending graphics draws its backgrounds")
+  self._images = self._images or {}
+  local image = self._images[path]
+  if image == nil then
+    local bytes = assert(cacheFs:read(path), "the League ending bundle is missing its published image")
+    assert(type(graphics.newImage) == "function", "the ending graphics uploads its backgrounds")
+    assert(
+      type(cacheFs.newFileData) == "function" or love.filesystem.newFileData ~= nil,
+      "the ending images need file data"
+    )
+    local fileData
+    if type(cacheFs.newFileData) == "function" then
+      fileData = cacheFs:newFileData(bytes, path)
+    else
+      fileData = love.filesystem.newFileData(bytes, path)
+    end
+    image = graphics.newImage(fileData)
+    if type(image.setFilter) == "function" then
+      pcall(image.setFilter, image, "nearest", "nearest")
+    end
+    self._images[path] = image
+  end
+  graphics.draw(image, x or 0, y or 0)
+end
+
 ---@param resources table<string, unknown> borrowed text/window/icon/image owners
 ---@param box table<string, unknown>
 local function paintWindow(resources, box)
@@ -93,22 +141,111 @@ local function paintWindow(resources, box)
   windowRenderer:drawStandardWindow(box, background)
 end
 
--- One message-bank line through the borrowed message provider, falling back
--- to the source bank/message identity when no provider is composed (a
--- headless composition still exercises the page timeline, never blank).
+-- One message-bank line through the borrowed message provider's actual
+-- acquisition/formatting contract (acquireBank/get/format/releaseBank over
+-- FieldMessageProvider). A missing bank or message is a terminal bundle
+-- fault, never a "bank..." stand-in: the roll draws source text or fails
+-- closed with its source identity.
 ---@param resources table<string, unknown>
 ---@param bank integer
 ---@param id integer
 ---@return string
 local function messageLine(resources, bank, id)
-  local provider = resources.messageProvider
-  if provider ~= nil and type(provider.message) == "function" then
-    local ok, text = pcall(provider.message, provider, bank, id)
-    if ok and type(text) == "string" and text ~= "" then
-      return text
-    end
+  local provider = assert(resources.messageProvider, "the ending presentation borrows its message provider")
+  assert(type(provider.acquireBank) == "function", "the ending messages acquire their bank")
+  assert(type(provider.get) == "function", "the ending messages read their template")
+  assert(type(provider.format) == "function", "the ending messages format their template")
+  assert(type(provider.releaseBank) == "function", "the ending messages release their bank")
+  local acquired, acquireErr = provider:acquireBank(bank)
+  if type(acquired) ~= "table" then
+    Errors.raise("FIELD_ENDING_ASSET_MISSING", "the League ending message bank is unavailable", {
+      bankId = bank,
+      messageId = id,
+      cause = acquireErr ~= nil and tostring(acquireErr) or "acquire failed",
+    })
   end
-  return "bank" .. tostring(bank) .. ":" .. tostring(id)
+  local template, templateErr = provider:get(bank, id)
+  provider:releaseBank(bank)
+  if type(template) ~= "table" then
+    Errors.raise("FIELD_ENDING_ASSET_MISSING", "the League ending message is unavailable", {
+      bankId = bank,
+      messageId = id,
+      cause = templateErr ~= nil and tostring(templateErr) or "missing message",
+    })
+  end
+  assert(template ~= nil, "the ending message template is available after the missing-message error")
+  local ok, formatted = pcall(provider.format, provider, template, {}, nil)
+  if ok and type(formatted) == "table" and type(formatted.text) == "string" and formatted.text ~= "" then
+    return formatted.text
+  end
+  if type(template.text) == "string" and template.text ~= "" then
+    return template.text
+  end
+  Errors.raise("FIELD_ENDING_ASSET_MISSING", "the League ending message has no text", {
+    bankId = bank,
+    messageId = id,
+  })
+  error("unreachable after missing ending text")
+end
+
+-- One localized species name through message bank 237 (msg_0237), keyed by
+-- the catalog's native species identity like the retail showcase.
+---@param resources table<string, unknown>
+---@param speciesKey string
+---@return string
+local function speciesName(resources, speciesKey)
+  local catalog = resources.monCatalog
+  if catalog == nil or type(catalog.species) ~= "function" then
+    return tostring(speciesKey)
+  end
+  local ok, definition = pcall(catalog.species, catalog, speciesKey)
+  if not ok or type(definition) ~= "table" or type(definition.nativeId) ~= "number" then
+    return tostring(speciesKey)
+  end
+  local provider = resources.messageProvider
+  if provider == nil or type(provider.acquireBank) ~= "function" then
+    return tostring(definition.name or speciesKey)
+  end
+  local acquired = provider:acquireBank(237)
+  if type(acquired) ~= "table" then
+    return tostring(definition.name or speciesKey)
+  end
+  local template = provider:get(237, definition.nativeId)
+  provider:releaseBank(237)
+  if type(template) == "table" and type(template.text) == "string" and template.text ~= "" then
+    return template.text
+  end
+  return tostring(definition.name or speciesKey)
+end
+
+-- One localized move name through message bank 750 (msg_0750), keyed by the
+-- catalog's native move identity like the retail showcase.
+---@param resources table<string, unknown>
+---@param moveKey string
+---@return string
+local function moveName(resources, moveKey)
+  local catalog = resources.monCatalog
+  if catalog == nil or type(catalog.move) ~= "function" then
+    return tostring(moveKey)
+  end
+  local ok, definition = pcall(catalog.move, catalog, moveKey)
+  if not ok or type(definition) ~= "table" or type(definition.nativeId) ~= "number" then
+    return tostring(moveKey)
+  end
+  local provider = resources.messageProvider
+  if provider == nil or type(provider.acquireBank) ~= "function" then
+    return tostring(moveKey)
+  end
+  local acquired = provider:acquireBank(750)
+  if type(acquired) ~= "table" then
+    return tostring(moveKey)
+  end
+  local template = provider:get(750, definition.nativeId)
+  provider:releaseBank(750)
+  if type(template) == "table" and type(template.text) == "string" and template.text ~= "" then
+    return template.text
+  end
+  return tostring(moveKey)
 end
 
 ---@param value unknown
@@ -145,17 +282,33 @@ local function showcaseIconKeys(resources, party)
   return keys
 end
 
----@param resources table<string, unknown>
----@param keys string[]
-local function touchIcons(resources, keys)
-  local icons = resources.icons
-  if icons == nil or #keys == 0 then
+---@param resources table<string, unknown> borrowed icon owners
+---@param keys string[] prepared mon icon keys in party order
+---@param x0 integer left edge of the icon column
+---@param y0 integer top edge of the icon column
+local function drawIcons(resources, keys, x0, y0)
+  if #keys == 0 then
     return
   end
-  if type(icons.dimensions) == "function" then
-    for _, key in ipairs(keys) do
-      pcall(icons.dimensions, icons, key)
+  local icons = assert(resources.icons, "the ending presentation borrows its mon icon provider")
+  local graphics = assert(resources.graphics, "the ending presentation borrows its host graphics namespace")
+  assert(type(icons.handleFor) == "function", "the ending icons resolve their sampling handle")
+  assert(type(icons.quadFor) == "function", "the ending icons resolve their frame quad")
+  local y = y0
+  for _, key in ipairs(keys) do
+    local prepared = true
+    if type(icons.isPrepared) == "function" then
+      local ok, isReady = pcall(icons.isPrepared, icons, key)
+      prepared = ok and isReady == true
     end
+    if prepared then
+      local okHandle, handle = pcall(icons.handleFor, icons, key)
+      local okQuad, quad = pcall(icons.quadFor, icons, key, 1)
+      if okHandle and okQuad and type(handle) == "table" and type(handle.drawQuad) == "function" then
+        handle:drawQuad(graphics, quad, x0, y)
+      end
+    end
+    y = y + 32
   end
 end
 
@@ -165,19 +318,23 @@ end
 ---@param status table<string, unknown>
 local function drawShowcaseTeam(resources, status)
   paintWindow(resources, { x = 0, y = 0, width = 256, height = 192 })
-  paintText(resources, "No." .. tostring(status.recordNumber or 0), 8, 8)
+  paintText(resources, messageLine(resources, 181, 0), 8, 8)
+  paintText(resources, tostring(status.recordNumber or 0), 8, 20)
   if status.date ~= nil then
-    paintText(resources, dateText(status.date), 8, 24)
+    paintText(resources, dateText(status.date), 8, 32)
   end
   local party = status.party
   if type(party) ~= "table" then
     return
   end
-  touchIcons(resources, showcaseIconKeys(resources, party))
-  local y = 40
+  local keys = showcaseIconKeys(resources, party)
+  drawIcons(resources, keys, 200, 40)
+  local y = 48
   for _, mon in ipairs(party) do
     if type(mon) == "table" then
-      paintText(resources, tostring(mon.species or "") .. " Lv" .. tostring(mon.level or 0), 8, y)
+      local name = type(mon.species) == "string" and speciesName(resources, mon.species) or ""
+      local levelLine = messageLine(resources, 181, 1)
+      paintText(resources, name .. " " .. levelLine .. tostring(mon.level or 0), 8, y)
       y = y + 16
     end
   end
@@ -193,17 +350,26 @@ local function drawShowcaseMon(resources, status)
     return
   end
   paintWindow(resources, { x = 0, y = 0, width = 256, height = 192 })
-  touchIcons(resources, showcaseIconKeys(resources, { mon }))
+  drawIcons(resources, showcaseIconKeys(resources, { mon }), 200, 8)
   paintText(resources, tostring(mon.nickname or mon.species or ""), 8, 8)
-  paintText(resources, tostring(mon.species or "") .. " Lv" .. tostring(mon.level or 0), 8, 24)
-  paintText(resources, "OT " .. tostring(mon.otName or ""), 8, 40)
+  local speciesLabel = type(mon.species) == "string" and speciesName(resources, mon.species) or ""
+  local genderSuffix = ""
+  if mon.gender == "male" then
+    genderSuffix = " " .. messageLine(resources, 181, 3)
+  elseif mon.gender == "female" then
+    genderSuffix = " " .. messageLine(resources, 181, 4)
+  end
+  local levelLine = messageLine(resources, 181, 1)
+  paintText(resources, speciesLabel .. genderSuffix, 8, 24)
+  paintText(resources, levelLine .. tostring(mon.level or 0), 8, 36)
+  paintText(resources, messageLine(resources, 181, 2) .. tostring(mon.otName or ""), 8, 48)
   local moves = mon.moves
   if type(moves) == "table" then
-    local y = 56
+    local y = 64
     for index = 1, 4 do
       local move = moves[index]
       if type(move) == "string" and move ~= "" then
-        paintText(resources, move, 8, y)
+        paintText(resources, moveName(resources, move), 8, y)
         y = y + 16
       end
     end
@@ -223,11 +389,18 @@ local function drawRegistration(resources, status)
   if type(party) ~= "table" then
     return
   end
-  touchIcons(resources, showcaseIconKeys(resources, party))
+  local keys = showcaseIconKeys(resources, party)
+  drawIcons(resources, keys, 200, 24)
   local y = 24
   for _, mon in ipairs(party) do
     if type(mon) == "table" then
-      paintText(resources, tostring(mon.nickname or mon.species or "") .. " Lv" .. tostring(mon.level or 0), 8, y)
+      local name = tostring(mon.nickname or mon.species or "")
+      local speciesLabel = type(mon.species) == "string" and speciesName(resources, mon.species) or ""
+      if name == "" or name == tostring(mon.species) then
+        name = speciesLabel
+      end
+      local levelLine = messageLine(resources, 181, 1)
+      paintText(resources, name .. " " .. levelLine .. tostring(mon.level or 0), 8, y)
       y = y + 16
     end
   end
@@ -252,9 +425,10 @@ local function currentCreditPage(credits, status)
   return selected
 end
 
+---@param self HallOfFamePresentation
 ---@param resources table<string, unknown>
 ---@param status table<string, unknown>
-local function drawCredits(resources, status)
+local function drawCredits(self, resources, status)
   local credits = status.creditsSection
   assert(type(credits) == "table", "the credit roll reads its bundle section")
   local page = currentCreditPage(credits, status)
@@ -277,16 +451,18 @@ local function drawCredits(resources, status)
     if type(scene) == "table" then
       local lower = scene.lower
       local upper = scene.upper
-      if type(lower) == "table" and type(upper) == "table" then
-        paintText(resources, "scene " .. tostring(scene.index or 0), 8, 8)
+      if type(lower) == "table" and type(lower.path) == "string" then
+        paintImage(self, resources, lower.path, 0, 0)
+      end
+      if type(upper) == "table" and type(upper.path) == "string" then
+        paintImage(self, resources, upper.path, 0, 0)
       end
     end
   end
   local bank = assert(credits.messageBank, "the credit roll names its message bank")
-  local y = 24
   for _, line in ipairs(assert(page.lines, "a credit page carries its lines")) do
-    paintText(resources, messageLine(resources, bank, assert(line.message)), math.floor(tonumber(line.x) or 8), y)
-    y = y + 12
+    local message = messageLine(resources, bank, assert(line.message))
+    paintText(resources, message, math.floor(tonumber(line.x) or 8), math.floor(tonumber(line.y) or 24))
   end
 end
 
@@ -305,13 +481,19 @@ end
 
 ---@param resources table<string, unknown>
 ---@param status table<string, unknown>
-local function drawTheEnd(resources, status)
+local function drawTheEndPresentation(self, resources, status)
   local credits = status.creditsSection
   assert(type(credits) == "table", "The End reads the credit bundle section")
   local theEnd = assert(credits.theEnd, "the bundle carries The End screen")
   assert(type(theEnd.path) == "string", "The End names its published image")
-  paintWindow(resources, { x = 0, y = 0, width = 256, height = 192 })
-  paintText(resources, messageLine(resources, assert(credits.messageBank), 0), 8, 88)
+  paintImage(self, resources, theEnd.path, 0, 0)
+  local titles = assert(credits.titleMessages, "the credit roll carries its title messages")
+  local versionId = status.versionId or status.gameVersion
+  local titleId = titles.soulsilver
+  if versionId == nil or tostring(versionId):find("heartgold", 1, true) ~= nil then
+    titleId = titles.heartgold
+  end
+  paintText(resources, messageLine(resources, assert(credits.messageBank), assert(titleId)), 8, 70)
 end
 
 -- A minimal valid application plan over one pane: content draws through the
@@ -498,10 +680,11 @@ function HallOfFamePresentation:draw(resources, status)
     return
   end
   if sectionName == "the_end" then
-    drawTheEnd(resources, { creditsSection = credits })
+    local versionId = view.versionId or view.gameVersion or resources.versionId
+    drawTheEndPresentation(self, resources, { creditsSection = credits, versionId = versionId })
     return
   end
-  drawCredits(resources, { creditsSection = credits, timer = view.timer or 0 })
+  drawCredits(self, resources, { creditsSection = credits, timer = view.timer or 0 })
 end
 
 function HallOfFamePresentation:dispose()
@@ -510,6 +693,14 @@ function HallOfFamePresentation:dispose()
   end
   self.disposed = true
   self.sections = nil
+  if self._images ~= nil then
+    for _, image in pairs(self._images) do
+      if type(image.release) == "function" then
+        pcall(image.release, image)
+      end
+    end
+    self._images = nil
+  end
 end
 
 return HallOfFamePresentation

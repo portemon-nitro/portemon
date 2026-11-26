@@ -174,16 +174,22 @@ function TrainerBattleTrigger.check(facts)
   assert(type(isDouble) == "function", "trainer sight resolves the double mark through one resolver")
   local doublesEligible = facts.doublesEligible == true
 
-  local sighted = {} ---@type table<integer, { direction: string, distance: integer }?>
+  -- Source-order short-circuiting (TryGetSeenByNpcTrainers): the first
+  -- eligible sighted trainer decides the shape. Later candidates are probed
+  -- only when the selected shape needs them, so an irrelevant later ray
+  -- never runs a collision probe that could change the first trainer's
+  -- valid selection or surface a resolver error native code would never hit.
   local firstIndex = nil
+  local firstSight = nil
   for index, trainer in ipairs(facts.trainers) do
     checkTrainer(trainer, index)
     local entry = trainer --[[@as table<string, unknown>]]
     if entry.defeated ~= true and TRAINER_SIGHT_TYPES[entry.sightType] == true then
       local sight = sightOf(entry, player, sightBlocked)
       if sight ~= nil then
-        sighted[index] = sight
-        firstIndex = firstIndex or index
+        firstIndex = index
+        firstSight = sight
+        break
       end
     end
   end
@@ -191,7 +197,7 @@ function TrainerBattleTrigger.check(facts)
     return nil
   end
   local first = facts.trainers[firstIndex] --[[@as table<string, unknown>]]
-  local firstSight = sighted[firstIndex] --[[@as { direction: string, distance: integer }]]
+  assert(firstSight ~= nil, "the first sighted trainer carries its ray")
   local firstTrainerId = first.trainerId
   ---@cast firstTrainerId integer
   if isDouble(firstTrainerId) == true then
@@ -219,14 +225,19 @@ function TrainerBattleTrigger.check(facts)
     }
   end
   if doublesEligible then
-    for index, trainer in ipairs(facts.trainers) do
-      local sight = sighted[index]
-      if index ~= firstIndex and sight ~= nil then
-        local second = trainer --[[@as table<string, unknown>]]
-        return {
-          encounterType = TrainerBattleTrigger.ENCOUNTER_TWO_TRAINERS,
-          slots = { slotFor(first, firstSight), slotFor(second, sight) },
-        }
+    for index = firstIndex + 1, #facts.trainers do
+      local trainer = facts.trainers[index]
+      checkTrainer(trainer, index)
+      local entry = trainer --[[@as table<string, unknown>]]
+      if entry.defeated ~= true and TRAINER_SIGHT_TYPES[entry.sightType] == true then
+        local sight = sightOf(entry, player, sightBlocked)
+        if sight ~= nil then
+          local second = trainer --[[@as table<string, unknown>]]
+          return {
+            encounterType = TrainerBattleTrigger.ENCOUNTER_TWO_TRAINERS,
+            slots = { slotFor(first, firstSight), slotFor(second, sight) },
+          }
+        end
       end
     end
   end

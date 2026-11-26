@@ -2057,11 +2057,14 @@ function FieldRuntime:_composeFieldServices(boot)
   local function trainerDoublesEligible()
     return self.monService:countAliveMons() >= 2
   end
-  -- The source checks trainer sight from the field's own input frame: map
-  -- entry, transitions, a held field, and any modal, script or battle ownership
-  -- all precede the check, so none of them may start an engagement. The
-  -- session's own roaming admission is the authoritative modal policy; this
-  -- gate adds only the transition and map-entry facts it does not own.
+  -- The source checks trainer sight from the field's own ordinary-input
+  -- arbitration, before new player movement (TryGetSeenByNpcTrainers runs at
+  -- the head of the field input frame). The session owns that arbitration:
+  -- Start Menu activity, the foreground hold, and every modal the session
+  -- refuses ordinary field work for must refuse sight too. isRoamingFree is
+  -- only the narrower roaming predicate, so this gate borrows the session's
+  -- exact admission decision plus the transition/map-entry facts it does not
+  -- own and the runtime-level modal hosts the session never sees.
   local function trainerFieldReady()
     local session = self.session
     if session == nil then
@@ -2074,7 +2077,25 @@ function FieldRuntime:_composeFieldServices(boot)
     if entry ~= nil and entry:isActive() then
       return false
     end
-    return session:isRoamingFree()
+    if not session:isRoamingFree() then
+      return false
+    end
+    if session.applicationHost ~= nil and session.applicationHost:isActive() then
+      return false
+    end
+    if session:isForegroundHoldActive() then
+      return false
+    end
+    if self.applicationHost ~= nil and self.applicationHost:isActive() then
+      return false
+    end
+    if self.pcApplicationHost ~= nil and self.pcApplicationHost:isActive() then
+      return false
+    end
+    if self.martHost ~= nil and self.martHost:isActive() then
+      return false
+    end
+    return true
   end
   local function currentTrainerRegion()
     local map = currentTrainerMap()
@@ -2236,39 +2257,79 @@ function FieldRuntime:_composeGameClear()
   })
 end
 
--- Admit the generated ending bundle into one presentation owner. The bundle
--- is one selector-free artifact the ending demands for itself; while it is
--- absent the owner stays unready and its surfaces hold. Failures to read a
--- ready-marked bundle attribute without preparing partial art.
+-- Admit the generated ending bundle into one presentation owner through the
+-- one feature-local preparation path the PC showcase shares: the semantic
+-- ending demand's terminal receipt first, then bundle validation plus every
+-- published image the presented phase draws. Pending stays pending with no
+-- failure; a terminal demand failure, a malformed bundle, or a missing image
+-- attributes its failure. Ready is published only after validation and the
+-- actually required draw resources are admitted; a failure publishes no
+-- partial readiness. The terminal receipt is kept: callers must not retry a
+-- known failed demand as if it were a cold cache.
 ---@param presentation table<string, unknown>|nil the presentation owner to prepare
 ---@return table<string, unknown>|nil presentation
+---@return string? failure terminal preparation failure, nil while pending or ready
 function FieldRuntime:_prepareEndingPresentation(presentation)
-  if presentation == nil or presentation:isReady() then
-    return presentation
+  if presentation == nil then
+    return nil, nil
+  end
+  if presentation:isReady() then
+    return presentation, nil
+  end
+  if self.derivedAssets ~= nil and type(self.derivedAssets.requestEnding) == "function" then
+    local _, requestFailure = self.derivedAssets.requestEnding("required")
+    if requestFailure ~= nil then
+      return nil, "League ending demand failed: " .. tostring(requestFailure)
+    end
   end
   local cacheFs = self.cacheFs
   if cacheFs == nil then
-    return presentation
+    return presentation, nil
   end
   local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
   local readyOk, ready = pcall(EndingAssetCache.isReady, cacheFs)
   if not readyOk or not ready then
-    return presentation
+    return presentation, nil
   end
   local loadOk, bundle = pcall(EndingAssetCache.load, cacheFs)
   if not loadOk or type(bundle) ~= "table" then
-    return presentation
+    return nil, "League ending bundle failed: " .. tostring(bundle)
   end
-  local prepareOk = pcall(presentation.prepare, presentation, bundle)
+  local prepareOk, prepareErr = pcall(presentation.prepare, presentation, bundle)
   if not prepareOk then
-    return presentation
+    return nil, "League ending bundle failed: " .. tostring(prepareErr)
   end
-  return presentation
+  for _, scene in ipairs(bundle.credits.scenes) do
+    for _, layer in ipairs({ scene.lower, scene.upper }) do
+      if type(layer) ~= "table" or type(layer.path) ~= "string" then
+        return nil, "League ending bundle failed: a credit scene names no image"
+      end
+      local existsOk, exists = pcall(function()
+        return cacheFs:exists(layer.path)
+      end)
+      if not existsOk or not exists then
+        return nil, "League ending bundle failed: missing credit image " .. tostring(layer.path)
+      end
+    end
+  end
+  local theEnd = bundle.credits.theEnd
+  if type(theEnd) ~= "table" or type(theEnd.path) ~= "string" then
+    return nil, "League ending bundle failed: The End names no image"
+  end
+  local endOk, endExists = pcall(function()
+    return cacheFs:exists(theEnd.path)
+  end)
+  if not endOk or not endExists then
+    return nil, "League ending bundle failed: missing The End image " .. tostring(theEnd.path)
+  end
+  return presentation, nil
 end
 
 -- Admit the generated ending bundle into the ending's own presentation owner.
+---@return string? failure terminal preparation failure, nil while pending or ready
 function FieldRuntime:_loadEndingPresentation()
-  return self:_prepareEndingPresentation(self.endingPresentation)
+  local _, failure = self:_prepareEndingPresentation(self.endingPresentation)
+  return failure
 end
 
 -- Publish the ending's one candidate: the same record identity the ordinary
@@ -2636,7 +2697,7 @@ function FieldRuntime:_startFieldSession(boot)
       connection = publishRoamerConnection,
     },
   })
-
+  -- Native trainer sight runs inside the session's authoritative ordinary-input
   if boot.loadedGame and boot.loadedGame.weatherId ~= nil then
     self:_setLiveWeather(self.runtimeMap, boot.loadedGame.weatherId)
   else
@@ -2849,7 +2910,9 @@ function FieldRuntime:update(dt)
     end
     -- The source checks trainer sight at the head of every field input
     -- frame, before a step could start, and advances the running approaches
-    -- on the same fixed tick.
+    -- on the same fixed tick. The gate borrows the session's exact
+    -- ordinary-input admission decision, so no separate trainer lifecycle
+    -- policy lives here.
     if self.trainerEncounter then
       self.trainerEncounter:updateFixed()
       self.trainerEncounter:tryEngage()

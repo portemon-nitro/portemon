@@ -225,41 +225,28 @@ function T.credits_advance_pages_and_reach_the_end(scope)
   local presentation = assert(runtime.endingPresentation, "the presented ending owns its presentation")
   local cacheFs = GeneratedCacheFixture.reader(readyVersion())
   presentation:prepare(EndingAssetCache.load(cacheFs))
-  local early = { phase = "credits", timer = 5 }
-  presentation:draw({
+  local resources = {
     graphics = love.graphics,
     textRenderer = assert(state.presentationResources).textRenderer,
     windowRenderer = assert(state.presentationResources).windowRenderer,
-    icons = {},
+    icons = assert(state.presentationResources).monIconProvider,
     monCatalog = runtime.monCatalog,
     messageProvider = runtime.messageProvider,
     images = {},
-  }, early)
+    cacheFs = cacheFs,
+  }
+  local early = { phase = "credits", timer = 5 }
+  presentation:draw(resources, early)
   local later = { phase = "credits", timer = 500 }
   local recordedBefore = #recorded.text
-  presentation:draw({
-    graphics = love.graphics,
-    textRenderer = assert(state.presentationResources).textRenderer,
-    windowRenderer = assert(state.presentationResources).windowRenderer,
-    icons = {},
-    monCatalog = runtime.monCatalog,
-    messageProvider = runtime.messageProvider,
-    images = {},
-  }, later)
+  presentation:draw(resources, later)
   Assert.isTrue(#recorded.text > recordedBefore, "the later roll page paints its own lines")
   local painted = paintedText(recorded)
-  Assert.isTrue(painted:find("scene 0", 1, true) ~= nil, "the roll paints its opening background identity")
+  Assert.isNil(painted:find("scene ", 1, true), "the roll never paints a diagnostic scene label")
+  Assert.isNil(painted:find("bank", 1, true), "the roll paints source text, not bank identities")
   recorded.text = {}
-  presentation:draw({
-    graphics = love.graphics,
-    textRenderer = assert(state.presentationResources).textRenderer,
-    windowRenderer = assert(state.presentationResources).windowRenderer,
-    icons = {},
-    monCatalog = runtime.monCatalog,
-    messageProvider = runtime.messageProvider,
-    images = {},
-  }, { phase = "the_end" })
-  Assert.isTrue(#recorded.text > 0, "The End paints its title surface")
+  presentation:draw(resources, { phase = "the_end" })
+  Assert.isTrue(#recorded.text > 0, "The End paints its title surface from bank 440")
 end
 
 -- The PC showcase opens over the recorded history and paints the newest

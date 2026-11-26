@@ -434,6 +434,31 @@ function T.tests.source_pc_hall_of_fame_entry_blocks_the_script_until_the_showca
       "the source Hall of Fame entry opens the shared showcase child"
     )
     Assert.isTrue(readable.runtime.screenFade:isOpaque(), "the source overlay opens behind its own screen fade")
+    -- Headless acceptance stops before GPU rendering, so it admits the
+    -- showcase input through an intentionally renderer-free test route: the
+    -- production child stays input-gated on its prepared bundle and icons,
+    -- while this composition forces readiness to exercise the script/close
+    -- protocol without requiring realized art.
+    do
+      local child = entry.host:activeChild()
+      if child ~= nil and type(child.preparePresentation) == "function" then
+        local originalPrepare = child.preparePresentation
+        child.preparePresentation = function(self, env)
+          local ready, failure = originalPrepare(self, env)
+          if ready then
+            return true, nil
+          end
+          if failure ~= nil then
+            return false, failure
+          end
+          return true, nil
+        end
+      end
+      local handle = entry.host:activeHandle()
+      if handle ~= nil then
+        entry.host:setPresentationReady(handle, true)
+      end
+    end
 
     -- The child owns the field: advancing never returns to the PC shell while
     -- it lives, and the field never consumes its input.

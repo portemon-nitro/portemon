@@ -89,6 +89,7 @@ function GameClearCoordinator.new(options)
     _candidate = nil,
     _entry = nil,
     _previouslyCleared = false,
+    _preparationFailure = nil,
   }, GameClearCoordinator)
 end
 
@@ -112,10 +113,17 @@ end
 ---@return table<string, unknown>
 function GameClearCoordinator:status()
   if self._state == nil then
-    return { phase = "idle" }
+    local idle = { phase = "idle" }
+    if self._preparationFailure ~= nil then
+      idle.preparationFailure = self._preparationFailure
+    end
+    return idle
   end
   local status = self._state:status()
   status.hasCandidate = self._candidate ~= nil
+  if self._preparationFailure ~= nil then
+    status.preparationFailure = self._preparationFailure
+  end
   return status
 end
 
@@ -177,17 +185,28 @@ function GameClearCoordinator:begin(vsRed)
     type(vsRed) == "number" and vsRed % 1 == 0 and vsRed >= 0 and vsRed <= 0xFFFF,
     "the ending takes the source's raw vsRed halfword"
   )
+  self._preparationFailure = nil
+  self._candidate = nil
+  self._entry = nil
   local options = self._options
   -- The ending demands its own generated bundle: the registration, showcase and
   -- credit-roll sections. The demand retries every fixed tick until the bundle
   -- is admitted; congratulations and the roll hold their phases meanwhile.
+  -- A terminal demand failure attributes immediately instead of hanging a
+  -- cold cache as pending.
   if options.requestAssets ~= nil then
-    options.requestAssets("required")
+    local _, requestFailure = options.requestAssets("required")
+    if requestFailure ~= nil then
+      self._preparationFailure = "League ending demand failed: " .. tostring(requestFailure)
+    end
   end
   if options.loadPresentation ~= nil then
     local state = options.presentation
     if state ~= nil and type(state.prepare) == "function" then
-      options.loadPresentation()
+      local loadFailure = options.loadPresentation()
+      if loadFailure ~= nil and self._preparationFailure == nil then
+        self._preparationFailure = tostring(loadFailure)
+      end
     end
   end
   -- The recorded non-Egg party size behind the registration reveal cadence,
@@ -366,17 +385,31 @@ function GameClearCoordinator:updateFixed(input)
   if not self._active then
     return "idle"
   end
+  if self._preparationFailure ~= nil then
+    error(self._preparationFailure, 0)
+  end
   -- A cold bundle retries every fixed tick: the demand and the admission
   -- ride the same tick the state steps, so congratulations holds until the
-  -- sections are prepared instead of playing with no surfaces.
+  -- sections are prepared instead of playing with no surfaces. A terminal
+  -- preparation failure attributes and raises instead of stranding the
+  -- mandatory story sequence in pending; the receipt is kept so a known
+  -- failure is never retried as a cold cache.
   local options = self._options
   if options.requestAssets ~= nil then
-    options.requestAssets("required")
+    local _, requestFailure = options.requestAssets("required")
+    if requestFailure ~= nil then
+      self._preparationFailure = "League ending demand failed: " .. tostring(requestFailure)
+      error(self._preparationFailure, 0)
+    end
   end
   if options.loadPresentation ~= nil then
     local presentation = options.presentation
     if presentation ~= nil and type(presentation.prepare) == "function" and not presentation:isReady() then
-      options.loadPresentation()
+      local loadFailure = options.loadPresentation()
+      if loadFailure ~= nil then
+        self._preparationFailure = tostring(loadFailure)
+        error(self._preparationFailure, 0)
+      end
     end
   end
   local state = assert(self._state, "an active ending owns its state machine")
@@ -416,6 +449,7 @@ function GameClearCoordinator:cancel(_)
   self._state = nil
   self._candidate = nil
   self._entry = nil
+  self._preparationFailure = nil
 end
 
 -- The ending released the host route: drop the staged work, never the save.
@@ -424,6 +458,7 @@ function GameClearCoordinator:finish()
   self._state = nil
   self._candidate = nil
   self._entry = nil
+  self._preparationFailure = nil
 end
 
 return GameClearCoordinator

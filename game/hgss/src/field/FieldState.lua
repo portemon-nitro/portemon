@@ -362,6 +362,15 @@ function FieldState:update(dt)
       self.runtime:failPcApplicationPresentation("PC application presentation failed: " .. tostring(failure))
     end
   end
+  -- The League ending's registration party icons admit through the shared
+  -- mon icon provider alongside the bundle: a cold icon page holds its draw
+  -- (the presenter skips unprepared icons) instead of failing the ending.
+  if self.runtime.gameClear ~= nil and self.runtime.gameClear:isActive() then
+    local _, leagueFailure = self:_prepareLeagueEndingIcons()
+    if leagueFailure ~= nil then
+      error("League ending icon preparation failed: " .. tostring(leagueFailure), 0)
+    end
+  end
   -- The active Bag leaf and the script Mart sale advance their shared Bag
   -- visuals here, before the next draw: the preparation entry admits only
   -- complete current states, so drawing stays wait-free. Unrelated leaves
@@ -584,6 +593,51 @@ function FieldState:_prepareHallOfFameShowcase()
     monCatalog = runtime.monCatalog,
     requestEnding = requestEnding,
   })
+end
+
+-- Admits the League ending's registration party icons through the shared mon
+-- icon provider. The bundle readiness gates the phases; icons admit
+-- independently and draw tolerantly while pending, so a cold icon page never
+-- fails the mandatory story sequence.
+---@return boolean ready
+---@return string? failure
+function FieldState:_prepareLeagueEndingIcons()
+  local runtime = assert(self.runtime, "League ending icon preparation needs its runtime")
+  local resources = assert(self.presentationResources, "League ending icon preparation needs its resources")
+  local icons = resources.monIconProvider
+  local catalog = runtime.monCatalog
+  local monService = runtime.monService
+  if icons == nil or catalog == nil or monService == nil then
+    return false, nil
+  end
+  if type(icons.prepareKeys) ~= "function" or type(catalog.iconSelection) ~= "function" then
+    return false, nil
+  end
+  local keys = {}
+  local countOk, count = pcall(monService.partyCount, monService)
+  if not countOk or type(count) ~= "number" then
+    return false, nil
+  end
+  for slot0 = 0, count - 1 do
+    local monOk, mon = pcall(monService.partyMon, monService, slot0)
+    if monOk and type(mon) == "table" and mon.isEgg ~= true and type(mon.species) == "string" then
+      local ok, key = pcall(catalog.iconSelection, catalog, mon)
+      if ok and type(key) == "string" and key ~= "" then
+        keys[#keys + 1] = key
+      end
+    end
+  end
+  if #keys == 0 then
+    return true, nil
+  end
+  local ok, ready, failure = pcall(icons.prepareKeys, icons, keys)
+  if not ok then
+    return false, "League ending icons failed: " .. tostring(ready)
+  end
+  if ready then
+    return true, nil
+  end
+  return false, failure
 end
 
 -- Advances the open starter chooser's presentation preparation by one

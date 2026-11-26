@@ -21,10 +21,10 @@
 local HallOfFameScreenState = {}
 HallOfFameScreenState.__index = HallOfFameScreenState
 
--- The showcase app reads history only; its pages are immutable record
--- snapshots, so it consumes input without waiting for a GPU frame. A blank or
--- partially prepared presentation never changes what an input means.
-HallOfFameScreenState.acceptsInputWithoutPresentation = true
+-- The showcase app reads history only, but its pages draw the prepared bundle
+-- and the recorded party's own icons: input stays gated until the
+-- presentation admits every drawn dependency, so the player never navigates
+-- or closes a surface it has not seen.
 
 -- The source's own record paging: the team page, then one page per recorded
 -- party member.
@@ -107,11 +107,14 @@ function HallOfFameScreenState:_navigate(direction)
   end
 end
 
--- Prepares the showcase's presented dependencies: the generated ending
--- bundle through the shared demand, then the recorded party's own icon
--- pages through the shared provider. A cold bundle stays pending with no
--- failure; a malformed bundle or icon demand attributes its failure.
--- Readiness here is data plus icon admission; drawing stays wait-free.
+-- Prepares the showcase's presented dependencies through the one feature-local
+-- path the League ending shares: the semantic ending demand's terminal
+-- receipt, then the generated bundle's validation plus every published image
+-- the presented phase draws, then the recorded party's own icon pages.
+-- Pending stays pending with no failure; a terminal demand failure, a
+-- malformed bundle, a missing image, or an icon demand failure attributes
+-- its failure. Ready is published only after validation and the actually
+-- required draw resources are admitted.
 ---@param env { cacheFs: table<string, unknown>|nil, icons: table<string, unknown>|nil, monCatalog: table<string, unknown>|nil, requestEnding: (fun(urgency: string): unknown)|nil }
 ---@return boolean ready
 ---@return string? failure
@@ -121,18 +124,45 @@ function HallOfFameScreenState:preparePresentation(env)
   local presentation = assert(self.presentation, "the showcase needs its presentation")
   if not presentation:isReady() then
     if env.requestEnding ~= nil then
-      pcall(env.requestEnding, "required")
+      local _, requestFailure = env.requestEnding("required")
+      if requestFailure ~= nil then
+        return false, "Hall of Fame ending demand failed: " .. tostring(requestFailure)
+      end
     end
     if env.cacheFs ~= nil then
       local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
       local readyOk, ready = pcall(EndingAssetCache.isReady, env.cacheFs)
       if readyOk and ready then
         local loadOk, bundle = pcall(EndingAssetCache.load, env.cacheFs)
-        if loadOk and type(bundle) == "table" then
-          local prepareOk, prepareErr = pcall(presentation.prepare, presentation, bundle)
-          if not prepareOk then
-            return false, "Hall of Fame bundle failed: " .. tostring(prepareErr)
+        if not loadOk or type(bundle) ~= "table" then
+          return false, "Hall of Fame bundle failed: " .. tostring(bundle)
+        end
+        local prepareOk, prepareErr = pcall(presentation.prepare, presentation, bundle)
+        if not prepareOk then
+          return false, "Hall of Fame bundle failed: " .. tostring(prepareErr)
+        end
+        for _, scene in ipairs(bundle.credits.scenes) do
+          for _, layer in ipairs({ scene.lower, scene.upper }) do
+            if type(layer) ~= "table" or type(layer.path) ~= "string" then
+              return false, "Hall of Fame bundle failed: a credit scene names no image"
+            end
+            local existsOk, exists = pcall(function()
+              return env.cacheFs:exists(layer.path)
+            end)
+            if not existsOk or not exists then
+              return false, "Hall of Fame bundle failed: missing credit image " .. tostring(layer.path)
+            end
           end
+        end
+        local theEnd = bundle.credits.theEnd
+        if type(theEnd) ~= "table" or type(theEnd.path) ~= "string" then
+          return false, "Hall of Fame bundle failed: The End names no image"
+        end
+        local endOk, endExists = pcall(function()
+          return env.cacheFs:exists(theEnd.path)
+        end)
+        if not endOk or not endExists then
+          return false, "Hall of Fame bundle failed: missing The End image " .. tostring(theEnd.path)
         end
       end
     end

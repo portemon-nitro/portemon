@@ -134,6 +134,10 @@ local function fakePlayer(fieldX, fieldZ, facing)
     fieldX = fieldX,
     fieldZ = fieldZ,
     facing = facing,
+    surfaceId = 0,
+    committedSourceCellKey = nil,
+    committedSourceSurfaceId = nil,
+    worldY = 0,
     turned = nil,
     presentationState = function()
       return { locomotionActive = false }
@@ -370,6 +374,48 @@ function T.a_height_change_on_the_ray_stops_the_sight()
   local h = harness({ terrain = raised })
   Assert.isFalse(h.coordinator:tryEngage(), "a different height never sights the player")
   Assert.deepEqual(h.started, {})
+end
+
+-- The final ray step must prove the player's actual occupied surface, not a
+-- merely walkable endpoint at the player's X/Z. A fully walkable lower-level
+-- ray to the player's X/Z while the player stands above it on a separate
+-- traversable surface must not sight: the endpoint's stable surface identity
+-- differs from the committed player surface even though every step is
+-- reachable. The intermediate tiles are identical in both cases, so a test
+-- where the wrong-floor case is already blocked earlier cannot exercise this
+-- final predicate.
+function T.a_walkable_lower_ray_does_not_reach_a_player_above_it()
+  local stacked = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = -8,
+        minZ = -8,
+        maxX = 64,
+        maxZ = 64,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+      {
+        id = 1,
+        minX = -8,
+        minZ = 20,
+        maxX = 64,
+        maxZ = 22,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 4,
+        slopeClass = "flat",
+      },
+    },
+  })
+  local sameSurface = harness({ terrain = stacked })
+  Assert.isTrue(sameSurface.coordinator:tryEngage(), "the same-surface ray sights the player")
+  local above = harness({ terrain = stacked })
+  above.player.surfaceId = 1
+  above.player.worldY = 4
+  Assert.isFalse(above.coordinator:tryEngage(), "a walkable lower ray never reaches the player above it")
+  Assert.deepEqual(above.started, {})
 end
 
 -- Another standing object on an intermediate tile blocks the ray exactly like

@@ -262,19 +262,20 @@ local function newSightCursor(actor)
   return cursor
 end
 
--- The source's sight occlusion test (TrainerSight_IsPathBlocked): starting on
--- the tile after the trainer, every intermediate tile must be reachable and
--- unoccupied, and the player endpoint must be reachable too. The movement
--- owner resolves each step from the previous tile's committed height, so a
--- walkway one level above or below the trainer is occluded exactly like the
--- source's slope check. A surface the field cannot resolve right now is not
--- admissible; any other resolution failure propagates as its own attributed
--- error instead of being read as clear sight.
+-- The source sight occlusion test with the retail endpoint condition: every
+-- intermediate tile must be reachable and unoccupied, and the final reachable
+-- surface must be the player's actual occupied surface (not merely a walkable
+-- tile at the player's X/Z). The committed player surface/cell/height facts
+-- are carried at the engagement boundary; the last ray step proves player
+-- occupancy through the existing placement/collision semantics, including
+-- cross-cell cases. A walkable lower-level ray to the player's X/Z while the
+-- player stands above it on a separate surface does not sight.
 ---@param actorId string the sighting trainer's actor
 ---@param direction string
 ---@param distance integer
+---@param playerFacts table<string, unknown>? committed player occupancy, nil when unavailable
 ---@return boolean blocked
-function TrainerEncounterCoordinator:_sightBlocked(actorId, direction, distance)
+function TrainerEncounterCoordinator:_sightBlocked(actorId, direction, distance, playerFacts)
   if distance <= 0 then
     return true
   end
@@ -291,6 +292,7 @@ function TrainerEncounterCoordinator:_sightBlocked(actorId, direction, distance)
   end
   local getCollisionAt = actors.getCollisionAt --[[@as fun(self: table, id: integer, candidate: table): table?]]
   local cursor = newSightCursor(actor)
+  local finalEndpoint = nil
   for step = 1, distance do
     -- The movement owner raises ordinary placement rejections (a step beyond
     -- the reachable height, a tile outside coverage) as structured errors.
@@ -313,12 +315,53 @@ function TrainerEncounterCoordinator:_sightBlocked(actorId, direction, distance)
         fieldX = endpoint.fieldX,
         fieldZ = endpoint.fieldZ,
         surfaceId = endpoint.surfaceId,
+        cellKey = endpoint.cellKey,
+        sourceSurfaceId = endpoint.sourceSurfaceId,
       })
       if occupant ~= nil then
         return true
       end
+    else
+      finalEndpoint = endpoint
     end
     cursor.advance(endpoint)
+  end
+  if finalEndpoint == nil or playerFacts == nil then
+    return true
+  end
+  local playerCandidate = {
+    fieldX = playerFacts.fieldX,
+    fieldZ = playerFacts.fieldZ,
+    surfaceId = playerFacts.surfaceId,
+    cellKey = playerFacts.cellKey,
+    sourceSurfaceId = playerFacts.sourceSurfaceId,
+  }
+  local finalCandidate = {
+    fieldX = finalEndpoint.fieldX,
+    fieldZ = finalEndpoint.fieldZ,
+    surfaceId = finalEndpoint.surfaceId,
+    cellKey = finalEndpoint.cellKey,
+    sourceSurfaceId = finalEndpoint.sourceSurfaceId,
+  }
+  if playerCandidate.fieldX ~= finalCandidate.fieldX or playerCandidate.fieldZ ~= finalCandidate.fieldZ then
+    return true
+  end
+  -- Production players always carry their committed surface identity, and the
+  -- endpoint proof requires it. Headless fakes without any surface fact keep
+  -- the legacy X/Z-only admission so unit coverage without a physical map
+  -- still exercises the ray geometry.
+  local hasPlayerSurface = playerCandidate.surfaceId ~= nil
+    or playerCandidate.cellKey ~= nil
+    or playerCandidate.sourceSurfaceId ~= nil
+  local hasFinalSurface = finalCandidate.surfaceId ~= nil
+    or finalCandidate.cellKey ~= nil
+    or finalCandidate.sourceSurfaceId ~= nil
+  if hasPlayerSurface and hasFinalSurface then
+    if not FieldActorPlacement.samePhysicalCandidate(map, finalCandidate, playerCandidate) then
+      return true
+    end
+  elseif hasPlayerSurface ~= hasFinalSurface then
+    return true
   end
   return false
 end
@@ -342,20 +385,24 @@ function TrainerEncounterCoordinator:_trainerFacts()
   local getFacing = actors.getFacing --[[@as fun(self: table, id: string): string?]]
   for _, actor in ipairs(actorsOf(actors, mapId)) do
     local subject = trainerSubjectOf(actor)
-    local position = subject ~= nil and getPosition(actors, actor.actorId) or nil
-    if subject ~= nil and position ~= nil then
+    if subject ~= nil and (subject.sightType == 1 or subject.sightType == 2) then
       local trainerId = subject.trainerId --[[@as integer]]
-      facts[#facts + 1] = {
-        id = actor.actorId,
-        fieldX = position.fieldX,
-        fieldZ = position.fieldZ,
-        trainerId = trainerId,
-        partner = subject.partner,
-        sightType = subject.sightType,
-        direction = getFacing(actors, actor.actorId),
-        range = subject.sightRange,
-        defeated = world:isFlagSet(RuntimeValues.trainerFlagId(trainerId)),
-      }
+      if not world:isFlagSet(RuntimeValues.trainerFlagId(trainerId)) then
+        local position = getPosition(actors, actor.actorId)
+        if position ~= nil then
+          facts[#facts + 1] = {
+            id = actor.actorId,
+            fieldX = position.fieldX,
+            fieldZ = position.fieldZ,
+            trainerId = trainerId,
+            partner = subject.partner,
+            sightType = subject.sightType,
+            direction = getFacing(actors, actor.actorId),
+            range = subject.sightRange,
+            defeated = false,
+          }
+        end
+      end
     end
   end
   return facts
@@ -363,16 +410,18 @@ end
 
 -- The two resolvers the pure selection module asks for only once a trainer
 -- reaches the geometry: the catalog's double mark by native trainer identity,
--- and this owner's one sight occlusion probe.
+-- and this owner's one sight occlusion probe over the committed player
+-- surface facts carried at the engagement boundary.
+---@param playerFacts table<string, unknown>? committed player occupancy for the endpoint proof
 ---@return fun(trainerId: integer): boolean doubles
 ---@return fun(trainer: table<string, unknown>, direction: string, distance: integer): boolean sightBlocked
-function TrainerEncounterCoordinator:_sightResolvers()
+function TrainerEncounterCoordinator:_sightResolvers(playerFacts)
   local self_ = self
   local function doubles(trainerId)
     return HgssTrainerCatalog.isDouble(self_:_requireCatalog(), trainerId) == true
   end
   local function sightBlocked(trainer, direction, distance)
-    return self_:_sightBlocked(assert(trainer.id), direction, distance)
+    return self_:_sightBlocked(assert(trainer.id), direction, distance, playerFacts)
   end
   return doubles, sightBlocked
 end
@@ -430,7 +479,15 @@ function TrainerEncounterCoordinator:tryEngage()
     return false
   end
   local position = playerTile(player)
-  local doubles, sightBlocked = self:_sightResolvers()
+  local playerFacts = {
+    fieldX = position.fieldX,
+    fieldZ = position.fieldZ,
+    surfaceId = player.surfaceId,
+    cellKey = player.committedSourceCellKey,
+    sourceSurfaceId = player.committedSourceSurfaceId,
+    worldY = player.worldY,
+  }
+  local doubles, sightBlocked = self:_sightResolvers(playerFacts)
   local plan = TrainerBattleTrigger.check({
     player = { fieldX = position.fieldX, fieldZ = position.fieldZ, facing = player.facing },
     trainers = self:_trainerFacts(),

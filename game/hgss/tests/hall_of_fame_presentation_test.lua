@@ -57,8 +57,22 @@ local function showcaseStatus()
 end
 
 local function fakeResources(sink)
+  local images = {}
   return {
-    graphics = {},
+    graphics = {
+      draw = function(_, image, x, y)
+        sink.images = sink.images or {}
+        sink.images[#sink.images + 1] = { image = image, x = x, y = y }
+      end,
+      newImage = function(_, fileData)
+        local image = { fileData = fileData }
+        function image:setFilter()
+        end
+        function image:release()
+        end
+        return image
+      end,
+    },
     textRenderer = {
       drawText = function(_, text, x, y)
         sink.text[#sink.text + 1] = { text = text, x = x, y = y }
@@ -70,21 +84,54 @@ local function fakeResources(sink)
       end,
     },
     icons = {
-      dimensions = function(_, _)
-        return { width = 32, height = 32 }
+      handleFor = function(_, key)
+        return {
+          drawQuad = function(_, graphics, quad, x, y)
+            sink.icons = sink.icons or {}
+            sink.icons[#sink.icons + 1] = { key = key, x = x, y = y }
+          end,
+        }
+      end,
+      quadFor = function(_, key, frame)
+        return { key = key, frame = frame }
       end,
     },
     monCatalog = {
       iconSelection = function(_, mon)
         return "icon:" .. tostring(mon.species)
       end,
-    },
-    messageProvider = {
-      message = function(_, bank, id)
-        return "bank" .. tostring(bank) .. ":" .. tostring(id)
+      species = function(_, key)
+        return { name = tostring(key), nativeId = 157 }
+      end,
+      move = function(_, key)
+        return { nativeId = 33 }
       end,
     },
-    images = {},
+    messageProvider = {
+      acquireBank = function()
+        return {}
+      end,
+      get = function(_, bank, id)
+        return { bankId = bank, messageId = id, text = "msg" .. tostring(bank) .. ":" .. tostring(id), tokens = {} }
+      end,
+      format = function(_, template)
+        return { text = template.text, tokens = {} }
+      end,
+      releaseBank = function()
+      end,
+    },
+    images = images,
+    cacheFs = {
+      read = function(_, path)
+        return "png-bytes:" .. tostring(path)
+      end,
+      newFileData = function(_, bytes, path)
+        return { bytes = bytes, path = path }
+      end,
+      exists = function()
+        return true
+      end,
+    },
   }
 end
 
@@ -139,8 +186,8 @@ function T.tests.prepared_showcase_plan_draws_record_party_and_credit_layers()
   end
   local painted = table.concat(joined, "\n")
   Assert.isTrue(painted:find("7", 1, true) ~= nil, "the showcase paints the source record number")
-  Assert.isTrue(painted:find("TYPHLOSION", 1, true) ~= nil, "the showcase paints the recorded party species")
-  Assert.isTrue(painted:find("PIDGEOT", 1, true) ~= nil, "the showcase paints every recorded party member")
+  Assert.isTrue(painted:find("msg181:0", 1, true) ~= nil, "the showcase paints its source header from bank 181")
+  Assert.isTrue((sink.icons ~= nil and #sink.icons == 2), "the showcase draws the recorded party's own icons")
 end
 
 function T.tests.prepared_registration_draws_congratulations_party()
@@ -161,9 +208,10 @@ function T.tests.prepared_registration_draws_congratulations_party()
     joined[#joined + 1] = tostring(entry.text)
   end
   Assert.isTrue(
-    table.concat(joined, "\n"):find("TYPHLOSION", 1, true) ~= nil,
-    "the congratulations surface paints the registered party"
+    table.concat(joined, "\n"):find("msg237:", 1, true) ~= nil,
+    "the congratulations surface paints the localized species from bank 237"
   )
+  Assert.isTrue((sink.icons ~= nil and #sink.icons == 1), "the congratulations draws the party's own icon")
 end
 
 function T.tests.prepared_credits_draw_paints_current_page_lines()
@@ -176,9 +224,14 @@ function T.tests.prepared_credits_draw_paints_current_page_lines()
     joined[#joined + 1] = tostring(entry.text)
   end
   Assert.isTrue(
-    table.concat(joined, "\n"):find("bank440:3", 1, true) ~= nil,
-    "the roll paints the current page's source message line"
+    table.concat(joined, "\n"):find("msg440:", 1, true) ~= nil,
+    "the roll paints the current page's source message line from bank 440"
   )
+  Assert.isTrue(sink.images ~= nil and #sink.images >= 2, "the roll draws its source background layers")
+  for _, line in ipairs(sink.text) do
+    Assert.isNil(tostring(line.text):find("scene ", 1, true), "the roll never paints a diagnostic scene label")
+    Assert.isNil(tostring(line.text):find("bank", 1, true), "the roll never paints a bank identity stand-in")
+  end
 end
 
 function T.tests.save_status_draw_paints_the_reported_message()
@@ -199,8 +252,9 @@ function T.tests.the_end_draw_paints_without_party()
   local presentation = HallOfFamePresentation.new(bundle())
   local sink = { text = {}, windows = {} }
   presentation:draw(fakeResources(sink), { phase = "the_end" })
-  Assert.isTrue(#sink.text > 0, "The End paints its title surface")
-  Assert.equal(#sink.windows, 1, "The End paints one framed surface")
+  Assert.isTrue(#sink.text > 0, "The End paints its title surface from bank 440")
+  Assert.isTrue(sink.images ~= nil and #sink.images == 1, "The End draws its published source art")
+  Assert.equal(#sink.windows, 0, "The End draws its source art, not a generic window")
 end
 
 function T.tests.prepare_rejects_a_bundle_missing_a_section()

@@ -238,9 +238,14 @@ function GameClearState:step(input)
     -- The registration application shows the recorded party and returns after
     -- the player acknowledges it. A pending bundle gates both the reveal
     -- frames and the input; a headless composition has no frames to play,
-    -- so the acknowledgement alone advances the sequence.
+    -- so the acknowledgement alone advances the sequence. The source plays
+    -- its registration BGM (SEQ_GS_E_DENDOUIRI) over the reveal.
     if self:_presentationBlocked() then
       return "wait"
+    end
+    if self._timer == 0 and not self._registrationBgm then
+      self:_playMusic("SEQ_GS_E_DENDOUIRI")
+      self._registrationBgm = true
     end
     self._timer = self._timer + 1
     local presentation = self._presentation
@@ -276,8 +281,13 @@ function GameClearState:step(input)
   if phase == "credits" then
     -- A pending bundle holds the roll: the first clear's full timeline and
     -- a later clear's START/touch skip both need their prepared surfaces.
+    -- The source plays its credit BGM (SEQ_GS_ENDING, 0x3f8) under the roll.
     if self:_presentationBlocked() then
       return "wait"
+    end
+    if self._timer == 0 and not self._creditsBgm then
+      self:_playMusic("SEQ_GS_ENDING")
+      self._creditsBgm = true
     end
     -- The first clear never skips; a later clear ends on START or a touch.
     if self._previouslyCleared and (pressedStart(input) or touched(input)) then

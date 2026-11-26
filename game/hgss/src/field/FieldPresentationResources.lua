@@ -1353,6 +1353,9 @@ function FieldPresentationResources:pcApplicationResources(runtime)
     drawEasyChat = drawEasyChat,
     graphics = assert(love and love.graphics, "PC applications draw through the host graphics namespace"),
     mailViewGeometry = MailViewInterface.TEXT,
+    cacheFs = runtime.cacheFs,
+    versionId = runtime.versionId,
+    messageProvider = runtime.messageProvider,
     icons = assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"),
     itemIcons = assert(self.itemIconProvider, "Storage borrows the shared item icon provider"),
     storageRenderer = assert(self.storageRenderer, "Storage borrows its owned renderer"),
@@ -1406,6 +1409,7 @@ function FieldPresentationResources:drawEnding(runtime)
   if status.phase == "congratulations" and type(status.party) ~= "table" then
     status.party = self:_endingRegistrationParty(runtime)
   end
+  status.versionId = runtime.versionId
   presentation:draw({
     graphics = assert(love and love.graphics, "ending drawing requires its host graphics namespace"),
     textRenderer = assert(self.textRenderer, "ending drawing borrows the field text renderer"),
@@ -1414,6 +1418,7 @@ function FieldPresentationResources:drawEnding(runtime)
     monCatalog = runtime.monCatalog,
     messageProvider = runtime.messageProvider,
     images = self._imagePool,
+    cacheFs = runtime.cacheFs,
   }, status)
 end
 
