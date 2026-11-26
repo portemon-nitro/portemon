@@ -179,6 +179,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field presenters table<string, FieldPresentationApplicationPresenter>? the per-instance application presenter map
 ---@field _warmPartyRevision integer? last observed live party revision behind the idle selector memo
 ---@field _warmPortraitSelectors string[]? predicted non-egg portrait selectors in stable slot order
+---@field endingTradeKindIds table<string, integer>? in-game trade identities by record species
 ---@field _warmNext string? next idle owner to progress first, summary or pokedex
 ---@field _applicationWarmupFailure string? last idle staging diagnostic, never a demand failure
 local FieldPresentationResources = {}
@@ -1409,30 +1410,31 @@ function FieldPresentationResources:drawEnding(runtime)
   assert(type(status) == "table", "the active ending publishes its status")
   -- A pending required receipt paints nothing: the field world stays
   -- visible behind the held phase instead of drawing a partial surface.
-  if type(presentation.isDrawReady) == "function" then
+  -- The requirement comes from the one feature-owned mapping; the
+  -- presentation is required, so a missing mapping fails loudly.
+  do
     local phase = status.phase
-    local required
-    if phase == "credits" or phase == "credits_fade" then
-      required = { "credits" }
-    elseif
-      phase == "the_end"
-      or phase == "the_end_music_box"
-      or phase == "the_end_fade_in"
-      or phase == "the_end_fade_out"
-    then
-      required = { "credits" }
-    else
-      required = { "registration" }
-    end
+    local required =
+      assert(presentation.requiredSectionsForPhase, "the ending presentation owns its phase receipt")(phase)
     if not presentation:isDrawReady(required) then
       return
     end
   end
   status.saveMessage = runtime.saveStatus
   if status.phase == "congratulations" and type(status.party) ~= "table" then
-    status.party = self:_endingRegistrationParty(runtime)
+    status.party = self:endingRegistrationParty(runtime)
   end
   status.versionId = runtime.versionId
+  local playerData = runtime.playerData
+  if type(playerData) == "table" and type(playerData.profile) == "table" then
+    status.playerName = playerData.profile.name
+    -- Whole-party and cutscene drawing resolve trainer-conditional text
+    -- and the cutscene player/friend variants from the same profile.
+    if type(playerData.profile.trainerId) == "number" then
+      status.trainerId = playerData.profile.trainerId
+    end
+    status.playerGender = playerData.profile.gender == 1 and "female" or "male"
+  end
   presentation:draw({
     graphics = assert(love and love.graphics, "ending drawing requires its host graphics namespace"),
     textRenderer = assert(self.textRenderer, "ending drawing borrows the field text renderer"),
@@ -1450,7 +1452,7 @@ end
 -- only paints the surface the transaction is about to store.
 ---@param runtime FieldRuntime the live field runtime owning the party
 ---@return table<string, unknown>[] party
-function FieldPresentationResources:_endingRegistrationParty(runtime)
+function FieldPresentationResources:endingRegistrationParty(runtime)
   local party = {}
   local monService = runtime.monService
   if monService == nil or type(monService.partyCount) ~= "function" then
@@ -1479,19 +1481,82 @@ function FieldPresentationResources:_endingRegistrationParty(runtime)
         end
       end
       local otName
-      if type(mon.origin) == "table" and type(mon.origin.trainerName) == "string" then
-        otName = mon.origin.trainerName
+      local origin
+      if type(mon.origin) == "table" then
+        if type(mon.origin.trainerName) == "string" then
+          otName = mon.origin.trainerName
+        end
+        origin = {
+          trainerId = mon.origin.trainerId,
+          trainerName = mon.origin.trainerName,
+          game = mon.origin.game,
+        }
       end
       party[#party + 1] = {
         species = mon.species,
         level = level,
         form = mon.form,
+        personality = mon.personality,
         nickname = nickname or mon.species,
         otName = otName,
+        origin = origin,
+        met = mon.met,
+        egg = mon.egg,
+        fatefulEncounter = mon.fatefulEncounter == true,
+        tradeKind = self:endingTradeKind(mon, runtime),
       }
     end
   end
   return party
+end
+
+-- The in-game trade behind one recorded member, matched exactly like the
+-- trade service matches its loans (species, OT identity, personality).
+-- Discovered once from the generated trade records; a missing trade owner
+-- leaves every member on the ordinary link-trade branch.
+---@param mon table<string, unknown> recorded member
+---@param runtime FieldRuntime the live field runtime
+---@return string? "shuckie", "kenya", or nil
+function FieldPresentationResources:endingTradeKind(mon, runtime)
+  local npcTrade = runtime ~= nil and runtime.npcTrade or nil
+  if npcTrade == nil or type(npcTrade.tradeIdentity) ~= "function" then
+    return nil
+  end
+  if self.endingTradeKindIds == nil then
+    local found = {}
+    for tradeId = 0, 31 do
+      local ok, record = pcall(npcTrade.tradeIdentity, npcTrade, tradeId)
+      if not ok or type(record) ~= "table" then
+        break
+      end
+      if record.offeredSpecies == "SHUCKLE" then
+        found.shuckie = tradeId
+      elseif record.offeredSpecies == "SPEAROW" then
+        found.kenya = tradeId
+      end
+    end
+    self.endingTradeKindIds = found
+  end
+  local ids = self.endingTradeKindIds
+  if ids == nil then
+    return nil
+  end
+  if npcTrade == nil or type(npcTrade.isLoanMon) ~= "function" then
+    return nil
+  end
+  if ids.shuckie ~= nil then
+    local ok, isShuckie = pcall(npcTrade.isLoanMon, npcTrade, ids.shuckie, mon)
+    if ok and isShuckie then
+      return "shuckie"
+    end
+  end
+  if ids.kenya ~= nil then
+    local ok, isKenya = pcall(npcTrade.isLoanMon, npcTrade, ids.kenya, mon)
+    if ok and isKenya then
+      return "kenya"
+    end
+  end
+  return nil
 end
 
 ---@param status table<string, unknown> Kurt selector status carrying its resolved plan

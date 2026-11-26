@@ -174,6 +174,53 @@ function GameClearCoordinator.buildEntry(monService, date)
   return { date = { year = date.year, month = date.month, day = date.day }, party = party }
 end
 
+---@param mon table<string, unknown> live non-Egg party member
+---@param catalog table<string, unknown>|nil live mon catalog
+---@return table<string, unknown> resolved scene member
+function GameClearCoordinator.sceneMember(mon, catalog)
+  assert(type(mon) == "table" and type(mon.species) == "string", "a scene member names its species")
+  local form = math.floor(tonumber(mon.form) or 0)
+  local gender = "male"
+  local owLarge = false
+  local speciesId = nil
+  if catalog ~= nil then
+    local okSpecies, definition = pcall(function()
+      return catalog:species(mon.species)
+    end)
+    if okSpecies and type(definition) == "table" then
+      if type(definition.nativeId) == "number" then
+        speciesId = definition.nativeId
+      end
+      local okGender, derived = pcall(function()
+        local Personality = require("libs.mons.src.gen4.Personality")
+        return Personality.gender(definition.genderRatio, mon.personality)
+      end)
+      if okGender and derived == "female" then
+        gender = "female"
+      end
+    end
+    local okFollower, follower = pcall(function()
+      if type(catalog.followerSelection) == "function" then
+        return catalog:followerSelection(mon)
+      end
+      return nil
+    end)
+    if okFollower and type(follower) == "table" then
+      if gender == "female" and type(follower.female) == "table" then
+        follower = follower.female
+      end
+      owLarge = follower.size ~= nil and follower.size ~= 0
+    end
+  end
+  return {
+    species = mon.species,
+    crySpecies = speciesId,
+    form = form,
+    gender = gender,
+    owLarge = owLarge,
+  }
+end
+
 -- Begin the ending for one raw vsRed word. Exclusivity is the owner's own
 -- invariant: a second ending cannot start while one owns the field.
 ---@param vsRed integer
@@ -210,16 +257,26 @@ function GameClearCoordinator:begin(vsRed)
       end
     end
   end
-  -- The recorded non-Egg party size behind the registration reveal cadence,
-  -- read before any 163-owned write like env->gameCleared.
-  local partySize = 0
+  -- The recorded non-Egg party behind the registration reveal, snapshotted
+  -- by value before any 163-owned write like env->gameCleared. Gender and
+  -- follower size resolve through the live catalog so the scene and its
+  -- draw never guess them; the bundle picture tracks resolve lazily in the
+  -- state once the presentation is ready.
+  local sceneParty = {}
   local monService = options.monService
   if monService ~= nil and type(monService.partyCount) == "function" and type(monService.partyMon) == "function" then
+    local catalog = nil
+    if type(monService.catalog) == "function" then
+      local okCatalog, resolved = pcall(monService.catalog, monService)
+      if okCatalog and type(resolved) == "table" then
+        catalog = resolved
+      end
+    end
     local count = monService:partyCount()
     for slot0 = 0, count - 1 do
       local mon = monService:partyMon(slot0)
-      if type(mon) == "table" and mon.isEgg ~= true then
-        partySize = partySize + 1
+      if type(mon) == "table" and mon.isEgg ~= true and type(mon.species) == "string" then
+        sceneParty[#sceneParty + 1] = GameClearCoordinator.sceneMember(mon, catalog)
       end
     end
   end
@@ -230,7 +287,8 @@ function GameClearCoordinator:begin(vsRed)
     previouslyCleared = self._previouslyCleared,
     presentation = options.presentation,
     audio = options.audio,
-    partySize = partySize,
+    sceneParty = sceneParty,
+    headless = options.headless == true,
   })
   self._candidate = nil
   self._entry = nil

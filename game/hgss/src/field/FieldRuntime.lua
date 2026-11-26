@@ -2206,44 +2206,6 @@ function FieldRuntime:_composeGameClear()
   local function loadEndingPresentation()
     return self:_loadEndingPresentation()
   end
-  -- Admit the advancing phase's required text receipt outside the fixed tick
-  -- so headless compositions (which never run FieldState admission) still
-  -- hold their phase clock on real text instead of publishing cold. Images
-  -- and icons stay draw-only in FieldState; this admits text only and never
-  -- requires graphics.
-  local function admitEndingText()
-    local presentation = self.endingPresentation
-    if presentation == nil or not presentation:isReady() then
-      return nil
-    end
-    local coordinator = self.gameClear
-    local phase = coordinator ~= nil and coordinator:phase() or nil
-    local required
-    if phase == "credits" or phase == "credits_fade" then
-      required = { "credits" }
-    elseif
-      phase == "the_end"
-      or phase == "the_end_music_box"
-      or phase == "the_end_fade_in"
-      or phase == "the_end_fade_out"
-    then
-      required = { "credits" }
-    else
-      required = { "registration" }
-    end
-    if type(presentation.admitImages) == "function" then
-      -- Text-only admission for the transaction clock: no graphics, so
-      -- headless ticks admit the same text receipt without attempting GPU
-      -- uploads. Images admit in FieldState draw preparation and gate draw.
-      local textResources = {
-        messageProvider = self.messageProvider,
-      }
-      local _, failure = presentation:admitImages(textResources, required)
-      return failure
-    end
-    return nil
-  end
-  self._admitEndingText = admitEndingText
   self.gameClear = GameClearCoordinator.new({
     capture = captureEndingCandidate,
     publish = publishEndingRecord,
@@ -2264,6 +2226,10 @@ function FieldRuntime:_composeGameClear()
     -- The ending's own presentation admits the generated bundle on demand
     -- and retries until it is ready; congratulations and the roll hold
     -- their phases meanwhile instead of playing with no surfaces.
+    -- Headless compositions (no display owner) advance on bundle readiness
+    -- alone: the coordinator still validates the bundle, but the state
+    -- never waits for a GPU/icon receipt without a surface.
+    headless = not self.presentation,
     presentation = self.endingPresentation,
     requestAssets = requestEndingAssets,
     loadPresentation = loadEndingPresentation,
@@ -2918,16 +2884,11 @@ function FieldRuntime:update(dt)
         self.input:beginUi(self.session.tick + 1)
         self._endingUi = true
       end
-      -- Admit the advancing phase's text receipt before the coordinator
-      -- steps: headless ticks (which never run FieldState admission) hold
-      -- on real text instead of publishing cold. Draw-only images/icons
-      -- admit in FieldState and gate draw, not this clock.
-      if type(self._admitEndingText) == "function" then
-        local admitFailure = self:_admitEndingText()
-        if admitFailure ~= nil then
-          error("League ending text preparation failed: " .. tostring(admitFailure), 0)
-        end
-      end
+      -- The full phase receipt admits in FieldState before this fixed tick
+      -- (images, text, icons, party names); the state holds its clock on
+      -- the draw receipt so catch-up ticks cannot run ahead of the
+      -- surface. Headless compositions without a presentation owner keep
+      -- the explicit headless timeline via GameClearState.
       local endingStatus = self.gameClear:updateFixed({
         actionPressed = inputSnapshot.actionPressed == true,
         cancelPressed = inputSnapshot.cancelPressed == true,

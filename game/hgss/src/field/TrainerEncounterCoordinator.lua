@@ -505,11 +505,15 @@ function TrainerEncounterCoordinator:tryEngage()
       motion = nil,
     }
   end
-  self._slots = slots
+  self._slots = nil
   assert(type(sceneScript) == "string", "the produced trainer object carries its approach scene identity")
-  if
-    not self._startScene(sceneScript --[[@as string]])
-  then
+  self._slots = slots
+  local startedOk, started = pcall(self._startScene, sceneScript --[[@as string]])
+  if not startedOk then
+    self._slots = nil
+    error(started, 0)
+  end
+  if not started then
     self._slots = nil
     return false
   end

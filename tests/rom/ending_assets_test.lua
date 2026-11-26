@@ -28,11 +28,7 @@ local function testEndingBundle(romFs)
     lines = lines + #page.lines
   end
   Assert.equal(lines, 251, "the roll keeps every source credit line")
-  Assert.equal(
-    credits.sceneTransitionTimings[1],
-    890,
-    "the roll's first scene transition keeps its source frame"
-  )
+  Assert.equal(credits.sceneTransitionTimings[1], 890, "the roll's first scene transition keeps its source frame")
   Assert.equal(
     credits.sceneTransitionTimings[#credits.sceneTransitionTimings],
     4295,
@@ -40,32 +36,98 @@ local function testEndingBundle(romFs)
   )
   Assert.equal(bundle.sections.registration.messageBank, 180, "the registration text bank is the source one")
   Assert.equal(bundle.sections.showcase.messageBank, 181, "the showcase text bank is the source one")
-  Assert.equal(
+  -- Realized art lives in the consumed sections, not provenance: the
+  -- registration and credit choreography above consumes it, so the runtime
+  -- draw contract carries backgrounds, sprite frames, animation tracks and
+  -- the cutscene table. No physical archive pointer enters the draw
+  -- contract.
+  Assert.isNil(
     bundle.sections.registration.backgroundArchive,
-    "NARC_a_1_0_1",
-    "the registration names its source background archive"
+    "the registration draw contract carries no physical archive pointer"
   )
-  Assert.isTrue(
-    #bundle.sections.registration.backgroundMembers >= 9,
-    "the registration carries its source background members"
-  )
-  Assert.equal(
+  Assert.isNil(
     bundle.sections.showcase.backgroundArchive,
-    "NARC_a_0_9_7",
-    "the showcase names its source background archive"
+    "the showcase draw contract carries no physical archive pointer"
   )
+  Assert.isNil(
+    bundle.sections.credits.spriteResources,
+    "the credit draw contract carries no sprite pointers until a renderer consumes them"
+  )
+  local provenanceArt = assert(bundle.provenance.source.registrationArt, "provenance carries registration art")
   Assert.equal(
-    credits.screenFlipTimings[1],
-    890,
-    "the roll's first screen flip keeps its source frame"
+    provenanceArt.backgroundArchive,
+    "NARC_a_1_0_1",
+    "provenance names the registration source background archive"
   )
+  Assert.isTrue(#provenanceArt.backgroundMembers >= 9, "provenance carries the registration source background members")
+  Assert.equal(
+    bundle.provenance.source.showcaseArt.backgroundArchive,
+    "NARC_a_0_9_7",
+    "provenance names the showcase source background archive"
+  )
+  Assert.equal(credits.screenFlipTimings[1], 890, "the roll's first screen flip keeps its source frame")
   Assert.equal(
     credits.screenFlipTimings[#credits.screenFlipTimings],
     4295,
     "the roll's last screen flip keeps its source frame"
   )
-  Assert.equal(credits.spriteResources.charMember, 1, "the roll names its dancing sprite char member")
-  Assert.equal(credits.cutsceneResources.count, 16, "the roll names its source cutscene count")
+  Assert.equal(bundle.provenance.source.creditSprites.charMember, 1, "provenance names the dancing sprite char member")
+  Assert.equal(bundle.provenance.source.creditCutscenes.count, 16, "provenance names the source cutscene count")
+
+  -- Registration application art: individual and whole-party backgrounds,
+  -- overworld/follower and twinkle/player sprite frames, per-species
+  -- animation scripts with cry delays and pic heights, and the
+  -- spotlight/confetti color tables behind the whole-party effects.
+  local registration = assert(bundle.sections.registration, "the bundle publishes its registration section")
+  Assert.equal(#registration.bgIndiv, 3, "the individual scenes keep their three background layers")
+  Assert.equal(#registration.bgWhole, 2, "the whole-party scene keeps its two background layers")
+  for _, layer in ipairs(registration.bgIndiv) do
+    Assert.isTrue(type(layer.path) == "string", "an individual background layer names its image")
+  end
+  for _, layer in ipairs(registration.bgWhole) do
+    Assert.isTrue(type(layer.path) == "string", "a whole-party background layer names its image")
+  end
+  Assert.isTrue(#registration.owSmall[0].frames >= 1, "the small follower sprite keeps its frames")
+  Assert.isTrue(#registration.owLarge[0].frames >= 1, "the large follower sprite keeps its frames")
+  Assert.isTrue(#registration.twinkle[0].frames >= 1, "the twinkle sparkle keeps its frames")
+  Assert.isTrue(#registration.playerEthan[0].frames >= 1, "the male player picture keeps its frames")
+  Assert.isTrue(#registration.playerLyra[0].frames >= 1, "the female player picture keeps its frames")
+  local typhlosion = assert(
+    registration.monTracks.TYPHLOSION,
+    "the bundle carries per-species animation tracks"
+  )
+  Assert.isTrue(type(typhlosion.front.cryDelay) == "number", "a front track carries its cry delay")
+  Assert.isTrue(type(typhlosion.back.cryDelay) == "number", "a back track carries its cry delay")
+  Assert.equal(#typhlosion.front.steps, 10, "a front track carries its ten animation steps")
+  Assert.equal(#typhlosion.back.steps, 10, "a back track carries its ten animation steps")
+  Assert.isTrue(
+    type(typhlosion.heights[0]) == "table" and type(typhlosion.heights[0].male) == "number",
+    "a species track carries its picture heights"
+  )
+  Assert.equal(#registration.spotlightColors, 8, "the bundle carries the source spotlight colors")
+  Assert.equal(#registration.confettiColors, 8, "the bundle carries the source confetti colors")
+
+  -- Credit roll choreography: dancing/cloud sprite frames per sequence
+  -- and the sixteen cutscenes with their sprite parameters.
+  for sequence = 0, 7 do
+    local frames = assert(
+      credits.danceSequences[sequence] and credits.danceSequences[sequence].frames,
+      "dance sequence " .. sequence .. " keeps its frames"
+    )
+    Assert.isTrue(#frames >= 1, "dance sequence " .. sequence .. " is not empty")
+  end
+  Assert.equal(#credits.cutscenes, 16, "the roll keeps its sixteen cutscenes")
+  local cutsceneParams = 0
+  for _, cutscene in ipairs(credits.cutscenes) do
+    Assert.isTrue(type(cutscene.uniqueSprites) == "number", "a cutscene names its sprite count")
+    for _, param in ipairs(assert(cutscene.params, "a cutscene carries its sprite params")) do
+      if type(param.spriteIdx) == "number" then
+        cutsceneParams = cutsceneParams + 1
+        Assert.isTrue(type(param.activateTime) == "number", "a cutscene sprite names its cue")
+      end
+    end
+  end
+  Assert.isTrue(cutsceneParams > 16, "the cutscenes place more than one sprite overall")
 
   -- Every published image is a real PNG in the bundle's own asset root.
   local images = 0
@@ -77,7 +139,10 @@ local function testEndingBundle(romFs)
     )
     Assert.equal(assert(image.data):sub(1, #PNG_MAGIC), PNG_MAGIC, "a bundle image is a PNG")
   end
-  Assert.equal(images, 13, "the roll publishes its six scene pairs and The End")
+  Assert.isTrue(
+    images > 13,
+    "the bundle publishes the registration and choreography art beyond the scene pairs: " .. images
+  )
 
   -- Publish it and admit it back through the strict contract.
   local fs = FakeCache.new()

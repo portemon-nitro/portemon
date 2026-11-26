@@ -2,8 +2,9 @@
 -- bundle: the registration, showcase and credit-roll sections plus the
 -- published images the admitted phase actually draws. Both the field ending
 -- and the PC showcase consume this owner so pending/terminal/ready mean the
--- same thing on both routes and the showcase never demands unrelated credit
--- art.
+-- same thing on both routes. GPU upload is selective to the required
+-- sections, but bundle load still validates every section; a malformed
+-- credits section fails the showcase load as well.
 --
 -- Pending stays pending with no failure; a terminal demand failure, a
 -- malformed bundle, or a missing required image attributes its failure. Ready
@@ -12,9 +13,10 @@
 
 local EndingPresentationLoader = {}
 
--- Sections whose published images the showcase actually draws. The showcase
+-- Sections whose published images the showcase draws. The showcase
 -- record pages draw windows, text and party icons; credit scenes and The End
--- are unrelated to its surfaces.
+-- are not uploaded on the showcase path, though bundle validation still
+-- covers them.
 EndingPresentationLoader.SHOWCASE_SECTIONS = { "showcase" }
 EndingPresentationLoader.ENDING_SECTIONS = { "registration", "showcase", "credits" }
 

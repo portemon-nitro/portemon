@@ -25,9 +25,12 @@
 ---@field private _skipped boolean
 ---@field private _presentation table<string, unknown>|nil
 ---@field private _audio table<string, unknown>|nil
+---@field private _headless boolean
 ---@field private _vsRed integer
 ---@field private _previouslyCleared boolean
----@field private _partySize integer?
+---@field private _sceneParty table[] recorded members for the registration scene
+---@field private _scene table<string, unknown>? the active registration scene
+---@field private _choreography table<string, unknown>? the active credit-roll choreography
 local GameClearState = {}
 GameClearState.__index = GameClearState
 
@@ -80,29 +83,28 @@ local function pressedCancel(input)
   return input ~= nil and input.cancelPressed == true
 end
 
----@param options { vsRed: integer, previouslyCleared: boolean, presentation: table<string, unknown>|nil, audio: table<string, unknown>|nil, partySize: integer? }
+---@param options { vsRed: integer, previouslyCleared: boolean, presentation: table<string, unknown>|nil, audio: table<string, unknown>|nil, sceneParty: table<string, unknown>[]?, headless: boolean? }
 ---@return GameClearState
 function GameClearState.new(options)
   assert(type(options) == "table", "the game-clear state needs its source facts")
   local vsRed = options.vsRed
   assert(type(vsRed) == "number" and vsRed % 1 == 0 and vsRed >= 0, "the game-clear state needs its raw vsRed word")
-  local partySize = options.partySize
-  if partySize ~= nil then
-    assert(
-      type(partySize) == "number" and partySize % 1 == 0 and partySize >= 0,
-      "the game-clear state needs its recorded party size"
-    )
-  end
+  local sceneParty = options.sceneParty or {}
+  assert(type(sceneParty) == "table", "the game-clear state needs its recorded scene party")
   local state = setmetatable({
     _phase = vsRed == 0 and "congratulations" or "saving",
     _timer = 0,
+    _savingTimer = 0,
     _musicBoxTimer = 0,
     _skipped = false,
     _presentation = options.presentation,
     _audio = options.audio,
+    _headless = options.headless == true,
     _vsRed = vsRed,
     _previouslyCleared = options.previouslyCleared == true,
-    _partySize = partySize,
+    _sceneParty = sceneParty,
+    _scene = nil,
+    _choreography = nil,
   }, GameClearState)
   return state
 end
@@ -129,12 +131,16 @@ end
 
 -- Whether the composed presentation is still pending its actual required
 -- receipt for the advancing phase: sections present is not enough. A
--- composed owner without its admitted text receipt stays pending and holds
+-- composed owner without its full admitted receipt stays pending and holds
 -- phase clocks, presentation starts, and phase-owned input, while a
 -- composition without any presentation owner keeps the explicit headless
--- timeline. Draw-only icons/images gate draw, not this clock. A terminal
--- admission failure also blocks: the coordinator surfaces it instead of
--- advancing with cold art.
+-- timeline. Production advances on the full draw receipt (static +
+-- dynamic party/header/save text, images, icons), never on text alone, so
+-- the timeline cannot run ahead of its surface. A terminal admission
+-- failure also blocks: the coordinator surfaces it instead of advancing
+-- with cold art. Headless compositions (no display owner) advance on bundle
+-- readiness alone: the coordinator still validates the generated bundle
+-- every tick, but no GPU/icon receipt is required without a surface.
 ---@return boolean
 function GameClearState:_presentationBlocked()
   local presentation = self._presentation
@@ -144,22 +150,31 @@ function GameClearState:_presentationBlocked()
   if not presentation:isReady() then
     return true
   end
-  if type(presentation.isPhaseReady) == "function" then
-    return not presentation:isPhaseReady(self:_requiredSections())
+  if self._headless then
+    if type(presentation.admissionFailure) == "function" then
+      return presentation:admissionFailure() ~= nil
+    end
+    return false
   end
   if type(presentation.isDrawReady) == "function" then
     return not presentation:isDrawReady(self:_requiredSections())
   end
+  if type(presentation.isPhaseReady) == "function" then
+    return not presentation:isPhaseReady(self:_requiredSections())
+  end
   return false
 end
 
--- The generated sections the current phase actually draws. Registration and
--- saving print registration/save text; the roll and The End draw credited
--- art. Requiring only the drawn receipt lets a Red start hold on its save
--- text without demanding unrelated roll imagery, while a congratulations
--- holds on its own reveal.
+-- The generated sections the current phase actually draws, through the one
+-- feature-owned mapping. Saving draws only save text, never party icons.
+-- A composed presentation owns the mapping; the nil-owner table below
+-- serves only headless/test compositions with no presentation owner.
 ---@return string[]
 function GameClearState:_requiredSections()
+  local presentation = self._presentation
+  if presentation ~= nil and type(presentation.requiredSectionsForPhase) == "function" then
+    return presentation.requiredSectionsForPhase(self._phase)
+  end
   local phase = self._phase
   if phase == "congratulations" then
     return { "registration" }
@@ -174,6 +189,15 @@ function GameClearState:_requiredSections()
     or phase == "the_end_fade_out"
   then
     return { "credits" }
+  end
+  if
+    phase == "saving"
+    or phase == "save_failed"
+    or phase == "save_status"
+    or phase == "save_se"
+    or phase == "save_fade"
+  then
+    return { "save" }
   end
   return { "registration" }
 end
@@ -252,12 +276,94 @@ function GameClearState:_play(sound)
   end
 end
 
+-- One recorded cry through the shared cry boundary (pattern 0, like the
+-- source PlayCryDelayed): the registration unsilhouettes play the back
+-- and front cries with their baked delays. A composition without a cry
+-- owner stays silent instead of failing the mandatory sequence.
+---@param species integer
+---@param form integer
+function GameClearState:_playCry(species, form)
+  local audio = self._audio
+  if audio ~= nil and type(audio.playCry) == "function" then
+    audio:playCry(species, 0, form)
+  end
+end
+
 ---@param music string
 function GameClearState:_playMusic(music)
   local audio = self._audio
   if audio ~= nil and type(audio.playMusic) == "function" then
     audio:playMusic(music)
   end
+end
+
+-- The registration scene, built once the bundle is ready: the reveal
+-- cannot time cries or place pictures without its picture tracks. A
+-- composition without any presentation owner keeps the explicit headless
+-- timeline with trackless members instead of deadlocking.
+---@return RegistrationScene? scene
+function GameClearState:_registrationScene()
+  if self._scene ~= nil then
+    return self._scene
+  end
+  local presentation = self._presentation
+  local tracks = nil
+  if presentation ~= nil then
+    if not presentation:isReady() then
+      return nil
+    end
+    if type(presentation.monTracks) == "function" then
+      tracks = presentation:monTracks()
+    end
+  end
+  local RegistrationScene = require("game.hgss.src.ending.RegistrationScene")
+  self._scene = RegistrationScene.new({ party = self._sceneParty, tracks = tracks })
+  return self._scene
+end
+
+-- The credit-roll choreography, built once the bundle is ready: scene
+-- transitions, flips and cutscenes need their baked sequences and the
+-- noted player gender. A composition without any presentation owner keeps
+-- the explicit headless timeline instead of deadlocking.
+---@return table<string, unknown>? scene
+function GameClearState:_creditsScene()
+  if self._choreography ~= nil then
+    return self._choreography
+  end
+  local presentation = self._presentation
+  if presentation == nil or not presentation:isReady() then
+    return nil
+  end
+  local choreography = nil
+  if type(presentation.creditChoreography) == "function" then
+    choreography = presentation:creditChoreography()
+  end
+  local gender = nil
+  if type(presentation.cutsceneGender) == "function" then
+    gender = presentation:cutsceneGender()
+  end
+  if choreography == nil or gender == nil then
+    return nil
+  end
+  local transitions = choreography.transitionTimings
+  local flips = choreography.flipTimings
+  assert(type(transitions) == "table", "the bundle carries its scene transition timings")
+  assert(type(flips) == "table", "the bundle carries its screen flip timings")
+  local newChoreography = require("game.hgss.src.ending.CreditsScene").new
+  local built = newChoreography({
+    danceSequences = choreography.danceSequences,
+    danceSeqsByScene = choreography.danceSeqsByScene,
+    cloudSeq = choreography.cloudSeq,
+    cutscenes = choreography.cutscenes,
+    cutsceneSprites = choreography.cutsceneSprites,
+    gender = gender,
+    totalFrames = self:_creditFrames(),
+    transitionTimings = transitions,
+    flipTimings = flips,
+  })
+  assert(type(built) == "table", "the choreography builds its scene")
+  self._choreography = built
+  return self._choreography
 end
 
 -- One fixed tick. Answers "publish" when the transaction must attempt its one
@@ -272,11 +378,21 @@ function GameClearState:step(input)
   end
   if phase == "saving" then
     -- The transaction owns the write, but the source prints its saving
-    -- message and waits for completion before writing (game_clear.c). Never
-    -- publish while the presented save surface is cold; a Red start holds
-    -- here until its save text is admitted instead of publishing with no
-    -- surface.
+    -- message and waits for completion before writing (game_clear.c
+    -- states 2-4). Never publish while the presented save surface is cold;
+    -- a Red start holds here until its save receipt admits. The
+    -- congratulations acknowledgment lands here with wait (never publish
+    -- in the same tick), and this phase waits until a saving-message frame
+    -- has been drawn before the write: the first admitted tick only arms
+    -- the timer, the second tick publishes, so the message is visible for
+    -- at least one presented frame (headless simulates the same wait
+    -- without a surface). This establishes the source print-then-write
+    -- order instead of publishing synchronously with the phase entry.
     if self:_presentationBlocked() then
+      return "wait"
+    end
+    self._savingTimer = (self._savingTimer or 0) + 1
+    if self._savingTimer <= 1 then
       return "wait"
     end
     -- The coordinator owns the write; the state never advances past this
@@ -289,37 +405,44 @@ function GameClearState:step(input)
     end
     if pressedAction(input) or pressedCancel(input) or touched(input) then
       self._phase = "saving"
-      return "publish"
+      self._timer = 0
+      self._savingTimer = 0
+      return "wait"
     end
     return "wait"
   end
   if phase == "congratulations" then
-    -- The registration application shows the recorded party and returns only
-    -- after the player's terminal acknowledgment. The source's final
-    -- whole-party acknowledgment accepts A/B/touch (never START); a pending
-    -- receipt gates both the reveal frames and the input. A headless
-    -- composition has no frames to play, so the acknowledgement alone
-    -- advances the sequence. The source plays its registration BGM
-    -- (SEQ_GS_E_DENDOUIRI) over the reveal.
+    -- The registration application reveals every recorded member in party
+    -- order (back picture with cry, follower sprite, header, front picture
+    -- with cry, species/level, caught detail) before the whole-party photo
+    -- waits for the terminal A/B/touch acknowledgment. Input is ignored
+    -- everywhere else; a pending receipt holds the reveal's clock. A
+    -- headless composition advances the same scene without a surface. The
+    -- source plays its registration BGM (SEQ_GS_E_DENDOUIRI) over the reveal.
     if self:_presentationBlocked() then
       return "wait"
     end
-    if self._timer == 0 and not self._registrationBgm then
+    local scene = self:_registrationScene()
+    if scene == nil then
+      return "wait"
+    end
+    if not self._registrationBgm then
       self:_playMusic("SEQ_GS_E_DENDOUIRI")
       self._registrationBgm = true
     end
-    self._timer = self._timer + 1
-    local presentation = self._presentation
-    local frames = 0
-    if presentation ~= nil and type(presentation.congratulationsFrames) == "function" then
-      local resolved = presentation:congratulationsFrames(self._partySize)
-      if type(resolved) == "number" and resolved >= 0 then
-        frames = math.floor(resolved)
+    scene:step(input)
+    for _, cue in ipairs(scene:takeCues()) do
+      if cue.kind == "cry" then
+        self:_playCry(cue.species, cue.form)
+      elseif cue.kind == "sound" then
+        self:_play(cue.name)
       end
     end
-    if self._timer > frames and (pressedAction(input) or pressedCancel(input) or touched(input)) then
+    if scene:isDone() then
       self._phase = "saving"
-      return "publish"
+      self._timer = 0
+      self._savingTimer = 0
+      return "wait"
     end
     return "wait"
   end
@@ -328,7 +451,16 @@ function GameClearState:step(input)
       return "wait"
     end
     self._timer = self._timer + 1
-    if self._timer >= self:_presentationFrames("saveStatusFrames") then
+    -- The source waits for the save-result print to finish before the
+    -- save sound (game_clear.c state 5). The bundle owns the print
+    -- duration when composed, otherwise at least one admitted frame, and
+    -- the sound fires only after strictly more ticks than the print
+    -- duration so the result message paints for its full duration.
+    local printFrames = self:_presentationFrames("saveStatusFrames")
+    if printFrames < 1 then
+      printFrames = 1
+    end
+    if self._timer > printFrames then
       self._phase = "save_se"
       self._timer = 0
       self:_play("SEQ_SE_DP_SAVE")
@@ -362,8 +494,26 @@ function GameClearState:step(input)
       self:_beginFade("credits_fade", CREDITS_FADE_FRAMES)
       return "wait"
     end
-    self._timer = self._timer + 1
-    if self._timer >= self:_creditFrames() then
+    -- A headless composition owns no surface: it advances the explicit
+    -- roll clock on bundle readiness instead of stepping the choreography.
+    if self._headless then
+      self._timer = self._timer + 1
+      if self._timer >= self:_creditFrames() then
+        self:_beginFade("credits_fade", CREDITS_FADE_FRAMES)
+      end
+      return "wait"
+    end
+    -- The choreography owns the roll clock: transitions, flips and
+    -- cutscenes advance with the scene, and the roll ends on its source
+    -- frame count. A pending bundle holds the clock like the registration
+    -- holds its reveal.
+    local scene = self:_creditsScene()
+    if scene == nil then
+      return "wait"
+    end
+    scene:step(input)
+    self._timer = scene:status().timer
+    if scene:isDone() then
       self:_beginFade("credits_fade", CREDITS_FADE_FRAMES)
     end
     return "wait"
@@ -450,7 +600,7 @@ end
 -- The immutable per-tick snapshot the field draws.
 ---@return table<string, unknown>
 function GameClearState:status()
-  return {
+  local status = {
     phase = self._phase,
     timer = self._timer,
     musicBoxTimer = self._musicBoxTimer,
@@ -458,6 +608,13 @@ function GameClearState:status()
     previouslyCleared = self._previouslyCleared,
     vsRed = self._vsRed,
   }
+  if self._phase == "congratulations" and self._scene ~= nil then
+    status.registration = self._scene:status()
+  end
+  if self._phase == "credits" and self._choreography ~= nil then
+    status.credits = self._choreography:status()
+  end
+  return status
 end
 
 return GameClearState

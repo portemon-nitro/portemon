@@ -82,20 +82,30 @@ local function stageBundle(stage, bundle)
       Errors.raise(EndingCacheWriter.ERROR.READBACK_FAILED, "section is missing after stage", { path = path })
     end
   end
-  -- Every image the published credit roll draws must exist in the staged
-  -- bundle, so a bundle cannot publish a marker over a missing background.
-  local credits = assert(stage:loadLua(assert(index.sections.credits)))
-  local function requireImage(image)
-    local path = assert(image and image.path, "an ending credit image names its published path")
-    if not stage:exists(path, "file") then
-      Errors.raise(EndingCacheWriter.ERROR.READBACK_FAILED, "image is missing after stage", { path = path })
+  -- Every image every published phase draws must exist in the staged
+  -- bundle, so a bundle cannot publish a marker over missing art.
+  local function requireSectionImages(section, seen)
+    seen = seen or {}
+    if type(section) ~= "table" or seen[section] then
+      return
+    end
+    seen[section] = true
+    if type(section.path) == "string" then
+      local imagePath = assert(section.path, "an ending image names its published path")
+      if not stage:exists(imagePath, "file") then
+        Errors.raise(EndingCacheWriter.ERROR.READBACK_FAILED, "image is missing after stage", { path = imagePath })
+      end
+      return
+    end
+    for _, value in pairs(section) do
+      if type(value) == "table" then
+        requireSectionImages(value, seen)
+      end
     end
   end
-  for _, scene in ipairs(credits.scenes) do
-    requireImage(scene.lower)
-    requireImage(scene.upper)
+  for _, name in ipairs(SECTIONS) do
+    requireSectionImages(assert(stage:loadLua(assert(index.sections[name]))))
   end
-  requireImage(credits.theEnd)
   stage:write(EndingAssetCache.markerPath(), bundle.marker)
 end
 

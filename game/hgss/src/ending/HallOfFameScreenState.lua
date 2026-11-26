@@ -4,22 +4,82 @@
 -- closing can never observe a party that changed while it ran, and it owns only
 -- the selection: the history bucket and the live party stay with their owners.
 --
--- Source reading order: the newest recorded clear first, its whole party as one
--- team page, then one framed member page per party slot (record number, local
--- date, species, level, nickname and OT name). Cancel walks one page back and
--- closes from the first one.
+-- Source reading order: the newest recorded clear first, shown as one grid
+-- page (the whole party's icons plus the cursor-following selected detail
+-- with record number, local date, species, level, nickname and OT name).
+-- Cancel closes the application from any cursor.
+
+local HallOfFamePresentationMapper = require("game.hgss.src.ending.HallOfFamePresentation")
 
 ---@class HallOfFameScreenState
 ---@field private records table<string, unknown>[] newest first
 ---@field private total integer recorded-clear sequence
 ---@field private recordIndex0 integer zero-based recency of the open clear
----@field private monIndex0 integer|nil selected party slot, nil for the team page
+---@field private cursor0 integer selected grid cell 0..6
 ---@field private closed boolean
 ---@field private resultTaken boolean
 ---@field private disposed boolean
 ---@field private presentation HallOfFamePresentation
 local HallOfFameScreenState = {}
 HallOfFameScreenState.__index = HallOfFameScreenState
+
+-- Retail grid geometry (hall_of_fame_showcase_data.s): icon positions
+-- (0x38,0x48),(0x80,0x48),(0xC8,0x48) over (0x38,0x88),(0x80,0x88),
+-- (0xC8,0x88) plus exit (0xE0,0xB0). Dpad neighbor table decoded from
+-- gHallOfFameShowcaseGridDpadBoxes: {left,top,_,_,up,down,left,right}.
+-- The icon anchors themselves live once in the presentation owner
+-- (GRID_ANCHORS), which draws them and hangs its hit boxes off them, so
+-- navigation, drawing and touch share one geometry instead of each
+-- inventing it.
+local EXIT_INDEX = 6
+HallOfFameScreenState.EXIT_INDEX = EXIT_INDEX
+local GRID_NEIGHBORS = {
+  [0] = { up = 0, down = 3, left = 0, right = 1 },
+  [1] = { up = 1, down = 4, left = 0, right = 2 },
+  [2] = { up = 2, down = 5, left = 1, right = 2 },
+  [3] = { up = 0, down = 6, left = 3, right = 4 },
+  [4] = { up = 1, down = 6, left = 3, right = 5 },
+  [5] = { up = 2, down = 6, left = 4, right = 5 },
+  [6] = { up = 5, down = 6, left = 6, right = 6 },
+}
+HallOfFameScreenState.GRID_NEIGHBORS = GRID_NEIGHBORS
+
+---@param cursor number
+---@param direction string
+---@return number neighbor in 0..6
+function HallOfFameScreenState.neighbor(cursor, direction)
+  local clamped = math.floor(tonumber(cursor) or 0)
+  if clamped < 0 then
+    clamped = 0
+  elseif clamped > EXIT_INDEX then
+    clamped = EXIT_INDEX
+  end
+  local row = GRID_NEIGHBORS[clamped]
+  if row == nil then
+    return clamped
+  end
+  local target = row[direction]
+  if type(target) ~= "number" then
+    return clamped
+  end
+  return target
+end
+
+---@param cursor number 0..6
+---@return integer 0..6 clamped cursor
+local function clampCursor(cursor)
+  if type(cursor) ~= "number" then
+    return 0
+  end
+  local floored = math.floor(cursor)
+  if floored < 0 then
+    return 0
+  end
+  if floored > EXIT_INDEX then
+    return EXIT_INDEX
+  end
+  return floored
+end
 
 -- The showcase app reads history only, but its pages draw the prepared bundle
 -- and the recorded party's own icons: input stays gated until the
@@ -43,9 +103,11 @@ function HallOfFameScreenState.new(request, options)
     records = records,
     total = history:total(),
     recordIndex0 = 0,
-    -- The source grid cursor: 0..partySize-1 party slots plus partySize as
-    -- the exit target. Detail follows the cursor; there is no separate
-    -- team/member page mode. B cancels the application from any cursor.
+    -- The source grid: three columns by two rows (indices 0-5) plus the
+    -- exit target 6 (PARTY_SIZE). Detail follows the cursor; there is no
+    -- separate team/member page mode. B cancels the application from any
+    -- cursor. Empty slots stay navigable with hidden detail, matching
+    -- retail ShowMonDetail hiding when index >= numMons.
     cursor0 = 0,
     closed = false,
     resultTaken = false,
@@ -70,6 +132,10 @@ function HallOfFameScreenState:updateFixed(events)
   if self.closed then
     return
   end
+  -- Raw host pointer edges arrive untranslated through the PC host step;
+  -- route them through the one shared press-only mapper instead of
+  -- inventing a second translation. Only a new press selects; motion and
+  -- release never activate, so paging fires exactly once per press.
   for _, event in ipairs(events) do
     if event.type == "cancel" then
       -- Retail B cancels the application from any cursor, never walks back
@@ -77,142 +143,114 @@ function HallOfFameScreenState:updateFixed(events)
       self.closed = true
       return
     elseif event.type == "confirm" then
-      local record = self:_record()
-      if record ~= nil then
-        local exitIndex = #record.party
-        if self.cursor0 == exitIndex then
-          self.closed = true
-          return
-        end
-        -- Confirming a party slot keeps its detail selected: detail already
-        -- follows the cursor, so no page transition exists.
+      -- Retail A on the exit target exits; A on a party slot keeps its
+      -- detail selected (detail already follows the cursor).
+      if clampCursor(self.cursor0) == EXIT_INDEX then
+        self.closed = true
+        return
       end
     elseif event.type == "navigate" then
       self:_navigate(event.direction)
     elseif event.type == "touch" and type(event.target) == "number" then
       self:_touchSelect(event.target)
+    elseif event.type == "pointer_down" then
+      local mapped = HallOfFamePresentationMapper.mapPointerPress(event)
+      if type(mapped) == "table" and mapped.type == "touch" and type(mapped.target) == "number" then
+        self:_touchSelect(mapped.target)
+      end
     end
   end
-end
-
--- Grid position for a cursor index: party slots in two columns of three
--- (matching the icon layout), the exit target below the right column.
----@param cursor integer
----@param partySize integer
----@return integer col
----@return integer row
-local function cursorPos(cursor, partySize)
-  if cursor >= partySize then
-    return 1, 3
-  end
-  return math.floor(cursor / 3), cursor % 3
-end
-
--- Cursor index for a grid position, or nil when the cell holds no party mon.
----@param col integer
----@param row integer
----@param partySize integer
----@return integer? cursor
-local function cursorAt(col, row, partySize)
-  if row == 3 then
-    if col == 1 then
-      return partySize
-    end
-    return nil
-  end
-  local cursor = col * 3 + row
-  if cursor < partySize then
-    return cursor
-  end
-  return nil
 end
 
 ---@param direction string
 function HallOfFameScreenState:_navigate(direction)
-  local record = self:_record()
-  if record == nil then
+  if self:_record() == nil then
     return
   end
-  local partySize = #record.party
-  local col, row = cursorPos(self.cursor0, partySize)
+  self.cursor0 = clampCursor(self.cursor0)
+  local neighbors = GRID_NEIGHBORS[self.cursor0]
+  if neighbors == nil then
+    return
+  end
+  local target = nil
   if direction == "up" then
-    local target = cursorAt(col, row - 1, partySize)
-    if target ~= nil then
-      self.cursor0 = target
-    end
+    target = neighbors.up
+  elseif direction == "down" then
+    target = neighbors.down
+  elseif direction == "left" then
+    target = neighbors.left
+  elseif direction == "right" then
+    target = neighbors.right
+  else
     return
   end
-  if direction == "down" then
-    local target = cursorAt(col, row + 1, partySize)
-    if target ~= nil then
-      self.cursor0 = target
-    end
+  if target ~= nil and target ~= self.cursor0 then
+    self.cursor0 = target
     return
   end
-  -- Left/right at the grid boundaries page through recorded clears newest
-  -- first, refreshing both the icon set and the details. Otherwise they
-  -- move within the grid.
+  -- No grid movement: left at 0/3 pages to the newer record, right at
+  -- 2/5 pages to the older record (hall_of_fame_showcase.c HandleInput).
+  -- Any other held edge keeps the cursor.
   if direction == "left" then
-    if col == 1 then
-      local target = cursorAt(0, row, partySize)
-      if target ~= nil then
-        self.cursor0 = target
-        return
-      end
-    end
-    if self.recordIndex0 > 0 then
+    if (self.cursor0 == 0 or self.cursor0 == 3) and self.recordIndex0 > 0 then
       self.recordIndex0 = self.recordIndex0 - 1
       self:_clampCursor()
+      self:_invalidatePartyNames()
     end
     return
   end
   if direction == "right" then
-    if col == 0 then
-      local target = cursorAt(1, row, partySize)
-      if target ~= nil then
-        self.cursor0 = target
-        return
-      end
+    if (self.cursor0 == 2 or self.cursor0 == 5) and self.recordIndex0 < #self.records - 1 then
+      self.recordIndex0 = self.recordIndex0 + 1
+      self:_clampCursor()
+      self:_invalidatePartyNames()
     end
+    return
+  end
+end
+
+-- Keep the cursor on a valid grid cell after a record change: the cursor is
+-- always 0..6, so a record page never invents an invalid index. Empty slots
+-- stay navigable with hidden detail, matching retail.
+function HallOfFameScreenState:_clampCursor()
+  self.cursor0 = clampCursor(self.cursor0)
+end
+
+-- A record page swaps the showcased party: previously warmed species/move
+-- names no longer cover the open detail until the new party admits.
+function HallOfFameScreenState:_invalidatePartyNames()
+  local presentation = self.presentation
+  if presentation ~= nil and type(presentation.invalidateParty) == "function" then
+    presentation:invalidateParty()
+  end
+end
+
+---@param target integer touched grid index 0..6, 7 prev record, 8 next record
+function HallOfFameScreenState:_touchSelect(target)
+  if self:_record() == nil then
+    return
+  end
+  if target == 7 then
+    if self.recordIndex0 > 0 then
+      self.recordIndex0 = self.recordIndex0 - 1
+      self:_clampCursor()
+      self:_invalidatePartyNames()
+    end
+    return
+  end
+  if target == 8 then
     if self.recordIndex0 < #self.records - 1 then
       self.recordIndex0 = self.recordIndex0 + 1
       self:_clampCursor()
+      self:_invalidatePartyNames()
     end
     return
   end
-end
-
--- Keep the cursor on a valid cell after a record change: same grid position
--- when the new party fills it, otherwise the exit target or the last mon.
-function HallOfFameScreenState:_clampCursor()
-  local record = self:_record()
-  if record == nil then
-    self.cursor0 = 0
-    return
-  end
-  local partySize = #record.party
-  if self.cursor0 <= partySize then
-    -- A party slot that vanished clamps to the exit target.
-    if self.cursor0 < partySize then
-      return
-    end
-    return
-  end
-  self.cursor0 = partySize
-end
-
----@param target integer touched grid index, partySize for the exit target
-function HallOfFameScreenState:_touchSelect(target)
-  local record = self:_record()
-  if record == nil then
-    return
-  end
-  local partySize = #record.party
-  if type(target) ~= "number" or target < 0 or target > partySize then
+  if type(target) ~= "number" or target < 0 or target > EXIT_INDEX then
     return
   end
   self.cursor0 = math.floor(target)
-  if self.cursor0 == partySize then
+  if self.cursor0 == EXIT_INDEX then
     self.closed = true
   end
 end
@@ -282,8 +320,13 @@ end
 function HallOfFameScreenState:status()
   local record = self:_record()
   local partySize = record ~= nil and #record.party or 0
-  local cursor = math.min(self.cursor0, partySize)
-  local exitSelected = cursor == partySize
+  local cursor = clampCursor(self.cursor0)
+  local exitSelected = cursor == EXIT_INDEX
+  local emptySelected = (not exitSelected) and (cursor >= partySize)
+  local selectedMon = nil
+  if not exitSelected and not emptySelected then
+    selectedMon = cursor
+  end
   local view = {
     app = "hallOfFame",
     section = "showcase",
@@ -296,7 +339,7 @@ function HallOfFameScreenState:status()
     party = {},
     cursor = cursor,
     exitSelected = exitSelected,
-    selectedMon = exitSelected and nil or cursor,
+    selectedMon = selectedMon,
     -- The grid shows the icon set and the selected detail together: no
     -- separate team/member page exists.
     page = "grid",
@@ -304,7 +347,15 @@ function HallOfFameScreenState:status()
   if record ~= nil then
     for _, mon in ipairs(record.party) do
       -- Keep the recorded identity (personality/OT id) so the presenter
-      -- derives gender/shininess instead of dropping the branches.
+      -- derives gender/shininess instead of dropping the branches. Keep
+      -- moves so admission warms the selected detail's names.
+      local movesCopy = nil
+      if type(mon.moves) == "table" then
+        movesCopy = {}
+        for index = 1, 4 do
+          movesCopy[index] = mon.moves[index]
+        end
+      end
       view.party[#view.party + 1] = {
         species = mon.species,
         level = mon.level,
@@ -313,6 +364,7 @@ function HallOfFameScreenState:status()
         otId = mon.otId,
         nickname = mon.nickname,
         otName = mon.otName,
+        moves = movesCopy,
       }
     end
   end

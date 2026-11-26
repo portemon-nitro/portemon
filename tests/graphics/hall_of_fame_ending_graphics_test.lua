@@ -182,30 +182,49 @@ function T.congratulations_paints_the_registered_party(scope)
   -- The production coordinator begin is what script 163 invokes: the
   -- transaction, its readiness demand and the source timeline stay owned.
   runtime.gameClear:begin(0)
-  for _ = 1, 600 do
-    state:update(1 / 60)
-    local presentation = runtime.endingPresentation
-    if
-      runtime.gameClear:phase() == "congratulations"
-      and presentation ~= nil
-      and presentation:isReady()
-      and type(presentation.isDrawReady) == "function"
-      and presentation:isDrawReady({ "registration" })
-    then
-      break
+  -- The congratulations surface paints the registration scene, not the
+  -- receipt alone: each recorded member's species and caught detail only
+  -- print while its own reveal holds, so the test renders once per member
+  -- at that member's held detail instead of once at the group photo (whose
+  -- windows carry the player line, not member names).
+  ---@param monIndex integer 0-based revealed member
+  ---@return table registration scene snapshot at its held detail
+  local function awaitHeldDetail(monIndex)
+    for _ = 1, 9000 do
+      state:update(1 / 60)
+      local presentation = runtime.endingPresentation
+      if
+        runtime.gameClear:phase() == "congratulations"
+        and presentation ~= nil
+        and presentation:isReady()
+        and type(presentation.isDrawReady) == "function"
+        and presentation:isDrawReady({ "registration" })
+      then
+        local status = runtime.gameClear:status()
+        local scene = type(status) == "table" and status.registration or nil
+        if type(scene) == "table" and scene.monIndex == monIndex and scene.stage == "hold_caught" then
+          return scene
+        end
+      end
     end
+    error("the registration never held member " .. tostring(monIndex) .. "'s detail", 0)
   end
-  Assert.isTrue(runtime.endingPresentation:isReady(), "the presented ending admits its bundle")
+  awaitHeldDetail(0)
+  local firstReveal = render(scope, state)
+  Assert.isTrue(differ(before, firstReveal), "the registration surface covers the live field")
+  Assert.isTrue(paintedPixels(firstReveal) > 0, "the registration paints its framed surface")
   Assert.isTrue(
-    runtime.endingPresentation:isDrawReady({ "registration" }),
-    "the registration admits its text and party icons before it paints"
+    paintedText(recorded):find("TYPHLOSION", 1, true) ~= nil,
+    "the registration paints the recorded party"
   )
-  local registration = render(scope, state)
-  Assert.isTrue(differ(before, registration), "the registration surface covers the live field")
-  Assert.isTrue(paintedPixels(registration) > 0, "the registration paints its framed surface")
-  local painted = paintedText(recorded)
-  Assert.isTrue(painted:find("TYPHLOSION", 1, true) ~= nil, "the registration paints the recorded party")
-  Assert.isTrue(painted:find("PIDGEOT", 1, true) ~= nil, "the registration paints every recorded member")
+  awaitHeldDetail(1)
+  local secondReveal = render(scope, state)
+  Assert.isTrue(differ(before, secondReveal), "the second reveal covers the live field")
+  Assert.isTrue(paintedPixels(secondReveal) > 0, "the second reveal paints its framed surface")
+  Assert.isTrue(
+    paintedText(recorded):find("PIDGEOT", 1, true) ~= nil,
+    "the registration paints every recorded member"
+  )
   -- The prepared realization images behind the bundle are real GPU art, not
   -- placeholder paths: every published credit image uploads.
   local bundle = EndingAssetCache.load(GeneratedCacheFixture.reader(readyVersion()))
@@ -364,5 +383,20 @@ suite.metadata.derivedAssets = {
   "mon-layout:global",
   "mon-icon-page:20",
   "mon-icon-page:29",
+  -- The congratulations reveal paints the recorded party's front/back
+  -- portrait pages: TYPHLOSION's page 214 and PIDGEOT's page 148 carry
+  -- both facings as frames, so the draw receipt stays cache-only.
+  "mon-portrait-page:214",
+  "mon-portrait-page:148",
+  -- The reveal plays each recorded member's cry over the registration BGM:
+  -- TYPHLOSION (157) and PIDGEOT (18) banks join the already required
+  -- music banks so the scene's cues resolve to real audio.
+  "audio-bank:157",
+  "audio-bank:18",
+  -- Cries play through the shared SEQ_PV sequence (bank 1) and the
+  -- registration flash/kansei effects resolve to bank 774: without those
+  -- closures the scene's first cues fail on a fresh cache.
+  "audio-bank:1",
+  "audio-bank:774",
 }
 return suite

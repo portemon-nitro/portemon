@@ -1754,6 +1754,45 @@ function FieldSession:updateFixed(inputSnapshot)
     self:_advanceTick()
     return
   end
+  -- A pending child resume owns the tick before any new claim: it is an
+  -- already-active owner, not a fresh edge.
+  if self.childResumePending then
+    self:_advanceTick()
+    return
+  end
+  -- Retail ordinary-input order (field_control.c FieldInput_Process):
+  -- on-frame map scripts, then trainer sight, each consuming the tick on
+  -- success, before ordinary movement/input work. Both run after the
+  -- active-owner gates above and the settled idle boundary, and before
+  -- fresh lower-priority edges (registered item, Start menu, incoming
+  -- phone call) so a trainer standing in a sight ray cannot be postponed
+  -- by opening the menu on the same tick. World presentation has not
+  -- stepped yet, so a successful claim freezes actors/player/camera.
+  if self.initController and self.initController.startLifecycle then
+    local evaluateFrame = self.initController.evaluateFrame
+    -- On-frame map scripts start only on a settled player boundary. A script
+    -- that took the field mid-step would freeze the unfinished step (its
+    -- follower trail included) and could then never move a player that is
+    -- still physically walking. The next step boundary always offers the rule
+    -- again, because the committed tile ends its tick with an idle motion.
+    if evaluateFrame and self.player.motion == "idle" and evaluateFrame(self.initController, self.tick + 1) then
+      self:_advanceTick()
+      return
+    end
+  end
+  -- Retail sight admission, immediately after a refused on-frame script and
+  -- before lower-priority fresh input. A successful claim consumes the tick
+  -- so the same edge cannot also start movement. The claim itself owns the
+  -- modal/field-ready gates through admitsTrainerSight plus the
+  -- coordinator's script/battle guards; a held tick keeps its
+  -- higher-priority owner. Thrown invariant failures propagate: a missing
+  -- trainer encounter must never masquerade as a refused sighting.
+  if not inputSuppressedThisTick and self._trainerSightClaim ~= nil then
+    if self._trainerSightClaim() == true then
+      self:_advanceTick()
+      return
+    end
+  end
   if
     inputSnapshot.registeredSlotPressed
     and kurtBoxHost ~= nil
@@ -1817,38 +1856,6 @@ function FieldSession:updateFixed(inputSnapshot)
   actorContext.playerCandidates = self.player:collisionCandidatesInto(self._tickScratch.collisionCandidates)
   self.actors:step(self.tick + 1, actorContext)
   self:emitCommittedActorSteps()
-
-  if self.childResumePending then
-    self:_advanceTick()
-    return
-  end
-
-  if self.initController and self.initController.startLifecycle then
-    local evaluateFrame = self.initController.evaluateFrame
-    -- On-frame map scripts start only on a settled player boundary. A script
-    -- that took the field mid-step would freeze the unfinished step (its
-    -- follower trail included) and could then never move a player that is
-    -- still physically walking. The next step boundary always offers the rule
-    -- again, because the committed tile ends its tick with an idle motion.
-    if evaluateFrame and self.player.motion == "idle" and evaluateFrame(self.initController, self.tick + 1) then
-      self:_advanceTick()
-      return
-    end
-  end
-
-  -- Retail sight admission, immediately after a refused on-frame script and
-  -- before lower-priority ordinary-step/input work. A successful claim
-  -- consumes the tick so the same edge cannot also start movement. The
-  -- claim itself owns the modal/field-ready gates through admitsTrainerSight
-  -- plus the coordinator's script/battle guards; a held tick keeps its
-  -- higher-priority owner.
-  if not inputSuppressedThisTick and self._trainerSightClaim ~= nil then
-    local claimedOk, claimed = pcall(self._trainerSightClaim)
-    if claimedOk and claimed == true then
-      self:_advanceTick()
-      return
-    end
-  end
 
   if inputSuppressedThisTick then
     -- A held tick belongs to its higher-priority owner: an ambient ring

@@ -328,6 +328,106 @@ function FieldState.new(game, options)
 end
 
 function FieldState:update(dt)
+  -- The League ending admits its full phase receipt before the next fixed
+  -- tick can advance its clock: published images upload plus required
+  -- source text warms outside draw, the live party's species/move names
+  -- warm outside draw, and cold icons/names hold their phases exactly like
+  -- cold images/text. A missing published image or message fails instead
+  -- of drawing a partial roll. This runs before runtime fixed ticks so
+  -- catch-up ticks cannot run ahead of the surface.
+  if self.runtime.gameClear ~= nil and self.runtime.gameClear:isActive() then
+    local iconsReady, leagueFailure = self:_prepareLeagueEndingIcons()
+    if leagueFailure ~= nil then
+      error("League ending icon preparation failed: " .. tostring(leagueFailure), 0)
+    end
+    local leaguePresentation = self.runtime.endingPresentation
+    if leaguePresentation ~= nil and leaguePresentation:isReady() then
+      if iconsReady then
+        leaguePresentation:noteIconsAdmitted()
+      end
+      local phase = self.runtime.gameClear:phase()
+      -- The single authoritative receipt comes from the feature-owned
+      -- mapping; the presentation is a required collaborator, so a
+      -- missing mapping fails loudly instead of falling back.
+      local required =
+        assert(leaguePresentation.requiredSectionsForPhase, "the ending presentation owns its phase receipt")(phase)
+      local admitResources = {
+        cacheFs = self.runtime.cacheFs,
+        graphics = love ~= nil and love.graphics or nil,
+        messageProvider = self.runtime.messageProvider,
+        fontDef = self.runtime.fontDef,
+      }
+      local _, admitFailure = leaguePresentation:admitImages(admitResources, required)
+      if admitFailure ~= nil then
+        error("League ending image preparation failed: " .. tostring(admitFailure), 0)
+      end
+      -- Warm the save-result line with the live player name so the
+      -- saving/result surface performs no bank acquisition while drawing.
+      local playerName = nil
+      local playerData = self.runtime.playerData
+      if type(playerData) == "table" and type(playerData.profile) == "table" then
+        playerName = playerData.profile.name
+      end
+      if type(playerName) == "string" and playerName ~= "" then
+        local _, saveFailure = leaguePresentation:admitSaveResult(playerName, admitResources)
+        if saveFailure ~= nil then
+          error("League ending text preparation failed: " .. tostring(saveFailure), 0)
+        end
+      end
+      -- Warm the live registration party's localized names outside draw so
+      -- a steady congratulations phase performs no bank acquisition. The
+      -- snapshot is the same normalized record draw paints (derived level,
+      -- meeting records, trade kind), so warmed keys always cover drawn lines.
+      if self.runtime.monService ~= nil then
+        local party =
+          assert(self.presentationResources, "ending detail snapshot needs its resources"):endingRegistrationParty(
+            self.runtime
+          )
+        if #party > 0 then
+          local _, partyFailure = leaguePresentation:admitParty(party, {
+            monCatalog = self.runtime.monCatalog,
+            messageProvider = self.runtime.messageProvider,
+            fontDef = self.runtime.fontDef,
+          })
+          if partyFailure ~= nil then
+            error("League ending text preparation failed: " .. tostring(partyFailure), 0)
+          end
+        else
+          leaguePresentation:invalidateParty()
+          leaguePresentation:admitParty({}, {
+            monCatalog = self.runtime.monCatalog,
+            messageProvider = self.runtime.messageProvider,
+            fontDef = self.runtime.fontDef,
+          })
+        end
+        -- Warm the registration reveal's own art outside draw: the
+        -- recorded party's front/back portrait pages plus the memo
+        -- landmark maps and every member's header/detail lines with real
+        -- names, levels, dates and landmarks.
+        local portraitsOk, portraitsFailure = self:_prepareLeagueEndingPortraits(party)
+        if portraitsFailure ~= nil then
+          error("League ending portrait preparation failed: " .. tostring(portraitsFailure), 0)
+        end
+        if portraitsOk then
+          leaguePresentation:notePortraitsAdmitted()
+        end
+        local detailReady, detailFailure = self:_prepareLeagueEndingDetails(party)
+        if detailFailure ~= nil then
+          error("League ending text preparation failed: " .. tostring(detailFailure), 0)
+        end
+        if detailReady then
+          leaguePresentation:noteDetailsAdmitted()
+        end
+        -- The credits cutscenes resolve their player/friend sprites by
+        -- gender: note the live profile once so the choreography builds
+        -- with the same identity the whole-party windows draw.
+        local profile = type(self.runtime.playerData) == "table" and self.runtime.playerData.profile or nil
+        if type(profile) == "table" and type(leaguePresentation.noteCutsceneGender) == "function" then
+          leaguePresentation:noteCutsceneGender(profile.gender == 1 and "female" or "male")
+        end
+      end
+    end
+  end
   self.runtime:update(dt)
   -- Publish committed player-frame changes before presentation: the owned
   -- resources follow the live options with scalar defaults, so the next
@@ -360,70 +460,6 @@ function FieldState:update(dt)
     pcHost:setPresentationReady(handle, ready == true)
     if failure ~= nil then
       self.runtime:failPcApplicationPresentation("PC application presentation failed: " .. tostring(failure))
-    end
-  end
-  -- The League ending admits its actually required receipt before the next
-  -- draw and before the next fixed tick can advance its clock: published
-  -- images upload plus required source text warms outside draw, the live
-  -- party's species/move names warm outside draw, and cold icons hold their
-  -- registration/showcase phases exactly like cold images/text. A missing
-  -- published image or message fails instead of drawing a partial roll.
-  if self.runtime.gameClear ~= nil and self.runtime.gameClear:isActive() then
-    local iconsReady, leagueFailure = self:_prepareLeagueEndingIcons()
-    if leagueFailure ~= nil then
-      error("League ending icon preparation failed: " .. tostring(leagueFailure), 0)
-    end
-    local leaguePresentation = self.runtime.endingPresentation
-    if leaguePresentation ~= nil and leaguePresentation:isReady() then
-      if iconsReady then
-        leaguePresentation:noteIconsAdmitted()
-      end
-      local phase = self.runtime.gameClear:phase()
-      local required
-      if phase == "credits" or phase == "credits_fade" then
-        required = { "credits" }
-      elseif
-        phase == "the_end"
-        or phase == "the_end_music_box"
-        or phase == "the_end_fade_in"
-        or phase == "the_end_fade_out"
-      then
-        required = { "credits" }
-      else
-        required = { "registration" }
-      end
-      local admitResources = {
-        cacheFs = self.runtime.cacheFs,
-        graphics = love ~= nil and love.graphics or nil,
-        messageProvider = self.runtime.messageProvider,
-      }
-      local _, admitFailure = leaguePresentation:admitImages(admitResources, required)
-      if admitFailure ~= nil then
-        error("League ending image preparation failed: " .. tostring(admitFailure), 0)
-      end
-      -- Warm the live registration party's localized names outside draw so
-      -- a steady congratulations phase performs no bank acquisition.
-      if self.runtime.monService ~= nil then
-        local party = {}
-        local countOk, count = pcall(self.runtime.monService.partyCount, self.runtime.monService)
-        if countOk and type(count) == "number" then
-          for slot0 = 0, count - 1 do
-            local monOk, mon = pcall(self.runtime.monService.partyMon, self.runtime.monService, slot0)
-            if monOk and type(mon) == "table" and mon.isEgg ~= true then
-              party[#party + 1] = mon
-            end
-          end
-        end
-        if #party > 0 then
-          local _, partyFailure = leaguePresentation:admitParty(party, {
-            monCatalog = self.runtime.monCatalog,
-            messageProvider = self.runtime.messageProvider,
-          })
-          if partyFailure ~= nil then
-            error("League ending text preparation failed: " .. tostring(partyFailure), 0)
-          end
-        end
-      end
     end
   end
   -- The active Bag leaf and the script Mart sale advance their shared Bag
@@ -627,9 +663,10 @@ end
 
 -- Prepares the open Hall of Fame showcase through its own child: the
 -- generated ending bundle through the shared semantic demand, then the
--- recorded party's own icon pages plus its required localized names. The
--- showcase admits only its own section, so unrelated credit art never gates
--- the history viewer. A cold bundle stays pending with no failure and input
+-- recorded party's own icon pages plus its required localized names. GPU
+-- upload is selective to the showcase section, but the generated bundle
+-- load still validates all sections; a malformed credits section fails the
+-- showcase as well. A cold bundle stays pending with no failure and input
 -- stays gated; a malformed bundle attributes its failure.
 ---@return boolean ready
 ---@return string? failure
@@ -654,14 +691,15 @@ function FieldState:_prepareHallOfFameShowcase()
     return ready, failure
   end
   -- Admit the showcase's own required receipt outside draw: required text
-  -- plus the recorded party's icons and localized names. Credit art is
-  -- never admitted here.
+  -- plus the recorded party's icons and localized names. GPU upload is
+  -- selective to showcase art; bundle validation still covers all sections.
   local presentation = assert(child.presentation, "the showcase child carries its presentation")
   if type(presentation.admitImages) == "function" then
     local admitResources = {
       cacheFs = runtime.cacheFs,
       graphics = love ~= nil and love.graphics or nil,
       messageProvider = runtime.messageProvider,
+      fontDef = runtime.fontDef,
     }
     local admitted, admitFailure = presentation:admitImages(admitResources, { "showcase" })
     if admitFailure ~= nil then
@@ -670,18 +708,45 @@ function FieldState:_prepareHallOfFameShowcase()
     if not admitted then
       return false, nil
     end
+    -- Warm the record header with its real record number/date so the
+    -- showcase draws an expanded header with no bank acquisition.
+    if type(presentation.admitShowcaseHeader) == "function" then
+      local status = child:status()
+      local headerAdmitted, headerFailure = presentation:admitShowcaseHeader(
+        status ~= nil and status.recordNumber or 0,
+        status ~= nil and status.date or nil,
+        admitResources
+      )
+      if headerFailure ~= nil then
+        return false, headerFailure
+      end
+      if not headerAdmitted then
+        return false, nil
+      end
+    end
   end
   if type(presentation.admitParty) == "function" then
     local status = child:status()
     local party = status ~= nil and status.party or nil
     if type(party) == "table" and #party > 0 then
-      local _, partyFailure = presentation:admitParty(party, {
+      local partyAdmitted, partyFailure = presentation:admitParty(party, {
         monCatalog = runtime.monCatalog,
         messageProvider = runtime.messageProvider,
+        fontDef = runtime.fontDef,
       })
       if partyFailure ~= nil then
         return false, partyFailure
       end
+      if not partyAdmitted then
+        return false, nil
+      end
+    else
+      presentation:invalidateParty()
+      presentation:admitParty({}, {
+        monCatalog = runtime.monCatalog,
+        messageProvider = runtime.messageProvider,
+        fontDef = runtime.fontDef,
+      })
     end
     if type(presentation.noteIconsAdmitted) == "function" then
       presentation:noteIconsAdmitted()
@@ -733,6 +798,135 @@ function FieldState:_prepareLeagueEndingIcons()
     return true, nil
   end
   return false, failure
+end
+
+-- Admits the recorded party's own front/back portrait pages through the
+-- shared mon portrait provider. Selectors resolve through the same
+-- gender/shiny projection draw uses; a missing provider, catalog, or page
+-- stays pending while a malformed selector fails terminally.
+---@param party table<string, unknown>[] live non-Egg party members by value
+---@return boolean ready
+---@return string? failure
+function FieldState:_prepareLeagueEndingPortraits(party)
+  local runtime = assert(self.runtime, "League ending portrait preparation needs its runtime")
+  local leaguePresentation = assert(runtime.endingPresentation, "League ending needs its presentation")
+  local catalog = runtime.monCatalog
+  local monCatalog = catalog
+  if monCatalog == nil then
+    return false, nil
+  end
+  local HallOfFamePresentation = require("game.hgss.src.ending.HallOfFamePresentation")
+  local selectors = {}
+  local seen = {}
+  for _, mon in ipairs(party) do
+    if type(mon) == "table" and type(mon.species) == "string" then
+      local pair = HallOfFamePresentation.portraitSelectorsFor(mon, monCatalog)
+      if pair == nil then
+        return false, "League ending portrait needs its selector: " .. tostring(mon.species)
+      end
+      for _, selector in ipairs({ pair.front, pair.back }) do
+        if not seen[selector] then
+          seen[selector] = true
+          selectors[#selectors + 1] = selector
+        end
+      end
+    end
+  end
+  if #selectors == 0 then
+    return true, nil
+  end
+  local derived = runtime.derivedAssets
+  if derived ~= nil and type(derived.requestMonPortraitPage) == "function" then
+    local manifestOk, manifest =
+      pcall(runtime.cacheFs.loadLua, runtime.cacheFs, require("libs.assets.src.MonCache").portraitManifestPath())
+    if manifestOk and type(manifest) == "table" and type(manifest.entries) == "table" then
+      for _, selector in ipairs(selectors) do
+        local entry = manifest.entries[selector]
+        if type(entry) == "table" and type(entry.pageId) == "number" then
+          pcall(derived.requestMonPortraitPage, derived, entry.pageId, "required")
+        end
+      end
+    end
+  end
+  local admitted, failure = leaguePresentation:admitPortraits({
+    cacheFs = runtime.cacheFs,
+    graphics = love ~= nil and love.graphics or nil,
+    messageProvider = runtime.messageProvider,
+    fontDef = runtime.fontDef,
+    monCatalog = runtime.monCatalog,
+  }, party)
+  if failure ~= nil then
+    return false, failure
+  end
+  return admitted == true, nil
+end
+
+-- Warms the registration reveal's text outside draw: the memo landmark
+-- maps, every member's header/detail lines with real names and landmarks,
+-- and the whole-party windows with the live player identity and clock.
+---@param party table<string, unknown>[] live non-Egg party members by value
+---@return boolean ready
+---@return string? failure terminal admission failure, nil while pending
+function FieldState:_prepareLeagueEndingDetails(party)
+  local runtime = assert(self.runtime, "League ending detail preparation needs its runtime")
+  local leaguePresentation = assert(runtime.endingPresentation, "League ending needs its presentation")
+  local admitResources = {
+    cacheFs = runtime.cacheFs,
+    graphics = love ~= nil and love.graphics or nil,
+    messageProvider = runtime.messageProvider,
+    monCatalog = runtime.monCatalog,
+    fontDef = runtime.fontDef,
+  }
+  local _, memoFailure = leaguePresentation:admitMemoMaps(runtime.cacheFs)
+  if memoFailure ~= nil then
+    return false, memoFailure
+  end
+  local memo = leaguePresentation:memoMaps()
+  if memo == nil then
+    return false, nil
+  end
+  local playerName = ""
+  local trainerId = 0
+  local profile = type(runtime.playerData) == "table" and runtime.playerData.profile or nil
+  if type(profile) == "table" then
+    if type(profile.name) == "string" then
+      playerName = profile.name
+    end
+    if type(profile.trainerId) == "number" then
+      trainerId = profile.trainerId
+    end
+  end
+  for _, mon in ipairs(party) do
+    if type(mon) == "table" and type(mon.species) == "string" then
+      local admitted, failure = leaguePresentation:admitRegistrationDetail(mon, admitResources, memo, {
+        name = playerName,
+        trainerId = trainerId,
+      })
+      if failure ~= nil then
+        return false, failure
+      end
+      if not admitted then
+        return false, nil
+      end
+    end
+  end
+  local hours, minutes = 0, 0
+  if runtime.playTime ~= nil and type(runtime.playTime.seconds) == "function" then
+    local okSeconds, seconds = pcall(runtime.playTime.seconds, runtime.playTime)
+    if okSeconds and type(seconds) == "number" then
+      hours = math.floor(seconds / 3600)
+      minutes = math.floor(seconds % 3600 / 60)
+    end
+  end
+  local wholeAdmitted, wholeFailure =
+    leaguePresentation:admitWholePartyLines(playerName, trainerId, hours, minutes, admitResources)
+  if wholeFailure ~= nil then
+    return false, wholeFailure
+  end
+  if not wholeAdmitted then
+    return false, nil
+  end
+  return true, nil
 end
 
 -- Advances the open starter chooser's presentation preparation by one

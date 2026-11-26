@@ -93,7 +93,9 @@ local SOURCE_CREDITS_FRAMES = 4976
 -- The 0825 room scene's own source chain before the game-clear transaction:
 -- 31 walked tiles at the source 8 ticks each, its printed name message, the
 -- 514 machine effect and its fade. The clear is only reachable after it.
-local SCENE_AND_ENDING_TICKS = 1200
+-- The registration then reveals every recorded member (541 source ticks
+-- each) before the whole-party photo and the save the budget waits for.
+local SCENE_AND_ENDING_TICKS = 2600
 -- The skip window after the retried publication: the save-status sound (32)
 -- and fades (8+30+1+60) run on the source timeline before the host route,
 -- so the window covers the roll skip plus The End's own fade-out.
@@ -371,7 +373,7 @@ function T.tests.first_clear_publishes_one_record_and_continues_in_the_post_clea
   local ok, err = xpcall(function()
     advanceEnding(game, ENDING_SCRIPT, "its published save", function()
       return routes.count > 0
-    end, SOURCE_CREDITS_FRAMES + 900)
+    end, SOURCE_CREDITS_FRAMES + 2600)
 
     local faults = endingFaults(game)
     Assert.equal(#faults, 0, "the room's own scene completes every native operation: " .. table.concat(faults, ","))
@@ -512,7 +514,7 @@ function T.tests.failed_final_save_keeps_disk_state_and_retries_the_same_candida
     game:pressAction()
     advanceEnding(game, ENDING_SCRIPT, "the retried publication", function()
       return routes.count > 0
-    end, SOURCE_CREDITS_FRAMES + 900)
+    end, SOURCE_CREDITS_FRAMES + 2600)
 
     Assert.equal(routes.count, 1, "the retried ending publishes once and hands the host its route")
     local retriedFaults = endingFaults(game)
@@ -670,7 +672,7 @@ function T.tests.post_league_ending_recreates_only_the_defeated_roamers()
     game:setWorldState({ variable = VAR_HOF_FRAME_ENTRY, value = 0 })
     advanceEnding(game, ENDING_SCRIPT, "its published save", function()
       return routes.count > 0
-    end, SOURCE_CREDITS_FRAMES + 900)
+    end, SOURCE_CREDITS_FRAMES + 2600)
 
     local faults = endingFaults(game)
     Assert.equal(#faults, 0, "the room's own scene completes every native operation: " .. table.concat(faults, ","))

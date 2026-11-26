@@ -6553,7 +6553,6 @@ function T.standing_grass_emits_its_overlay_once_map_entry_completes()
   Assert.equal(#emitted, 1, "idle ticks never re-emit the standing overlay")
 end
 
-
 -- The gym mechanism is the one owner asked about a completed step before the
 -- coordinate event, warp and ordinary-step owners run: a claimed step finishes
 -- the tick without ever being published as an ordinary step.
@@ -6671,6 +6670,53 @@ function T.trainer_sight_yields_to_eligible_on_frame_script()
   session2:updateFixed({})
   Assert.equal(session2.tick, tickBefore2 + 1, "sight consumes its eligible tick")
   Assert.equal(sightCalls2, 1, "sight claims the tick the frame script refused")
+end
+
+-- Retail ordinary-input priority: trainer sight beats fresh lower-priority
+-- edges (Start menu, registered item, incoming call) on the same tick.
+-- Sight runs after active-owner gates and the settled boundary but before
+-- fresh arbitration, so a trainer in a sight ray cannot be postponed by
+-- opening the menu. Thrown sight claims propagate instead of masquerading
+-- as a refused sighting.
+function T.trainer_sight_beats_fresh_menu_edge()
+  local opened = {}
+  local host = applicationHostFake()
+  function host:requestOpen(tick)
+    opened[#opened + 1] = tick
+    return true
+  end
+  local input = {
+    snapshot = function()
+      return { menuPressed = true }
+    end,
+    uiSnapshot = function()
+      return {}
+    end,
+    clearEdges = function() end,
+  }
+  local session = FieldSession.new(baseOptions({ applicationHost = host, input = input }))
+  local sightCalls = 0
+  session:setTrainerSightClaim(function()
+    sightCalls = sightCalls + 1
+    return true
+  end)
+  local tickBefore = session.tick
+  session:updateFixed({})
+  Assert.equal(session.tick, tickBefore + 1, "the winning claim consumes the tick")
+  Assert.equal(sightCalls, 1, "sight runs")
+  Assert.equal(#opened, 0, "the fresh menu edge never opens when sight is eligible")
+end
+
+function T.trainer_sight_throw_propagates_without_partial_claim()
+  local session = FieldSession.new(baseOptions({}))
+  session:setTrainerSightClaim(function()
+    error("sight boom", 0)
+  end)
+  local ok, err = pcall(function()
+    session:updateFixed({})
+  end)
+  Assert.isFalse(ok, "a thrown sight claim is visible")
+  Assert.isTrue(tostring(err):find("sight boom", 1, true) ~= nil, "the invariant failure propagates")
 end
 
 return { tests = T }
