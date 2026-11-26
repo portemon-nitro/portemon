@@ -36,6 +36,11 @@ local ASSET_RUNTIME_IDLE_BYTES = 64 * 1024 * 1024
 
 -- App owns the outer host clear only while the boot overlay covers it.
 local BOOT_BACKGROUND_COLOR = { 1, 1, 1, 1 }
+-- Visible-paint dwell bounds for the boot overlay: automatic admission waits
+-- out the minimum, while an explicit button/pointer skip still retires it at
+-- once and the hard cap still guarantees progress.
+local BOOT_MIN_DURATION = 3
+local BOOT_MAX_DURATION = 5
 
 ---@class App
 ---@field opts AppOptions
@@ -292,6 +297,25 @@ function App._releaseIconRecovery()
   end
 end
 
+-- Quit-time icon teardown: signal a still-running recovery without joining
+-- it. Process exit kills the worker; a finished PNG is still released.
+function App._abandonIconRecovery()
+  local job = App._iconRecovery
+  App._iconRecovery = nil
+  if job ~= nil then
+    if type(job.abandon) == "function" then
+      job:abandon()
+    else
+      job:dispose()
+    end
+  end
+  local pending = App._pendingIconData
+  App._pendingIconData = nil
+  if pending ~= nil then
+    pending.png:release()
+  end
+end
+
 -- Cancellation is an App effect, never a leaf status guess. A committed
 -- worker remains owned until its terminal result; an outstanding source
 -- barrier likewise survives the canceled view.
@@ -356,6 +380,36 @@ function App._retireSelection()
   App._libraryMetadata = nil
 end
 
+-- Quit-time selection teardown: same ownership handoff as retirement, but
+-- preparation workers are only signalled, never joined. Process exit kills
+-- any in-flight decode with the process.
+function App._abandonSelection()
+  App.setState(nil)
+  App._cacheLoading = false
+  App._swallowedPointers = {}
+  App.pairIndex = nil
+  App.splRandomState = nil
+  App._releaseStartupAudio()
+  local locationWarmup = App._saveLocationWarmup
+  App._saveLocationWarmup = nil
+  if locationWarmup ~= nil then
+    locationWarmup.preparation:dispose()
+  end
+  local warmup = App._startupWarmup
+  App._startupWarmup = nil
+  if warmup ~= nil then
+    warmup.preparation:dispose()
+  end
+  App._abandonAssetRuntime()
+  local provisioner = App.provisioner
+  App.provisioner = nil
+  if provisioner then
+    provisioner:dispose()
+  end
+  App._selectedEntryLocation = nil
+  App._libraryMetadata = nil
+end
+
 -- The selected epoch's one decoded CPU runtime. It exists only while the
 -- controller has installed a reader for the live epoch: the shared queue is
 -- released (draining and joining any started worker) before the decoded kernel
@@ -373,6 +427,30 @@ function App._releaseAssetRuntime()
   record.preparationQueue:release()
   record.decoded:clear()
   record.packages:close()
+  App._assetRuntime = nil
+end
+
+-- Quit-time runtime teardown: ask preparation workers to stop without
+-- joining an in-flight decode. Process exit reclaims the rest.
+function App._abandonAssetRuntime()
+  local record = App._assetRuntime
+  if record == nil then
+    return
+  end
+  local queue = record.preparationQueue
+  if queue ~= nil then
+    if type(queue.abandon) == "function" then
+      queue:abandon()
+    else
+      queue:release()
+    end
+  end
+  if record.decoded ~= nil and type(record.decoded.clear) == "function" then
+    record.decoded:clear()
+  end
+  if record.packages ~= nil and type(record.packages.close) == "function" then
+    record.packages:close()
+  end
   App._assetRuntime = nil
 end
 
@@ -1519,6 +1597,9 @@ function App._admitOpening(epoch, versionId)
   if App._bootIntro.foreground ~= true then
     return false
   end
+  if App._bootIntro.elapsed + 1e-9 < BOOT_MIN_DURATION then
+    return false
+  end
   App._finishBootIntro(true)
   return true
 end
@@ -2061,7 +2142,7 @@ function App.update(dt)
   then
     App._finishBootIntro(false)
   end
-  if App._bootIntro ~= nil and App._bootIntro.elapsed + 1e-9 >= 5 then
+  if App._bootIntro ~= nil and App._bootIntro.elapsed + 1e-9 >= BOOT_MAX_DURATION then
     App._finishBootIntro(false)
     if App.state == nil then
       App._showGameSelection(App._bootCandidate and App._bootCandidate.versionId or nil)
@@ -2601,18 +2682,23 @@ function App.quit()
     App._cancelImport()
   end
   App._finishBootIntro(false)
-  App._releaseIconRecovery()
+  App._abandonIconRecovery()
   App.setState(nil)
-  App._retireSelection()
-  -- Process shutdown alone joins the controller thread; selection
-  -- switching only retires epochs while actual old work stays counted
-  -- below the controller.
+  App._abandonSelection()
+  -- Quit never joins background work: the controller, compiler, snapshot,
+  -- icon, and preparation threads are only signalled and die with the
+  -- process. A partial snapshot stage is ignored on the next boot, so this
+  -- is persistence-safe and turns a multi-second close into an instant one.
   local service = App.service
   App.service = nil
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
   if service then
-    service:shutdown()
+    if type(service.abandon) == "function" then
+      service:abandon()
+    else
+      service:shutdown()
+    end
   end
   App._releaseLauncherResources()
   App._safeRect = nil

@@ -47,6 +47,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field title HgssTitleScene?
 ---@field stagedMenu table<string, unknown>?
 ---@field skipRequested boolean
+---@field movieSkipRequested boolean true once an eligible movie skip arrives before the title is realized
 ---@field pendingLegendaryCry boolean
 ---@field fadeStarted boolean
 ---@field titleElapsed integer
@@ -214,6 +215,7 @@ function StartupTitleState.new(options)
     title = nil,
     stagedMenu = nil,
     skipRequested = false,
+    movieSkipRequested = false,
     pendingLegendaryCry = false,
     fadeStarted = false,
     titleElapsed = 0,
@@ -279,6 +281,14 @@ function StartupTitleState:_startRequests()
     return
   end
   self.requested = true
+  -- The later loading stage's walking pair is decorative but visible from
+  -- its first frame: enroll its small shared catalog ahead of the heavy
+  -- scene compiles, so the worker starts it while the loader still owns
+  -- the screen. Later entry states re-affirm and adopt; this stays
+  -- fire-and-forget and never gates the title journey.
+  if type(self.derivedAssets.requestStartupWalker) == "function" then
+    pcall(self.derivedAssets.requestStartupWalker, "near")
+  end
   -- Scene one leads the closure. The remaining scenes start near and are
   -- promoted together once scene one is ready; all five still gate adoption.
   local ready, failure = self:_requestOpeningScene(1, "required")
@@ -427,7 +437,16 @@ function StartupTitleState:_maybeEnterMovie()
   end
   local movie = assert(self.movie)
   if movie:isFinished() then
-    self:_finishMovie()
+    if self.title ~= nil then
+      self:_finishMovie()
+      return
+    end
+    -- An already-completed movie still enters its phase and holds its
+    -- final frame while the title builds: the loader never appears
+    -- between the movie and the title, even for a zero-duration movie.
+    self.phase = "movie"
+    self.movieLeadIn = 0
+    self.movieVideoStarted = true
     return
   end
   self.phase = "movie"
@@ -484,15 +503,17 @@ function StartupTitleState:_finishMovie()
   if movie == nil then
     return
   end
-  self.movie = nil
-  self.movieCompleted = true
-  movie:dispose()
-  if self.title ~= nil then
-    self:_presentTitle()
+  if self.title == nil then
+    -- The title is not yet realized: hold the movie frame and never show
+    -- a loader between the movie and the title. The natural finish (or a
+    -- latched skip) is revisited once the title is adopted.
     return
   end
-  self.phase = "loading"
-  self:_pollTitleBuild()
+  self.movie = nil
+  self.movieCompleted = true
+  self.movieSkipRequested = false
+  movie:dispose()
+  self:_presentTitle()
 end
 
 -- Begins the staged title build once the validated title milestone is ready.
@@ -573,6 +594,14 @@ function StartupTitleState:_adoptTitle()
   -- presented by the movie handoff; otherwise it presents right away.
   if self.movieCompleted then
     self:_presentTitle()
+  elseif self.phase == "movie" and self.movie ~= nil then
+    -- The movie already wants out (its natural end or a latched skip while
+    -- the title was still building): drop straight into the title without
+    -- ever showing the loader between them.
+    local finished = self.movie:isFinished()
+    if self.movieSkipRequested or finished then
+      self:_finishMovie()
+    end
   end
 end
 
@@ -761,6 +790,7 @@ function StartupTitleState:_reenterMovie()
   self.title = nil
   self.titleObserved = false
   self.movieCompleted = false
+  self.movieSkipRequested = false
   self.titleElapsed = 0
   if title ~= nil then
     title:dispose()
@@ -816,11 +846,38 @@ function StartupTitleState:_tick()
     end
     local movie = self.movie
     if movie == nil then
-      self.phase = "loading"
+      if self.title ~= nil then
+        self:_presentTitle()
+      else
+        self.phase = "loading"
+      end
       return
     end
+    -- A latched skip drops straight into the title once it is realized,
+    -- without waiting for another press. An ineligible gate keeps playing
+    -- with the intent still latched.
+    if self.movieSkipRequested and self.title ~= nil then
+      if movie:isFinished() then
+        self:_finishMovie()
+        return
+      end
+      local skipOk, skipped = pcall(movie.requestSkip, movie)
+      if not skipOk then
+        self.sceneError = skipped
+        self.phase = "error"
+        self.movie = nil
+        pcall(movie.dispose, movie)
+        return
+      end
+      if skipped then
+        self:_finishMovie()
+        return
+      end
+    end
     -- A finished movie never needs its lead-in: hand off at once instead
-    -- of holding black behind an already-completed session.
+    -- of holding black behind an already-completed session. While the
+    -- title is still building the finished frame is held and the loader
+    -- never appears between the movie and the title.
     if movie:isFinished() then
       self:_finishMovie()
       return
@@ -1092,6 +1149,20 @@ end
 
 function StartupTitleState:_requestMovieSkip()
   if self.phase ~= "movie" or self.movie == nil then
+    return
+  end
+  -- Only an eligible skip latches intent: an ineligible press is ignored
+  -- exactly as before and never becomes a title skip.
+  if type(self.movie.skipAllowed) == "function" then
+    local ok, allowed = pcall(self.movie.skipAllowed, self.movie)
+    if not ok or allowed ~= true then
+      return
+    end
+  end
+  if self.title == nil then
+    -- The title is not ready yet: record the intent and keep playing the
+    -- movie until the handoff can drop straight into the title screen.
+    self.movieSkipRequested = true
     return
   end
   if self.movie:requestSkip() then

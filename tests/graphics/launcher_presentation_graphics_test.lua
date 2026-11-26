@@ -14,7 +14,7 @@ local T = {}
 
 local BOOT_LOGO_WIDTH, BOOT_LOGO_HEIGHT = 451, 115
 local BOOT_LOGO_INK_WIDTH, BOOT_LOGO_INK_HEIGHT = 433, 107
-local BOOT_LOGO_LOGICAL_WIDTH = 151
+local BOOT_LOGO_LOGICAL_WIDTH = 301
 
 local function context(width, height, ratio, safeRect)
   safeRect = safeRect or { x = 0, y = 0, width = width, height = height }
@@ -619,13 +619,106 @@ function T.background_major_grid_uses_48_pixel_square_boundaries(scope)
     end
   end
   for x = 0, width - 1, 48 do
-    Assert.isTrue(sameColor(samplePixel(pixels, x, 1), major), "x=" .. x .. " is a major vertical boundary")
+    Assert.isTrue(sameColor(samplePixel(pixels, x, 25), major), "x=" .. x .. " is a major vertical boundary")
   end
   for x = 1, width - 1 do
     if x % 48 ~= 0 then
-      Assert.isTrue(sameColor(samplePixel(pixels, x, 1), plain), "x=" .. x .. " has no secondary vertical stripe")
+      local nearCrossing = x % 48 <= 1 or x % 48 >= 47
+      if not nearCrossing then
+        Assert.isTrue(sameColor(samplePixel(pixels, x, 1), plain), "x=" .. x .. " has no secondary vertical stripe")
+      end
     end
   end
+end
+
+function T.background_major_intersections_carry_a_3x3_major_square(scope)
+  local renderer = require("app.src.launcher.LauncherRenderer").new()
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local width, height = 256, 192
+  local pixels = drawToPixels(scope, width, height, 1, function()
+    renderer:_background(width, height)
+  end)
+  local function sameColor(actual, expected)
+    return actual.r == expected.r and actual.g == expected.g and actual.b == expected.b and actual.a == expected.a
+  end
+  local plain = samplePixel(pixels, 10, 1)
+  local vertical = samplePixel(pixels, 48, 50)
+  local horizontal = samplePixel(pixels, 50, 48)
+  local major = vertical
+  Assert.isTrue(sameColor(horizontal, major), "both major directions share one color")
+  Assert.isTrue(not sameColor(vertical, plain), "the vertical major line remains away from crossings")
+  Assert.isTrue(not sameColor(horizontal, plain), "the horizontal major line remains away from crossings")
+  for _, point in ipairs({ { 48, 48 }, { 96, 96 }, { 144, 144 } }) do
+    local center = samplePixel(pixels, point[1], point[2])
+    Assert.isTrue(
+      sameColor(center, major),
+      string.format("the %dx%d crossing carries a major square", point[1], point[2])
+    )
+    local corner = samplePixel(pixels, point[1] - 1, point[2] - 1)
+    Assert.isTrue(
+      sameColor(corner, major),
+      string.format("the %dx%d square reaches its corners", point[1], point[2])
+    )
+    local outside = samplePixel(pixels, point[1] - 3, point[2] - 3)
+    Assert.isTrue(
+      sameColor(outside, plain),
+      string.format("the %dx%d square stays 3x3", point[1], point[2])
+    )
+  end
+end
+
+function T.neutral_loading_title_is_the_dark_primary_label(scope)
+  local renderer = require("app.src.launcher.LauncherRenderer").new()
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local Loading = require("app.src.launcher.LauncherLoadingPresentation")
+  local safeRect = { x = 0, y = 0, width = 256, height = 192 }
+  local loading = Loading.new({
+    renderer = renderer,
+    versionId = "soulsilver",
+    gameLabel = "Pokémon SoulSilver",
+    label = "Now loading...",
+    width = 256,
+    height = 192,
+    safeRect = safeRect,
+    pixelRatio = 1,
+    displayContext = context(256, 192, 1, safeRect),
+    selectionInterrupt = true,
+    onCancel = function() end,
+  })
+  scope:own({
+    release = function()
+      loading:dispose()
+    end,
+  })
+  local pixels = drawToPixels(scope, 256, 192, 1, function()
+    loading:draw()
+  end)
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  local layout = LauncherLayout.loading(256, 192, {
+    selectionInterrupt = true,
+    gameLabel = "Pokémon SoulSilver",
+    fonts = renderer.fonts,
+  })
+  local title = assert(layout.titleRect, "neutral loading reserves a title region")
+  local darkest = 255
+  for y = title.y, title.y + title.height - 1 do
+    for x = title.x, title.x + title.width - 1 do
+      local sample = samplePixel(pixels, x, y)
+      local luminance = 0.299 * sample.r + 0.587 * sample.g + 0.114 * sample.b
+      if sample.a > 0 and luminance < darkest then
+        darkest = luminance
+      end
+    end
+  end
+  Assert.isTrue(darkest < 100, "the game name paints as dark primary ink, not a pale wash")
 end
 
 function T.boot_frame_stays_white_with_centered_ink(scope)

@@ -210,6 +210,19 @@ function T.newgame_field_handoff_owns_the_same_selected_stage()
   state:dispose()
 end
 
+function T.initial_game_load_enrolls_the_walking_visual_demand_with_its_loading_screen()
+  local host, calls = keyedHost({ planning = true, runtime = true })
+  local state = continueEntry(host, {})
+  Assert.isTrue(
+    #calls.walker >= 1,
+    "the initial game load requests the walking sprites before its first loader frame"
+  )
+  for _, call in ipairs(calls.walker) do
+    Assert.equal(call.urgency, "near", "the initialization demand stays nonblocking")
+  end
+  state:dispose()
+end
+
 function T.escape_disposes_the_stage_once_and_never_transfers_late()
   local behavior = { planning = false, runtime = false }
   local host = keyedHost(behavior)

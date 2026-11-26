@@ -315,4 +315,42 @@ function T.dual_surfaces_put_status_on_primary_and_both_cartridges_on_the_auxili
   selection:dispose()
 end
 
+function T.retreat_actions_play_the_back_cue_while_advance_plays_confirm()
+  local cues = {}
+  local importView = nil
+  local selection = state({
+    audio = {
+      play = function(_, cue)
+        cues[#cues + 1] = cue
+      end,
+    },
+    onAction = function(targetId)
+      if targetId == "soulsilver" then
+        importView = {
+          attemptId = "cue-attempt",
+          mode = "choose",
+          expectedVersionId = "soulsilver",
+          pickerAvailable = true,
+          canCancel = true,
+        }
+      end
+    end,
+    getImportView = function()
+      return importView
+    end,
+  })
+  tap(selection, "soulsilver")
+  Assert.equal(cues[#cues], "confirm", "selecting a cartridge confirms")
+  tap(selection, "choose-rom")
+  Assert.equal(cues[#cues], "confirm", "a primary import action confirms")
+  tap(selection, "back")
+  Assert.equal(cues[#cues], "back", "retreating plays the back cue")
+  importView.mode = "receipt"
+  importView.receipt = "SoulSilver.nds"
+  importView.statusText = "Waiting for readers"
+  selection:keypressed("escape")
+  Assert.equal(cues[#cues], "back", "escape out of an operation plays the back cue")
+  selection:dispose()
+end
+
 return { tests = T }

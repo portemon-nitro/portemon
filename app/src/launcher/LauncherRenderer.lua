@@ -23,7 +23,7 @@ LauncherRenderer.__index = LauncherRenderer
 local WORDMARK_PATH = "assets/fonts/mplus1p/MPLUS1p-Bold.ttf"
 local BOOT_LOGO_PATH = "assets/logo.png"
 -- Measured from the native-resolution captured wordmark ink.
-local BOOT_LOGO_LOGICAL_WIDTH = 151
+local BOOT_LOGO_LOGICAL_WIDTH = 301
 local BOOT_LOGO_INSET = 8
 
 local function rgb(red, green, blue)
@@ -151,6 +151,16 @@ function LauncherRenderer:_background(width, height)
   for x = 0, width - 1, 48 do
     graphics.rectangle("fill", x, 0, 1, height)
   end
+  color(graphics, COLORS.majorGrid)
+  for x = 0, width - 1, 48 do
+    for y = 0, height - 1, 48 do
+      local clearX, clearY = math.max(0, x - 1), math.max(0, y - 1)
+      local clearWidth, clearHeight = math.min(width, x + 2) - clearX, math.min(height, y + 2) - clearY
+      if clearWidth > 0 and clearHeight > 0 then
+        graphics.rectangle("fill", clearX, clearY, clearWidth, clearHeight)
+      end
+    end
+  end
 end
 
 function LauncherRenderer:_bevel(rect, faceColor, pressed)
@@ -228,6 +238,37 @@ function LauncherRenderer:drawButton(rect, label, _, visualState)
   graphics.setFont(oldFont)
 end
 
+function LauncherRenderer:_backButton(rect, label, visualState)
+  if self.disposed then
+    return
+  end
+  visualState = visualState or {}
+  local graphics = love.graphics
+  local oldFont = graphics.getFont()
+  local pressed = visualState.pressed == true
+  color(graphics, COLORS.rim)
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  rampRows(
+    graphics,
+    { x = rect.x + 1, y = rect.y + 1, width = rect.width - 2, height = rect.height - 2 },
+    pressed and COLORS.iconBottom or COLORS.iconTop,
+    pressed and COLORS.iconTop or COLORS.iconBottom,
+    0
+  )
+  if visualState.focused then
+    self:_focus({ x = rect.x - 3, y = rect.y - 3, width = rect.width + 6, height = rect.height + 6 })
+  end
+  graphics.setFont(self.fonts.bold)
+  color(graphics, COLORS.text)
+  local visible = fitText(graphics.getFont(), label, rect.width - 8)
+  graphics.print(
+    visible,
+    rect.x + math.max(0, math.floor((rect.width - graphics.getFont():getWidth(visible)) / 2)),
+    rect.y + (rect.height - graphics.getFont():getHeight()) / 2
+  )
+  graphics.setFont(oldFont)
+end
+
 function LauncherRenderer:drawLoadingSquares(x, y, elapsed)
   local graphics = love.graphics
   local active = math.floor((elapsed or 0) / 0.12) % 4
@@ -259,8 +300,12 @@ function LauncherRenderer:drawSelectionPrompt(layout, elapsed)
 end
 
 local function drawCellText(graphics, font, text, cell, rightAligned)
-  local visible = rightAligned and fitText(font, text, math.max(0, cell.width - 12)) or text
-  local x = rightAligned and cell.x + cell.width - 6 - font:getWidth(visible) or cell.x + 6
+  -- Both insets match the layout's 8px cell padding so each separator keeps
+  -- equal air on both sides: the time cell's right gap and the date cell's
+  -- left gap are both 8px, as are the date cell's right gap and the version
+  -- cell's left gap.
+  local visible = rightAligned and fitText(font, text, math.max(0, cell.width - 16)) or text
+  local x = rightAligned and cell.x + cell.width - 8 - font:getWidth(visible) or cell.x + 8
   graphics.print(visible, x, cell.y + math.floor((cell.height - font:getHeight()) / 2))
 end
 
@@ -279,10 +324,10 @@ function LauncherRenderer:_header(view, layout)
     color(graphics, COLORS.separatorLight)
     graphics.rectangle("fill", x + 1, header.y + 2, 1, header.height - 4)
   end
-  graphics.setFont(self.fonts.body)
+  graphics.setFont(self.fonts.prompt)
   color(graphics, COLORS.highlight)
-  drawCellText(graphics, graphics.getFont(), view.dateText or "", cells.date, false)
   drawCellText(graphics, graphics.getFont(), view.timeText or "", cells.time, false)
+  drawCellText(graphics, graphics.getFont(), view.dateText or "", cells.date, false)
   drawCellText(graphics, graphics.getFont(), tostring(view.version or ""), cells.version, true)
 end
 
@@ -483,7 +528,11 @@ function LauncherRenderer:_operation(view, layout)
       or targetId == "retry" and "Retry"
       or targetId == "cancel" and "Cancel"
       or "Back"
-    self:drawButton(target.rect, label, nil, { focused = view.action == targetId })
+    if targetId == "back" then
+      self:_backButton(target.rect, label, { focused = view.action == targetId })
+    else
+      self:drawButton(target.rect, label, nil, { focused = view.action == targetId })
+    end
   end
   if operation.receipt ~= nil and layout.receiptRect ~= nil then
     return operation.attemptId
@@ -568,16 +617,17 @@ function LauncherRenderer:drawLoading(view, layout)
   if layout.unavailable then
     return
   end
-  graphics.setFont(self.fonts.body)
+  graphics.setFont(self.fonts.bold)
+  color(graphics, COLORS.text)
   local _, titleLines = graphics.getFont():getWrap(tostring(view.gameLabel or ""), assert(layout.titleRect).width)
-  centeredLines(graphics, self.fonts.body, titleLines, layout.titleRect)
+  centeredLines(graphics, self.fonts.bold, titleLines, layout.titleRect)
 
   if view.selectionInterrupt == true then
     if view.error == nil then
       color(graphics, COLORS.muted)
       local status = tostring(view.label or "Now loading...")
-      graphics.setFont(self.fonts.body)
-      centeredLines(graphics, self.fonts.body, { status }, assert(layout.loadingStatusRect))
+      graphics.setFont(self.fonts.prompt)
+      centeredLines(graphics, self.fonts.prompt, { status }, assert(layout.loadingStatusRect))
       self:drawLoadingSquares(assert(layout.indicatorRect).x, layout.indicatorRect.y, view.elapsed)
     else
       self:drawSelectionPrompt(layout, view.elapsed)

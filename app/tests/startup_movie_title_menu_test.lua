@@ -1625,6 +1625,93 @@ function T.tests.pending_title_preparation_does_not_gate_the_ready_opening()
   end)
 end
 
+function T.tests.movie_skip_before_title_ready_holds_movie_until_direct_title_handoff()
+  withStartup(function()
+    active.movieDuration = 1000
+    active.movieSkipAfter = 10
+    active.titleAssetsReady = false
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    local state = startSelection()
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "the opening admits while the title still builds")
+    Assert.isNil(state.title, "no title presents before its geometry is ready")
+    -- Reach skip eligibility, then try to skip before the title is ready:
+    -- intent is recorded and the movie keeps playing, never the loader.
+    for _ = 1, 12 do
+      App.update(SourceTick.DT)
+    end
+    local loaderDraws = active.loaders[1].draws
+    App.keypressed("return", "return", false)
+    Assert.isTrue(state.movieSkipRequested, "the early movie skip records its intent")
+    Assert.isFalse(state.skipRequested, "a movie press never latches title skip intent")
+    Assert.equal(state.phase, "movie", "the latched skip keeps the movie phase")
+    Assert.notNil(state.movie, "the movie is retained while the title builds")
+    Assert.isFalse(state.movie:isFinished(), "the latched movie keeps playing instead of finishing")
+    local ticks = state.movie.ticks
+    for _ = 1, 5 do
+      App.update(SourceTick.DT)
+    end
+    Assert.isTrue(state.movie.ticks > ticks, "the held movie advances while the title builds")
+    Assert.equal(state.phase, "movie", "waiting never shows the loader between movie and title")
+    Assert.equal(active.loaders[1].draws, loaderDraws, "no loader frame appears while the skip waits")
+    -- Once the title realizes, the latched skip drops straight into it.
+    active.titleAssetsReady = true
+    local guard = 0
+    while state.phase ~= "title" and guard < 60 do
+      App.update(SourceTick.DT)
+      guard = guard + 1
+    end
+    Assert.equal(state.phase, "title", "the latched skip hands directly to the realized title")
+    Assert.isNil(state.movie, "the handoff disposes the held movie exactly once")
+    Assert.equal(active.movies[1].disposed, 1, "the skipped movie releases once at the direct handoff")
+    Assert.notNil(state.title, "the title is presented without an intermediate loader")
+    Assert.equal(active.loaders[1].draws, loaderDraws, "no loader frame appears between the movie and its title")
+    Assert.isFalse(state.skipRequested, "the movie press never becomes the title skip")
+    Assert.equal(active.scenes[1].proceeds, 0, "the direct handoff still needs its own title press")
+  end)
+end
+
+function T.tests.natural_movie_finish_before_title_ready_holds_frame_until_direct_title_handoff()
+  withStartup(function()
+    active.movieDuration = 5
+    active.movieSkipAfter = 1000
+    active.titleAssetsReady = false
+    active.audioReady = true
+    for sceneNumber = 1, 5 do
+      active.sceneReady[sceneNumber] = true
+    end
+    local state = startSelection()
+    pumpUntilMovie(state)
+    Assert.equal(state.phase, "movie", "the opening admits while the title still builds")
+    local loaderDraws = active.loaders[1].draws
+    local guard = 0
+    while state.movie ~= nil and not state.movie:isFinished() and guard < 60 do
+      App.update(SourceTick.DT)
+      guard = guard + 1
+    end
+    for _ = 1, 5 do
+      App.update(SourceTick.DT)
+    end
+    Assert.equal(state.phase, "movie", "a natural finish holds the movie frame, never the loader")
+    Assert.notNil(state.movie, "the finished movie is retained while the title builds")
+    Assert.isTrue(state.movie:isFinished(), "the held movie stays finished")
+    Assert.isNil(state.title, "no title presents before its geometry is ready")
+    Assert.equal(active.loaders[1].draws, loaderDraws, "no loader frame appears while the finish waits")
+    active.titleAssetsReady = true
+    guard = 0
+    while state.phase ~= "title" and guard < 60 do
+      App.update(SourceTick.DT)
+      guard = guard + 1
+    end
+    Assert.equal(state.phase, "title", "the held finish hands directly to the realized title")
+    Assert.isNil(state.movie, "the handoff disposes the held movie exactly once")
+    Assert.equal(active.loaders[1].draws, loaderDraws, "no loader frame appears between the finished movie and its title")
+  end)
+end
+
 function T.tests.saved_location_preparation_starts_once_at_movie_entry_and_failure_is_non_gating()
   withStartup(function()
     local originalFactory = HgssGame.newSaveLocationPreparation

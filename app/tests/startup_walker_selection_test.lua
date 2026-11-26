@@ -382,7 +382,11 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
       App.update(0.016)
     end
     Assert.equal(App.pairIndex, 23, "the epoch keeps its one random fallback pair")
-    Assert.deepEqual(demands, {}, "the neutral launcher never demands walking artwork")
+    Assert.isTrue(#demands >= 1, "the title journey warms the shared walking visuals")
+    for _, demand in ipairs(demands) do
+      Assert.isNil(demand.pairIndex, "the warmed demand carries no pair identity")
+      Assert.equal(demand.urgency, "near", "selection never gates the launcher on walking artwork")
+    end
     Assert.equal(getmetatable(App.state).__index, StartupTitleState, "the prepared fallback pair completes the handoff")
   end, debug.traceback)
   restore()
@@ -599,7 +603,11 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     end
     Assert.equal(randomCalls, 2, "each epoch draws exactly once")
     Assert.equal(scanCalls, 0, "selection never scans the published catalog")
-    Assert.deepEqual(demands, {}, "selection draws pairs for later surfaces without gating the launcher")
+    Assert.isTrue(#demands >= 1, "the title journey warms the shared walking visuals")
+    for _, demand in ipairs(demands) do
+      Assert.isNil(demand.pairIndex, "the worker demand carries no pair identity")
+      Assert.equal(demand.urgency, "near", "selection draws pairs for later surfaces without gating the launcher")
+    end
   end, debug.traceback)
   restore()
   if not ok then

@@ -21,7 +21,7 @@ local T = {}
 
 local BOOT_LOGO_PATH = "assets/logo.png"
 local BOOT_LOGO_WIDTH, BOOT_LOGO_HEIGHT = 451, 115
-local BOOT_LOGO_LOGICAL_WIDTH = 151
+local BOOT_LOGO_LOGICAL_WIDTH = 301
 
 local function fakeFont()
   local font = { released = 0 }
@@ -1099,7 +1099,14 @@ function T.boot_paints_before_discovery_and_overlaps_real_opening_preparation()
         Assert.isNil(first:find("Portémon", 1, true), "boot no longer prints the replaced wordmark")
         Assert.isNil(first:find("Nitro", 1, true), "boot no longer prints the replaced wordmark")
         local logo = assert(logoDraw(host), "boot paints the supplied logo")
-        local expectedScale = BOOT_LOGO_LOGICAL_WIDTH / BOOT_LOGO_WIDTH
+        local logical = assert(App._bootIntro).surface.logicalViewport
+        local fitWidth = math.max(1, logical.width - 16)
+        local fitHeight = math.max(1, logical.height - 16)
+        local expectedScale = math.min(
+          BOOT_LOGO_LOGICAL_WIDTH,
+          fitWidth,
+          fitHeight * BOOT_LOGO_WIDTH / BOOT_LOGO_HEIGHT
+        ) / BOOT_LOGO_WIDTH
         Assert.isTrue(
           math.abs(logo.scaleX - expectedScale) < 1e-9 and math.abs(logo.scaleY - expectedScale) < 1e-9,
           "the logo keeps its measured wordmark width"
@@ -1285,6 +1292,11 @@ function T.boot_admission_requires_a_foreground_window_and_overlay()
     Assert.isTrue(App._bootIntro == intro, "closed admission keeps the overlay in place")
 
     intro:focus(true)
+    Assert.isFalse(App._admitOpening(epoch, versionId), "admission waits out the three-second minimum")
+    for _ = 1, 180 do
+      App.update(1 / 60)
+    end
+    Assert.isTrue(intro.elapsed + 1e-9 >= 3, "the minimum dwell visibly elapses first")
     Assert.isTrue(App._admitOpening(epoch, versionId), "foreground admission still retires the overlay")
     Assert.isNil(App._bootIntro)
     Assert.deepEqual(
@@ -1771,7 +1783,7 @@ function T.root_source_facts_clock_and_optional_icon_recovery_stay_independent()
       App.keyreleased("return", "return")
       App.draw()
       local text = drawnText(host)
-      Assert.isTrue(text:find("31/12/2026", 1, true) ~= nil)
+      Assert.isTrue(text:find(App.state:view().dateText, 1, true) ~= nil, "the short locale date reaches the host")
       Assert.isTrue(text:find("23:59", 1, true) ~= nil)
       Assert.isTrue(text:find(require("app.src.BuildInfo").version, 1, true) ~= nil)
       advanceUntil(function()
@@ -1798,13 +1810,62 @@ function T.root_source_facts_clock_and_optional_icon_recovery_stay_independent()
       local first = #host.copy + 1
       App.draw()
       text = drawnText(host, first)
-      Assert.isTrue(text:find("01/01/2027", 1, true) ~= nil)
+      Assert.isTrue(text:find(App.state:view().dateText, 1, true) ~= nil, "the rolled-over short date reaches the host")
       Assert.isTrue(text:find("00:00", 1, true) ~= nil)
     end, debug.traceback)
     Recovery.start = originalStart
     if not ok then
       error(failure, 0)
     end
+  end)
+end
+
+function T.status_separator_keeps_equal_air_around_date_and_time()
+  local now = { year = 2026, month = 12, day = 31, hour = 23, minute = 59, second = 0 }
+  withManagedLauncher({ installed = { heartgold = true, soulsilver = true }, now = now }, function(host)
+    App.load({ dev = false })
+    App.keypressed("return", "return", false)
+    App.keyreleased("return", "return")
+    App.draw()
+    local view = App.state:view()
+    local dateText, timeText = assert(view.dateText), assert(view.timeText)
+    local timePrint, datePrint
+    for _, position in ipairs(host.printPositions) do
+      if position.text == timeText and timePrint == nil then
+        timePrint = position
+      end
+      if position.text == dateText and datePrint == nil then
+        datePrint = position
+      end
+    end
+    timePrint = assert(timePrint, "the status strip paints the time")
+    datePrint = assert(datePrint, "the status strip paints the date")
+    Assert.equal(timePrint.scaleX, datePrint.scaleX, "date and time share one header placement")
+    local scale = timePrint.scaleX
+    local timeEnd = timePrint.x + #timeText * 6 * scale
+    Assert.isTrue(datePrint.x > timeEnd, "date follows time left-to-right")
+    local separators = {}
+    for _, shape in ipairs(host.rectangles) do
+      local dark = math.abs(shape.color[1] - 83 / 255) < 1e-9
+        and math.abs(shape.color[2] - 109 / 255) < 1e-9
+        and math.abs(shape.color[3] - 128 / 255) < 1e-9
+      if
+        shape.mode == "fill"
+        and dark
+        and math.abs(shape.width - scale) < 1e-9
+        and shape.x > timeEnd
+        and shape.x < datePrint.x
+        and shape.y <= datePrint.y
+        and shape.y + shape.height >= datePrint.y
+      then
+        separators[#separators + 1] = shape
+      end
+    end
+    Assert.equal(#separators, 1, "one dark separator column stands between time and date")
+    local leftGap = separators[1].x - timeEnd
+    local rightGap = datePrint.x - (separators[1].x + 2 * scale)
+    Assert.isTrue(leftGap > 0 and rightGap > 0, "both cells clear the separator")
+    Assert.near(leftGap, rightGap, 1e-9, "time and date keep equal air around their separator")
   end)
 end
 

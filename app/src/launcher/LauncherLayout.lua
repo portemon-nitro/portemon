@@ -10,6 +10,7 @@ local SLOT_GAP = 8
 local ICON_COMPARTMENT = 46
 local FOCUS_CLEARANCE = 3
 local ACTION_HEIGHT = 32
+local BACK_WIDTH = 56
 local PROMPT = "Press a button for game selection"
 local IMPORT_HINT = "Select to import ROM"
 
@@ -115,34 +116,31 @@ end
 
 local function headerPlan(view, width)
   local fonts = view.fonts
-  local lineHeight = math.max(fontHeight(fonts, "body", 12), fontHeight(fonts, "bold", 12))
-  local dateWidth = textWidth(fonts, "body", view.dateText or "", 12)
-  local timeWidth = textWidth(fonts, "body", view.timeText or "", 12)
-  local versionWidth = textWidth(fonts, "body", view.version or "", 12)
+  local face = (fonts ~= nil and fonts.prompt ~= nil) and "prompt" or "body"
+  local fallback = face == "prompt" and 10 or 12
+  local lineHeight = fontHeight(fonts, face, fallback)
+  local timeWidth = textWidth(fonts, face, view.timeText or "", fallback)
+  local dateWidth = textWidth(fonts, face, view.dateText or "", fallback)
+  local versionWidth = textWidth(fonts, face, view.version or "", fallback)
   local padding = 8
-  local oneRow = dateWidth + timeWidth + versionWidth + padding * 6 + 2 <= width
-  local height = math.max(18, (oneRow and 1 or 2) * (lineHeight + 2))
+  local height = math.max(18, lineHeight + 2)
   local header = rect(0, 0, width, height)
   local innerHeight = height - 4
-  local cells = { separators = {} }
-  if oneRow then
-    local dateCell = math.min(dateWidth + padding * 2, math.floor(width * 0.42))
-    local timeCell = math.min(timeWidth + padding * 2, math.floor(width * 0.28))
-    local y = header.y + 2
-    cells.date = rect(header.x, y, dateCell, innerHeight)
-    cells.separators[1] = header.x + dateCell
-    cells.time = rect(header.x + dateCell + 2, y, timeCell, innerHeight)
-    cells.separators[2] = header.x + dateCell + 2 + timeCell
-    cells.version = rect(header.x + dateCell + timeCell + 4, y, width - dateCell - timeCell - 4, innerHeight)
-  else
-    local rowHeight = math.floor((innerHeight - 2) / 2)
-    local dateCell = math.min(dateWidth + padding * 2, math.floor((width - 2) * 0.62))
-    local y = header.y + 2
-    cells.date = rect(header.x, y, dateCell, rowHeight)
-    cells.separators[1] = header.x + dateCell
-    cells.time = rect(header.x + dateCell + 2, y, width - dateCell - 2, rowHeight)
-    cells.version = rect(header.x, y + rowHeight + 2, width, rowHeight)
+  local y = header.y + 2
+  local timeCell = timeWidth + padding * 2
+  local dateCell = dateWidth + padding * 2
+  local versionText = versionWidth + padding * 2
+  local versionCell = versionText
+  if timeCell + dateCell + versionText + 4 > width then
+    versionCell = math.max(0, width - timeCell - dateCell - 4)
   end
+  local timeX = width - timeCell - dateCell - versionCell - 4
+  local cells = { separators = {} }
+  cells.time = rect(timeX, y, timeCell, innerHeight)
+  cells.separators[1] = timeX + timeCell
+  cells.date = rect(timeX + timeCell + 2, y, dateCell, innerHeight)
+  cells.separators[2] = timeX + timeCell + 2 + dateCell
+  cells.version = rect(timeX + timeCell + dateCell + 4, y, versionCell, innerHeight)
   return header, cells
 end
 
@@ -204,6 +202,34 @@ end
 
 local function actionRow(y, width, targets, order)
   local gap = 8
+  local backIndex
+  for index, targetId in ipairs(order) do
+    if targetId == "back" then
+      backIndex = index
+      break
+    end
+  end
+  if backIndex ~= nil then
+    local primaries = {}
+    for _, targetId in ipairs(order) do
+      if targetId ~= "back" then
+        primaries[#primaries + 1] = targetId
+      end
+    end
+    if #primaries == 0 then
+      local x = width - MARGIN - BACK_WIDTH
+      targets.back = { kind = "back", rect = rect(x, y, BACK_WIDTH, ACTION_HEIGHT) }
+      return
+    end
+    local primaryWidth = math.floor((width - MARGIN * 2 - BACK_WIDTH - gap * #primaries) / #primaries)
+    local x = MARGIN
+    for _, targetId in ipairs(primaries) do
+      targets[targetId] = { kind = targetId, rect = rect(x, y, primaryWidth, ACTION_HEIGHT) }
+      x = x + primaryWidth + gap
+    end
+    targets.back = { kind = "back", rect = rect(width - MARGIN - BACK_WIDTH, y, BACK_WIDTH, ACTION_HEIGHT) }
+    return
+  end
   local actionWidth = math.floor((width - gap * (#order - 1)) / #order)
   local x = MARGIN + math.floor((width - MARGIN * 2 - (actionWidth * #order + gap * (#order - 1))) / 2)
   for _, targetId in ipairs(order) do

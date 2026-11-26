@@ -332,7 +332,7 @@ function T.compact_cartridges_fit_full_edition_names_and_measured_status_rows()
   Assert.isTrue(wide.header.width == 764, "the status strip spans its viewport")
 end
 
-function T.status_cells_measure_date_and_time_with_the_painted_body_face()
+function T.status_cells_measure_date_and_time_with_the_painted_prompt_face()
   local LauncherLayout = require("app.src.launcher.LauncherLayout")
   local view = rootView()
   view.version = "v1"
@@ -343,8 +343,8 @@ function T.status_cells_measure_date_and_time_with_the_painted_body_face()
   }
   local layout = LauncherLayout.compute(view, 256, 192)
   local cells = layout.headerCells
-  Assert.equal(cells.date.width, view.fonts.body:getWidth(view.dateText) + 16, "the date cell measures the body face")
-  Assert.equal(cells.time.width, view.fonts.body:getWidth(view.timeText) + 16, "the time cell measures the body face")
+  Assert.equal(cells.date.width, view.fonts.prompt:getWidth(view.dateText) + 16, "the date cell measures the prompt face")
+  Assert.equal(cells.time.width, view.fonts.prompt:getWidth(view.timeText) + 16, "the time cell measures the prompt face")
 end
 
 function T.loading_prompt_geometry_uses_the_supplied_face_metrics()
@@ -365,6 +365,82 @@ function T.unusable_tiny_geometry_suspends_instead_of_fabricating_one_pixel_acti
   Assert.isTrue(layout.unavailable == true, "tiny host geometry is explicitly noninteractive")
   Assert.isNil(next(layout.graph.targets), "no fake one-pixel cartridge is published")
   Assert.isNil(LauncherLayout.hitTest(layout, rootView(), 1, 1))
+end
+
+function T.status_bar_clusters_time_date_and_version_on_the_right_with_the_prompt_face()
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  local view = rootView()
+  view.version = "v1"
+  view.fonts = {
+    body = measuredFont(10, 8),
+    bold = measuredFont(14, 9),
+    prompt = measuredFont(10, 4),
+  }
+  local layout = LauncherLayout.compute(view, 256, 192)
+  local cells = layout.headerCells
+  Assert.isTrue(cells.time.x < cells.date.x, "time precedes date left-to-right")
+  Assert.isTrue(cells.date.x < cells.version.x, "date precedes version left-to-right")
+  Assert.equal(
+    cells.version.x + cells.version.width,
+    256,
+    "the status cluster ends at the right edge"
+  )
+  Assert.isTrue(cells.time.x > 8, "the left side stays reserved for future features")
+  Assert.equal(
+    cells.time.width,
+    view.fonts.prompt:getWidth(view.timeText) + 16,
+    "the time cell measures the smaller prompt face"
+  )
+  Assert.equal(
+    cells.date.width,
+    view.fonts.prompt:getWidth(view.dateText) + 16,
+    "the date cell measures the smaller prompt face"
+  )
+end
+
+function T.back_action_is_a_compact_trailing_button()
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  local view = rootView("soulsilver")
+  view.mode = "choose"
+  view.import = {
+    attemptId = "geometry-attempt",
+    mode = "choose",
+    expectedVersionId = "soulsilver",
+    pickerAvailable = true,
+    canCancel = true,
+  }
+  local layout = LauncherLayout.compute(view, 256, 192)
+  local back = assert(layout.graph.targets.back, "choose exposes back")
+  local primary = assert(layout.graph.targets["choose-rom"], "choose exposes its primary action")
+  Assert.isTrue(back.rect.width <= 64, "back stays compact: " .. tostring(back.rect.width))
+  Assert.isTrue(primary.rect.width > back.rect.width, "the primary action keeps the remaining width")
+  Assert.equal(back.rect.x + back.rect.width, layout.viewport.width - 8, "back trails at the right inset")
+
+  view.import.pickerAvailable = false
+  local single = LauncherLayout.compute(view, 256, 192)
+  local lone = assert(single.graph.targets.back, "a lone back is still exposed")
+  Assert.isTrue(lone.rect.width <= 64, "a lone back never stretches full width")
+  Assert.equal(lone.rect.x + lone.rect.width, single.viewport.width - 8, "a lone back trails at the right inset")
+
+  view.mode = "error"
+  view.import = {
+    attemptId = "geometry-attempt",
+    mode = "error",
+    expectedVersionId = "soulsilver",
+    pickerAvailable = false,
+    canCancel = false,
+    error = "Expected SoulSilver; detected HeartGold",
+  }
+  local failed = LauncherLayout.compute(view, 256, 192)
+  local retry = assert(failed.graph.targets.retry, "error exposes retry")
+  local retreat = assert(failed.graph.targets.back, "error exposes back")
+  Assert.isTrue(retreat.rect.width <= 64, "error back stays compact")
+  Assert.isTrue(retry.rect.width > retreat.rect.width, "retry keeps the remaining width")
+  Assert.equal(
+    retreat.rect.x + retreat.rect.width,
+    failed.viewport.width - 8,
+    "error back trails at the right inset"
+  )
 end
 
 return { tests = T }

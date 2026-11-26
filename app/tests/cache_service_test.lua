@@ -341,6 +341,20 @@ function T.controller_death_fails_requests_and_shutdown_joins_exactly_once()
   Assert.equal(host.threads[1].waits, 1, "repeated shutdown joins nothing again")
 end
 
+function T.abandon_signals_shutdown_without_joining_the_controller()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  service:update()
+  assert(host.threads[1], "the service owns exactly one controller thread")
+  service:abandon()
+  Assert.equal(host.threads[1].waits, 0, "abandon never blocks joining the controller")
+  service:abandon()
+  Assert.equal(host.threads[1].waits, 0, "repeated abandon joins nothing")
+end
+
 function T.selection_answer_caches_the_controller_generation_token()
   local Service = requireService()
   local host = newChannelHost()

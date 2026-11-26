@@ -624,6 +624,42 @@ function T.tests.opening_movie_queues_only_the_shared_battle_core_once()
   end)
 end
 
+-- The title journey enrolls the loading stage's walking sprites with its
+-- first demand batch: the small shared walker catalog queues ahead of the
+-- heavy scene compiles, so the later field entry adopts ready art instead
+-- of popping sprites in mid-load.
+function T.tests.opening_entry_enrolls_the_loading_stage_walking_sprites_first()
+  withStartup(function()
+    local state = startTitle()
+    Assert.isTrue(isStartupTitle(state), "the title journey reaches its movie")
+    local walker, walkerUrgency, walkerAt = 0, nil, nil
+    local firstNearSceneAt = nil
+    for index, request in ipairs(active.requests) do
+      local selector = request.selector
+      if selector.requestKind == "startup-walker" then
+        walker = walker + 1
+        walkerUrgency = selector.urgency
+        if walkerAt == nil then
+          walkerAt = index
+        end
+      elseif
+        selector.requestKind == "opening-scene"
+        and selector.urgency == "near"
+        and firstNearSceneAt == nil
+      then
+        firstNearSceneAt = index
+      end
+    end
+    Assert.equal(walker, 1, "the opening entry enrolls the shared walking visuals once")
+    Assert.equal(walkerUrgency, "near", "the walker catalog compiles behind title-critical work")
+    Assert.notNil(firstNearSceneAt, "the entry still queues its near scene batch")
+    Assert.isTrue(
+      walkerAt < firstNearSceneAt,
+      "the walking sprites queue ahead of the heavy scene compiles"
+    )
+  end)
+end
+
 -- A failed save-agnostic warmup request stays a diagnostic: the title
 -- journey still presents while the failure is recorded.
 function T.tests.failed_core_warmup_keeps_the_title_journey()
@@ -933,15 +969,17 @@ function T.tests.transferred_loading_routes_touch_cancel_without_skipping_the_mo
   withStartup(function()
     active.titleAssetsReady = false
     local waiting = startTitle()
-    Assert.equal(waiting.phase, "loading", "the transferred loader remains visible while title work is pending")
+    -- The finished movie is held while the title builds: no loader frame
+    -- appears between them, so Cancel leaves from the held movie phase.
+    Assert.equal(waiting.phase, "movie", "pending title work holds the movie frame, never the loader")
     local loading = assert(waiting.loading, "the transferred loader remains owned by startup")
-    App.touchpressed(7, 100, 100)
-    App.touchreleased(7, 100, 100)
-    Assert.equal(#loading.inputs, 2, "loading pointer input reaches the transferred Cancel surface")
-    Assert.equal(loading.inputs[1].kind, "touch-down")
-    Assert.equal(loading.inputs[2].kind, "touch-up")
-    Assert.isNil(App.selectedVersionId, "the transferred Cancel route retires the selected epoch")
+    local movie = assert(waiting.movie, "the finished movie is retained while the title builds")
+    Assert.isFalse(waiting.skipRequested, "holding never latches a title skip")
+    Assert.isFalse(waiting.movieSkipRequested, "holding without input latches no movie skip")
+    App.keypressed("escape", "escape", false)
+    Assert.isNil(App.selectedVersionId, "the held-movie Cancel route retires the selected epoch")
     Assert.equal(loading.disposals, 1, "returning to selection disposes the transferred loader once")
+    Assert.equal(movie.disposed, 1, "returning to selection disposes the held movie once")
     Assert.equal(
       getmetatable(App.state).__index,
       require("app.src.launcher.GameSelectState"),
@@ -1004,7 +1042,9 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     active.audioReady = true
     active.titleAssetsReady = false
     local waiting = startTitle()
-    Assert.equal(waiting.phase, "loading", "pending title assets keep the startup loader visible")
+    Assert.equal(waiting.phase, "movie", "pending title assets hold the finished movie frame, never the loader")
+    Assert.isTrue(waiting.movie ~= nil and waiting.movie:isFinished(), "the instant movie is retained while the title builds")
+    Assert.isNil(waiting.title, "no title presents before its geometry is ready")
     Assert.equal(#active.audioSessions, 1, "movie admission constructs audio independently of title geometry")
     active.titleAssetsReady = true
     local title = waiting

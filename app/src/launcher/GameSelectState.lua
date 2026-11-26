@@ -10,6 +10,23 @@ local LocalClock = require("game.src.LocalClock")
 local GameSelectState = {}
 GameSelectState.__index = GameSelectState
 
+local function detectMonthFirst()
+  local probeTime = os.time({ year = 2001, month = 12, day = 31, hour = 12 })
+  if type(probeTime) ~= "number" then
+    return false
+  end
+  local probe = os.date("%x", probeTime)
+  if type(probe) ~= "string" then
+    return false
+  end
+  local monthPos = probe:find("12", 1, true)
+  local dayPos = probe:find("31", 1, true)
+  if monthPos == nil or dayPos == nil then
+    return false
+  end
+  return monthPos < dayPos
+end
+
 local function copyRect(rect)
   return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
 end
@@ -145,6 +162,7 @@ function GameSelectState.new(options)
       height = options.height or love.graphics.getHeight(),
     }),
     pixelRatio = options.pixelRatio or 1,
+    monthFirst = options.monthFirst,
     _displayContext = options.displayContext,
     _gestures = {},
     _geometry = 0,
@@ -171,7 +189,15 @@ function GameSelectState:_updateClock()
     return
   end
   self._minuteKey = key
-  self._dateText = string.format("%02d/%02d/%04d", now.day, now.month, now.year)
+  local monthFirst = self.monthFirst
+  if monthFirst == nil then
+    monthFirst = detectMonthFirst()
+  end
+  if monthFirst then
+    self._dateText = string.format("%02d/%02d", now.month, now.day)
+  else
+    self._dateText = string.format("%02d/%02d", now.day, now.month)
+  end
   self._timeText = string.format("%02d:%02d", now.hour, now.minute)
 end
 
@@ -289,7 +315,11 @@ function GameSelectState:_activate(targetId)
   if view.mode == "selection" then
     self.focusedId = targetId
   end
-  self.audio:play("confirm")
+  if targetId == "back" or targetId == "cancel" then
+    self.audio:play("back")
+  else
+    self.audio:play("confirm")
+  end
   self.onAction(targetId)
 end
 

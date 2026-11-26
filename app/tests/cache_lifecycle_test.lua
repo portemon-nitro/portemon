@@ -1798,7 +1798,7 @@ function T.worker_failure_after_admission_never_interrupts_startup(context)
     Assert.isTrue(RomImporter.isReady(versionId), "the previous raw dump is untouched")
   end)
 end
-function T.quit_after_cancelled_preparation_joins_owned_workers_once(context)
+function T.quit_after_cancelled_preparation_abandons_owned_workers_without_joining(context)
   withLiveApp(context, function(App, harness, versionId)
     local provisioner = selectVersion(App, versionId)
     attachWorker(harness)
@@ -1846,18 +1846,32 @@ function T.quit_after_cancelled_preparation_joins_owned_workers_once(context)
       "detached updates settle old physical work without reviving the session"
     )
     Assert.isNil(App.provisioner, "settling detached work never reattaches a session")
-    App.quit()
-    pumpApp(App, harness, 4)
-    for _, thread in ipairs(harness.threadHost.threads) do
-      Assert.equal(thread.waits, 1, "each owned thread joins exactly once")
+    local function totalWaits()
+      local total = 0
+      for _, thread in ipairs(harness.threadHost.threads) do
+        total = total + thread.waits
+      end
+      return total
     end
+    local waitsBeforeQuit = totalWaits()
+    App.quit()
+    Assert.equal(totalWaits(), waitsBeforeQuit, "quit returns without joining owned threads")
+    local shutdownSeen = false
+    for _, channel in ipairs(harness.threadHost.channels) do
+      for _, message in ipairs(channel.log) do
+        if type(message) == "table" and message.op == "shutdown" then
+          shutdownSeen = true
+        end
+      end
+    end
+    Assert.isTrue(shutdownSeen, "quit still signals background work to stop")
     Assert.isNil(App.service, "quit releases the process service")
     Assert.isNil(App.provisioner, "quit leaves no selection behind")
+    pumpApp(App, harness, 4)
+    local waitsBeforeSecondQuit = totalWaits()
     App.quit()
+    Assert.equal(totalWaits(), waitsBeforeSecondQuit, "a repeated quit never joins owned threads")
     pumpApp(App, harness, 2)
-    for _, thread in ipairs(harness.threadHost.threads) do
-      Assert.equal(thread.waits, 1, "a repeated quit never rejoins owned threads")
-    end
   end)
 end
 
