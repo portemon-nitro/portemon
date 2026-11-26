@@ -49,6 +49,8 @@ local TILES_PER_CELL = 32
 ---@field prefetchQueue table[]
 ---@field prefetchError unknown?
 ---@field synchronousPhysicalFallbackLoads integer
+---@field aggregateStageResumes integer matching partial windows finished at commit
+---@field aggregateFallbackBuilds integer crossings that built a window without a usable stage
 ---@field anchorX integer
 ---@field anchorZ integer
 ---@field origin { x: number, y: number, z: number }
@@ -565,32 +567,101 @@ local function appendDynamicParts(presentation, cell, origin, out)
   end
 end
 
--- Append one cell's translated draw parts (static first, then dynamic) and its
--- per-cell presentation record. One cell is the indivisible unit of the draw
--- list: its parts are translated together so a committed window never mixes
--- translated and untranslated geometry.
+-- Append one cell's translated draw parts (static first, then dynamic). A cell
+-- is not indivisible: up to maxParts parts may be copied before the slice
+-- yields, and its presentation record is published only when the cell is complete.
 ---@param task table<string, unknown>
 ---@param cellKey string
-local function appendCellWorldParts(task, cellKey)
+---@param maxParts number
+---@return integer consumed, boolean complete
+local function appendCellWorldParts(task, cellKey, maxParts)
   local cell = assert(task.cells[cellKey])
   local origin = assert(task.origin)
-  local staticParts = {}
-  for _, part in ipairs(presentationDraws(cell.presentation, true)) do
-    staticParts[#staticParts + 1] = translatedPart(part, cell, origin)
+  if task.cellStaticParts == nil then
+    task.cellStaticParts = presentationDraws(cell.presentation, true)
+    task.cellDynamicParts = presentationDraws(cell.presentation, false)
+    task.nextPartIndex = 1
   end
+  local staticParts = task.cellStaticParts
+  local dynamicParts = task.cellDynamicParts
   local worldParts = task.worldParts
-  for _, part in ipairs(staticParts) do
-    worldParts[#worldParts + 1] = part
+  local consumed = 0
+  while consumed < maxParts do
+    local partIndex = task.nextPartIndex
+    if partIndex <= #staticParts then
+      local part = translatedPart(staticParts[partIndex], cell, origin)
+      staticParts[partIndex] = part
+      worldParts[#worldParts + 1] = part
+    elseif partIndex <= #staticParts + #dynamicParts then
+      local dynamicIndex = partIndex - #staticParts
+      worldParts[#worldParts + 1] = translatedPart(dynamicParts[dynamicIndex], cell, origin)
+    else
+      task.cellPresentation[#task.cellPresentation + 1] = {
+        staticParts = staticParts,
+        dynamicCount = #dynamicParts,
+        stagedDynamicCount = #dynamicParts,
+      }
+      task.cellStaticParts = nil
+      task.cellDynamicParts = nil
+      task.nextPartIndex = nil
+      return consumed, true
+    end
+    task.nextPartIndex = partIndex + 1
+    consumed = consumed + 1
   end
-  local dynamicParts = presentationDraws(cell.presentation, false)
-  for _, part in ipairs(dynamicParts) do
-    worldParts[#worldParts + 1] = translatedPart(part, cell, origin)
+  return consumed, false
+end
+
+-- Refresh the committed draw list's dynamic slots from current cell state.
+-- Presentation and semantic timers are deliberately not advanced here: normal
+-- ticks call this after updateAnimated/updateFixed, while candidate publication
+-- calls it to replace stale staged snapshots at the same boundary.
+---@param cellKeys string[]
+---@param cells table<string, table<string, unknown>>
+---@param origin { x: number, y: number, z: number }
+---@param worldParts table[]
+---@param cellPresentation table[]
+---@param dynamicParts table[]
+local function refreshDynamicParts(cellKeys, cells, origin, worldParts, cellPresentation, dynamicParts)
+  for index = #dynamicParts, 1, -1 do
+    dynamicParts[index] = nil
   end
-  task.cellPresentation[#task.cellPresentation + 1] = {
-    staticParts = staticParts,
-    dynamicCount = #dynamicParts,
-    stagedDynamicCount = #dynamicParts,
-  }
+  for index, cellKey in ipairs(cellKeys) do
+    local cell = assert(cells[cellKey])
+    local firstDynamic = #dynamicParts + 1
+    appendDynamicParts(cell.presentation, cell, origin, dynamicParts)
+    cellPresentation[index].stagedDynamicCount = #dynamicParts - firstDynamic + 1
+  end
+  local countChanged = false
+  for _, presentation in ipairs(cellPresentation) do
+    if presentation.stagedDynamicCount ~= presentation.dynamicCount then
+      countChanged = true
+      break
+    end
+  end
+  local previousLength = #worldParts
+  local slot = 1
+  local dynamicIndex = 1
+  for _, presentation in ipairs(cellPresentation) do
+    for _, part in ipairs(presentation.staticParts) do
+      if countChanged then
+        worldParts[slot] = part
+      end
+      slot = slot + 1
+    end
+    for _ = 1, presentation.stagedDynamicCount do
+      worldParts[slot] = dynamicParts[dynamicIndex]
+      dynamicIndex = dynamicIndex + 1
+      slot = slot + 1
+    end
+    presentation.dynamicCount = presentation.stagedDynamicCount
+  end
+  for index = slot, previousLength do
+    worldParts[index] = nil
+  end
+  for index = #dynamicParts, 1, -1 do
+    dynamicParts[index] = nil
+  end
 end
 
 ---@param cells table<string, table<string, unknown>>
@@ -608,7 +679,7 @@ local function buildWorldParts(cells, origin)
   local task = { cells = cells, origin = origin, worldParts = {}, cellPresentation = {} }
   local keys = sortedCellKeys(cells)
   for _, cellKey in ipairs(keys) do
-    appendCellWorldParts(task, cellKey)
+    appendCellWorldParts(task, cellKey, math.huge)
   end
   return keys, task.worldParts, task.cellPresentation
 end
@@ -638,12 +709,14 @@ local function blankCoverage(options, index)
     prefetchStageLimit = MAX_STAGED_CELLS,
     _stagedAggregate = nil,
     _aggregateStage = nil,
-    _clock = options.clock or os.clock,
+    _clock = options.clock or love.timer.getTime,
     focusX = nil,
     focusZ = nil,
     focusFacing = nil,
     prefetchError = nil,
     synchronousPhysicalFallbackLoads = 0,
+    aggregateStageResumes = 0,
+    aggregateFallbackBuilds = 0,
     _cellKeys = {},
     _worldParts = {},
     _cellPresentation = {},
@@ -947,6 +1020,7 @@ function FieldCoverage:recenter(anchorX, anchorZ)
   if prepared ~= nil then
     return self:_commitCandidate(prepared, targetFootprint)
   end
+  self.aggregateFallbackBuilds = self.aggregateFallbackBuilds + 1
   local staged, acquired = {}, {}
   local hadCommittedCells = next(self.cells) ~= nil
   local stagedPendings = {}
@@ -1068,15 +1142,15 @@ function FieldCoverage:_imminentAnchor()
   elseif distanceX == nil or distanceZ < distanceX then
     predictedX, predictedZ = cellX, cellZ + deltaZ
   else
-    -- Both edges are equally close: the facing names the crossing the player is
-    -- about to make, and a position with no facing keeps the X axis so the
-    -- prediction stays stable across passes.
-    if self.focusFacing == "west" then
-      predictedX, predictedZ = cellX - 1, cellZ
-    elseif self.focusFacing == "north" then
-      predictedX, predictedZ = cellX, cellZ - 1
-    elseif self.focusFacing == "south" then
-      predictedX, predictedZ = cellX, cellZ + 1
+    -- Both edges are equally close: facing selects a candidate only when it
+    -- points toward that candidate. Otherwise the stable X-axis fallback still
+    -- chooses one of the two computed near edges.
+    local facingX = self.focusFacing == "east" and 1 or (self.focusFacing == "west" and -1 or 0)
+    local facingZ = self.focusFacing == "south" and 1 or (self.focusFacing == "north" and -1 or 0)
+    if facingX == deltaX and facingX ~= 0 then
+      predictedX, predictedZ = cellX + deltaX, cellZ
+    elseif facingZ == deltaZ and facingZ ~= 0 then
+      predictedX, predictedZ = cellX, cellZ + deltaZ
     else
       predictedX, predictedZ = cellX + deltaX, cellZ
     end
@@ -1125,6 +1199,13 @@ function FieldCoverage:_imminentAggregateTarget()
   return anchorX, anchorZ
 end
 
+-- Whether one prediction window has finished every resumable unit.
+---@param stage FieldCoverage.AggregateStage
+---@return boolean
+local function aggregateStageReady(stage)
+  return stage.region:isReady() and stage.nextCellIndex > #stage.keys
+end
+
 -- Whether one prediction-derived window is still owed under the same staging
 -- budget as the halo cells: the imminent target is resolvable and no live
 -- candidate already describes exactly that target. A stale candidate for a
@@ -1136,12 +1217,18 @@ function FieldCoverage:predictedWindowPending()
     return false
   end
   local cached = self._stagedAggregate
-  return not (
-    cached ~= nil
+  local stage = self._aggregateStage
+  local cachedMatches = cached ~= nil
     and self:_stagedAggregateIsLive(cached)
     and cached.anchorX == anchorX
     and cached.anchorZ == anchorZ
-  )
+  if cachedMatches then
+    return false
+  end
+  if stage ~= nil and self:_stagedAggregateIsLive(stage) and stage.anchorX == anchorX and stage.anchorZ == anchorZ then
+    return not aggregateStageReady(stage)
+  end
+  return true
 end
 
 -- The units one frame may spend assembling the predicted window. The assembly
@@ -1192,12 +1279,6 @@ local function beginAggregateStage(self, anchorX, anchorZ, cells)
   }
 end
 
----@param stage FieldCoverage.AggregateStage
----@return boolean
-local function aggregateStageReady(stage)
-  return stage.region:isReady() and stage.nextCellIndex > #stage.keys
-end
-
 -- Advance one assembly stage by at most `maxUnits` indivisible steps: a copied
 -- terrain plate, or one cell's translated draw parts. `deadline`/`clock` bound
 -- the measured time the call may spend, checked between small chunks.
@@ -1213,9 +1294,15 @@ local function advanceAggregateStage(stage, maxUnits, clock, deadline)
       local chunk = math.min(maxUnits - consumed, AGGREGATE_ASSEMBLY_CHUNK)
       consumed = consumed + stage.region:advance(chunk)
     else
-      appendCellWorldParts(stage, stage.keys[stage.nextCellIndex])
-      stage.nextCellIndex = stage.nextCellIndex + 1
-      consumed = consumed + 1
+      local used, complete = appendCellWorldParts(
+        stage,
+        stage.keys[stage.nextCellIndex],
+        math.min(maxUnits - consumed, AGGREGATE_ASSEMBLY_CHUNK)
+      )
+      consumed = consumed + used
+      if complete then
+        stage.nextCellIndex = stage.nextCellIndex + 1
+      end
     end
     if deadline ~= nil and clock() >= deadline then
       break
@@ -1274,6 +1361,7 @@ function FieldCoverage:_stageImminentAggregate()
   if anchorX == nil or anchorZ == nil or cached ~= nil then
     return false
   end
+  local started = self._clock()
   if stage == nil then
     local staged = {}
     for _, position in ipairs(desired(anchorX, anchorZ)) do
@@ -1293,7 +1381,7 @@ function FieldCoverage:_stageImminentAggregate()
     stage = beginAggregateStage(self, anchorX, anchorZ, staged)
     self._aggregateStage = stage
   end
-  local deadline = self._clock() + AGGREGATE_ASSEMBLY_SECONDS
+  local deadline = started + AGGREGATE_ASSEMBLY_SECONDS
   local consumed = advanceAggregateStage(stage, AGGREGATE_ASSEMBLY_MAX_UNITS, self._clock, deadline)
   if aggregateStageReady(stage) then
     self._aggregateStage = nil
@@ -1302,19 +1390,37 @@ function FieldCoverage:_stageImminentAggregate()
   return consumed > 0
 end
 
--- Take the staged window for exactly this anchor, if it is still valid.
+-- Take the staged window for exactly this anchor, if it is still valid. A
+-- matching partial stage is finished through the same resumable path; work
+-- already copied before the crossing is never repeated.
 ---@param anchorX integer
 ---@param anchorZ integer
 ---@return table<string, unknown>?
 function FieldCoverage:_takeStagedAggregate(anchorX, anchorZ)
   local cached = self._stagedAggregate
-  if cached == nil or cached.anchorX ~= anchorX or cached.anchorZ ~= anchorZ then
+  local stage = self._aggregateStage
+  if cached ~= nil and (cached.anchorX ~= anchorX or cached.anchorZ ~= anchorZ) then
+    self._stagedAggregate = nil
+    cached = nil
+  end
+  if stage ~= nil and (stage.anchorX ~= anchorX or stage.anchorZ ~= anchorZ) then
+    self._aggregateStage = nil
+    stage = nil
+  end
+  if stage ~= nil then
+    self._aggregateStage = nil
+    self._stagedAggregate = nil
+    if self:_stagedAggregateIsLive(stage) then
+      self.aggregateStageResumes = self.aggregateStageResumes + 1
+      return finishAggregateStage(self, stage)
+    end
+    return nil
+  end
+  if cached == nil or not self:_stagedAggregateIsLive(cached) then
+    self._stagedAggregate = nil
     return nil
   end
   self._stagedAggregate = nil
-  if not self:_stagedAggregateIsLive(cached) then
-    return nil
-  end
   return cached
 end
 
@@ -1326,6 +1432,16 @@ end
 ---@param targetFootprint table<string, boolean> radius-2 descriptor set of the anchor
 ---@return FieldCoverage
 function FieldCoverage:_commitCandidate(candidate, targetFootprint)
+  -- Refresh before publication so malformed live presentation cannot leave a
+  -- half-replaced committed window. The candidate owns this scratch.
+  refreshDynamicParts(
+    candidate.cellKeys,
+    candidate.cells,
+    candidate.origin,
+    candidate.worldParts,
+    candidate.cellPresentation,
+    {}
+  )
   local old = {}
   for cellKey, cell in pairs(self.cells) do
     old[cellKey] = cell
@@ -1344,6 +1460,7 @@ function FieldCoverage:_commitCandidate(candidate, targetFootprint)
   self._cellPresentation = candidate.cellPresentation
   self._prefetchDescriptors = candidate.prefetchDescriptors
   self._stagedAggregate = nil
+  self._aggregateStage = nil
   for cellKey, cell in pairs(old) do
     if not self.cells[cellKey] and targetFootprint[cellKey] then
       self.prefetched[cellKey] = cell
@@ -1686,6 +1803,8 @@ function FieldCoverage:status()
     stagedCellKeys = stagedKeys,
     prefetchedCellKeys = prefetched,
     synchronousPhysicalFallbackLoads = self.synchronousPhysicalFallbackLoads,
+    aggregateStageResumes = self.aggregateStageResumes,
+    aggregateFallbackBuilds = self.aggregateFallbackBuilds,
     prefetchError = self.prefetchError,
     terrainDependencyHash = self.terrainDependencyHash,
     physicalOrigin = { x = self.origin.x, y = self.origin.y, z = self.origin.z },
@@ -1842,47 +1961,14 @@ function FieldCoverage:updateAnimated()
       cell.mapProps:updateFixed()
     end
   end
-  local dynamicParts = self._dynamicPartScratch
-  for index = #dynamicParts, 1, -1 do
-    dynamicParts[index] = nil
-  end
-  for index, cellKey in ipairs(self._cellKeys) do
-    local cell = assert(self.cells[cellKey])
-    local firstDynamic = #dynamicParts + 1
-    appendDynamicParts(cell.presentation, cell, self.origin, dynamicParts)
-    self._cellPresentation[index].stagedDynamicCount = #dynamicParts - firstDynamic + 1
-  end
-  local countChanged = false
-  for _, cellPresentation in ipairs(self._cellPresentation) do
-    if cellPresentation.stagedDynamicCount ~= cellPresentation.dynamicCount then
-      countChanged = true
-      break
-    end
-  end
-  local worldParts = self._worldParts
-  local previousLength = #worldParts
-  local slot = 1
-  local dynamicIndex = 1
-  for _, cellPresentation in ipairs(self._cellPresentation) do
-    for _, part in ipairs(cellPresentation.staticParts) do
-      if countChanged then
-        worldParts[slot] = part
-      end
-      slot = slot + 1
-    end
-    for _ = 1, cellPresentation.stagedDynamicCount do
-      worldParts[slot] = dynamicParts[dynamicIndex]
-      dynamicIndex = dynamicIndex + 1
-      slot = slot + 1
-    end
-    cellPresentation.dynamicCount = cellPresentation.stagedDynamicCount
-  end
-  for index = slot, previousLength do
-    worldParts[index] = nil
-  end
-  for index = #dynamicParts, 1, -1 do
-    dynamicParts[index] = nil
-  end
+  refreshDynamicParts(
+    self._cellKeys,
+    self.cells,
+    self.origin,
+    self._worldParts,
+    self._cellPresentation,
+    self._dynamicPartScratch
+  )
 end
 
 -- Read-only generated-cache lookup used by route planning before a committed

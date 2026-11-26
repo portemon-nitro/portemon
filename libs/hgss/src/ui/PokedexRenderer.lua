@@ -2844,7 +2844,6 @@ function PokedexRenderer:drawRegistration(prepared, plan)
   if type(pictureX) ~= "number" then
     pictureX = PokedexRenderer.REGISTRATION_PICTURE_HOME
   end
-  local spritesHidden = view.spritesHidden == true
   assert(type(graphics.push) == "function", "registration drawing requires its host state stack")
   graphics.push("all")
   local ok, err = pcall(function()
@@ -2852,6 +2851,10 @@ function PokedexRenderer:drawRegistration(prepared, plan)
       if type(pane) == "table" and pane.id == "registration" then
         local placement = assert(pane.placement, "registration panes carry their placement")
         runSerialPasses(graphics, assets, view, "registration", "registration", surfaces)
+        local outerCanvas = nil
+        if type(graphics.getCanvas) == "function" then
+          outerCanvas = graphics.getCanvas()
+        end
         if view.banner == 7 then
           local page = assert(manifest.pages.registration, "the manifest carries the registration page")
           local flash = assert(page.bannerFlash, "the registration page carries its banner strip")
@@ -2860,8 +2863,15 @@ function PokedexRenderer:drawRegistration(prepared, plan)
           local surface = assert(surfaces[flash.layer + 1], "the banner strip names a serial surface")
           graphics.setCanvas(surface.canvas)
           drawSampled(graphics, handle, nil, flash.x, flash.y)
+          graphics.setCanvas(outerCanvas)
         end
-        if not spritesHidden then
+        -- The captured specimen stays visible from publication through
+        -- departure and the frozen exit: only the popup OBJ sprites
+        -- hide at departure, never the centered picture. Gating the
+        -- picture on spritesHidden would blink the specimen out just
+        -- as it centers. Popup sprite passes above already honor
+        -- spritesHidden; this picture pass intentionally does not.
+        do
           local pictures = assets.pictures
           assert(type(pictures) == "table", "prepared card bundles carry their pictures")
           local card = assert(pictures.registration, "prepared card bundles carry their captured picture")
@@ -2893,6 +2903,10 @@ function PokedexRenderer:drawRegistration(prepared, plan)
           markObjRect(graphics, meta, rect, 0, 0)
           graphics.setCanvas(previous)
         end
+        -- The serial banner and picture passes above leave the caller
+        -- target bound: sampling a surface while it is bound for writing
+        -- is invalid and drops the card on alternating banner phases.
+        graphics.setCanvas(outerCanvas)
         local blend = { first = {}, second = {}, eva = 0, evb = 0 }
         local black = { r = 0, g = 0, b = 0 }
         -- The card inherits the battle Main/top placement but keeps the

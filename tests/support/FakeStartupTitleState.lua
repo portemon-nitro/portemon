@@ -3,19 +3,33 @@
 local FakeStartupTitleState = {}
 
 function FakeStartupTitleState.new(options)
-  local state = { kind = "startup-title", titleReady = false, finished = false, failure = nil, warmed = false }
-  function state:update()
-    if self.finished then
+  local state = {
+    kind = "startup-title",
+    titleReady = false,
+    finished = false,
+    failure = nil,
+    movieEntered = false,
+    warmed = false,
+  }
+  function state:enterMovie()
+    if self.movieEntered or self.finished then
       return
     end
-    -- Mirrors the production title contract: the save-agnostic warmup
-    -- fires once at title entry, before readiness and transfer.
+    self.movieEntered = true
     if not self.warmed then
       self.warmed = true
       if options.beginWarmup ~= nil then
         options.beginWarmup()
       end
     end
+  end
+  function state:update()
+    if self.finished then
+      return
+    end
+    -- This boundary fake models its first update as the already-ready movie
+    -- entry. Construction and title readiness alone never authorize warmup.
+    self:enterMovie()
     if not self.titleReady then
       self.titleReady = true
       if options.onTitleReady ~= nil then

@@ -5,6 +5,7 @@ local FieldCoverage = require("libs.hgss.src.world.FieldCoverage")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
 local CollisionFixture = require("tests.support.CollisionFixture")
+local Matrix4 = require("libs.math.src.Matrix4")
 
 local T = {}
 
@@ -37,19 +38,21 @@ local function makeIndex(width, height)
   }
 end
 
-local function runtimeFactory(releases)
+local function runtimeFactory(releases, plateCount)
+  plateCount = plateCount or 1
   return function(descriptor)
-    local plates = {
-      {
-        id = 0,
+    local plates = {}
+    for plateId = 0, plateCount - 1 do
+      plates[#plates + 1] = {
+        id = plateId,
         minX = 0,
         maxX = 32,
         minZ = 0,
         maxZ = 32,
         normal = { x = 0, y = 1, z = 0 },
         distance = descriptor.altitude * 0.5,
-      },
-    }
+      }
+    end
     return {
       key = string.format("%d:%d", descriptor.x, descriptor.z),
       x = descriptor.x,
@@ -1651,8 +1654,12 @@ function T.a_corner_focus_predicts_one_cardinal_crossing()
     { localX = 2, localZ = 31, expectedX = 2, expectedZ = 3 },
     { localX = 31, localZ = 31, facing = "east", expectedX = 3, expectedZ = 2 },
     { localX = 31, localZ = 31, facing = "south", expectedX = 2, expectedZ = 3 },
+    { localX = 31, localZ = 31, facing = "west", expectedX = 3, expectedZ = 2 },
+    { localX = 31, localZ = 31, facing = "north", expectedX = 3, expectedZ = 2 },
     { localX = 0, localZ = 0, facing = "west", expectedX = 1, expectedZ = 2 },
     { localX = 0, localZ = 0, facing = "north", expectedX = 2, expectedZ = 1 },
+    { localX = 0, localZ = 0, facing = "east", expectedX = 1, expectedZ = 2 },
+    { localX = 0, localZ = 0, facing = "south", expectedX = 1, expectedZ = 2 },
     { localX = 0, localZ = 0, expectedX = 1, expectedZ = 2 },
     { localX = 31, localZ = 31, expectedX = 3, expectedZ = 2 },
   }
@@ -1706,28 +1713,6 @@ function T.a_prediction_outside_the_generated_matrix_owes_no_work()
   Assert.isNil(anchorZ)
   Assert.isFalse(coverage:predictedWindowPending(), "an impossible frontier reports no owed window")
   Assert.isFalse(coverage:hasPrefetchWork(), "the satisfied halo stays satisfied")
-  coverage:release()
-end
-
--- A corner position predicts one cardinal crossing, not a diagonal: physical
--- coverage crosses one edge at a time, and the edge the player is closest to
--- crossing is the one worth preparing.
-function T.a_corner_focus_predicts_the_nearest_cardinal_crossing()
-  local coverage = FieldCoverage.new({
-    matrixMemberId = 1,
-    index = makeIndex(5, 5),
-    anchorX = 2,
-    anchorZ = 2,
-    loadCell = function(descriptor)
-      return runtimeFactory({})(descriptor)
-    end,
-  })
-  -- Bottom-left corner, one tile from the south boundary and two from the west:
-  -- the south cell is the frontier.
-  coverage:setPrefetchFocus(2 * 32 + 2, 2 * 32 + 31)
-  local anchorX, anchorZ = coverage:_imminentAnchor()
-  Assert.equal(anchorX, 2, "the predicted crossing keeps the column")
-  Assert.equal(anchorZ, 3, "the nearer boundary owns the prediction")
   coverage:release()
 end
 
@@ -1796,6 +1781,67 @@ function T.a_superseded_imminent_window_is_dropped_and_rebuilt()
   local rebuilt = assert(coverage._stagedAggregate, "the retained window is replaced")
   Assert.equal(rebuilt.anchorX, 1, "the rebuilt window follows the reversal")
   Assert.isTrue(rebuilt ~= staged, "the superseded window is never kept")
+  coverage:release()
+end
+
+-- A predicted window snapshots dynamic draws while it assembles. Publication
+-- must refresh those slots from the cells' current pose and count without
+-- advancing the animation clock a second time on the crossing tick.
+function T.a_predicted_window_publishes_current_dynamic_draws_without_another_tick()
+  local releases = {}
+  local animated = { updates = 0, pose = 0 }
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    loadCell = function(descriptor)
+      local runtime = runtimeFactory(releases)(descriptor)
+      if runtime.key == "2:2" then
+        local function draw(pose)
+          return { dynamic = true, transform = Matrix4.translate(0, pose, 0) }
+        end
+        runtime.presentation = {
+          parts = { draw(0) },
+          updateAnimated = function(self)
+            animated.updates = animated.updates + 1
+            animated.pose = animated.pose + 1
+            self.parts[1] = draw(animated.pose)
+            self.parts[2] = draw(animated.pose)
+          end,
+        }
+      end
+      return runtime
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 16, 2 * 32 + 16)
+  coverage:queuePrefetch(2, 2)
+  for _ = 1, 200 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16, "east")
+  coverage:updatePrefetch(2)
+  Assert.notNil(coverage._stagedAggregate, "the destination window is prepared before the crossing")
+
+  -- Production advances animation before movement commits the new anchor.
+  coverage:updateAnimated()
+  Assert.equal(animated.updates, 1, "the old committed window advances animation once")
+  coverage:recenter(3, 2)
+  Assert.equal(animated.updates, 1, "publication refreshes poses without ticking animation again")
+
+  local dynamic = {}
+  for _, part in ipairs(coverage:worldParts()) do
+    if part.dynamic and part.cellKey == "2:2" then
+      dynamic[#dynamic + 1] = part
+    end
+  end
+  Assert.equal(#dynamic, 2, "publication adopts the current dynamic draw count")
+  local originY = coverage.cells["2:2"].origin.y - coverage.origin.y
+  Assert.near(Matrix4.toArray(dynamic[1].transform)[14], originY + 1, 1e-9, "the first draw has the current pose")
+  Assert.near(Matrix4.toArray(dynamic[2].transform)[14], originY + 1, 1e-9, "the newly added draw has the current pose")
   coverage:release()
 end
 
@@ -1871,6 +1917,7 @@ function T.the_predicted_window_assembles_across_frames_within_a_measured_slice(
   Assert.isNil(coverage._stagedAggregate, "one slice never assembles the whole window")
   local stage = assert(coverage._aggregateStage, "the slice started the window's assembly")
   Assert.equal(stage.anchorX, 3, "the assembling window is the predicted frontier")
+  Assert.isTrue(coverage:hasPrefetchWork(), "a partial matching stage still owes completion work")
   local frames = 1
   while coverage._stagedAggregate == nil and frames < 400 do
     coverage:updatePrefetch(1)
@@ -1884,6 +1931,149 @@ function T.the_predicted_window_assembles_across_frames_within_a_measured_slice(
   Assert.isTrue(#staged.cellKeys > 0, "the window names the cells it composed")
   Assert.equal(#staged.cellKeys, #staged.cellPresentation, "every staged cell contributed its parts")
   Assert.isTrue(staged.region.terrain ~= nil, "the published window carries its composite region")
+  coverage:release()
+end
+
+-- A crossing adopts a matching partial stage and finishes only its remaining
+-- work. Rebuilding from scratch would repeat plates and draw translations that
+-- the prediction already paid for.
+function T.a_matching_partial_window_is_resumed_at_the_crossing()
+  local now = 0
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    clock = function()
+      now = now + 1
+      return now
+    end,
+    loadCell = function(descriptor)
+      return runtimeFactory({}, 40)(descriptor)
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 16, 2 * 32 + 16)
+  coverage:queuePrefetch(2, 2)
+  for _ = 1, 400 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16, "east")
+  coverage:updatePrefetch(1)
+  local stage = assert(coverage._aggregateStage, "the first slice starts a partial window")
+  Assert.isFalse(stage.region:isReady(), "the crossing arrives before the region is complete")
+  local copiedBefore = #stage.region._plates
+
+  coverage:recenter(3, 2)
+  Assert.equal(coverage.anchorX, 3, "the matching destination commits")
+  Assert.equal(coverage.anchorZ, 2)
+  Assert.isTrue(stage.region:isReady(), "the same region task is finished at publication")
+  Assert.isTrue(
+    #stage.region._plates > copiedBefore,
+    string.format("the partial region advances instead of restarting: %d -> %d", copiedBefore, #stage.region._plates)
+  )
+  Assert.isNil(coverage._aggregateStage, "the committed owner retains no partial stage")
+  Assert.equal(coverage:status().aggregateStageResumes, 1, "the crossing resumes the matching stage")
+  Assert.equal(coverage:status().aggregateFallbackBuilds, 0, "the crossing does not rebuild the window")
+  Assert.isTrue(coverage.region.collision:containsLocal(33, 4), "the resumed region composes the destination correctly")
+  coverage:release()
+end
+
+-- A superseded partial window is dropped without finishing obsolete work.
+function T.a_reversed_partial_window_is_dropped_before_the_new_target_starts()
+  local now = 0
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    clock = function()
+      now = now + 1
+      return now
+    end,
+    loadCell = function(descriptor)
+      return runtimeFactory({}, 40)(descriptor)
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 16, 2 * 32 + 16)
+  coverage:queuePrefetch(2, 2)
+  for _ = 1, 400 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16, "east")
+  coverage:updatePrefetch(1)
+  local obsolete = assert(coverage._aggregateStage, "the east target starts assembling")
+
+  coverage:setPrefetchFocus(2 * 32 + 1, 2 * 32 + 16, "west")
+  coverage:updatePrefetch(1)
+  local replacement = assert(coverage._aggregateStage, "the west target starts assembling")
+  Assert.isTrue(replacement ~= obsolete, "the reversal owns a new stage")
+  Assert.equal(replacement.anchorX, 1, "the replacement follows the new frontier")
+  Assert.isFalse(obsolete.region:isReady(), "the obsolete partial region is abandoned, not finished")
+  Assert.equal(coverage:status().aggregateFallbackBuilds, 0, "reversing prediction does not build a blocking fallback")
+  coverage:release()
+  Assert.isNil(coverage._aggregateStage, "release clears partial aggregate ownership")
+end
+
+-- Draw translation is batched by part, not by whole cell: a slice may stop
+-- inside one cell's static list without publishing a mixed or partial cell.
+function T.an_aggregate_slice_can_stop_inside_one_cells_draw_list()
+  local lookups = 0
+  local function countedPart(index)
+    return setmetatable({ static = true, index = index }, {
+      __index = function()
+        lookups = lookups + 1
+        return nil
+      end,
+    })
+  end
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(5, 5),
+    anchorX = 2,
+    anchorZ = 2,
+    clock = function()
+      return lookups * 0.001
+    end,
+    loadCell = function(descriptor)
+      local runtime = runtimeFactory({})(descriptor)
+      local mapDraws = {}
+      for index = 1, 40 do
+        mapDraws[index] = countedPart(index)
+      end
+      runtime.presentation = { mapDraws = mapDraws }
+      return runtime
+    end,
+  })
+  coverage:setPrefetchFocus(2 * 32 + 16, 2 * 32 + 16)
+  coverage:queuePrefetch(2, 2)
+  for _ = 1, 400 do
+    if not coverage:hasPrefetchWork() then
+      break
+    end
+    coverage:updatePrefetch(2)
+  end
+  lookups = 0
+  coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16, "east")
+  coverage:updatePrefetch(1)
+  local stage = assert(coverage._aggregateStage, "the measured slice starts the destination")
+  Assert.isTrue(stage.region:isReady(), "the small region completes before draw translation")
+  Assert.equal(
+    stage.nextCellIndex,
+    1,
+    string.format(
+      "the slice stops inside the first cell's draw list: index=%d parts=%d",
+      stage.nextCellIndex,
+      #stage.worldParts
+    )
+  )
+  Assert.equal(#stage.cellPresentation, 0, "an incomplete cell is not published")
+  Assert.isTrue(#stage.worldParts > 0 and #stage.worldParts < 40, "only part of the cell's draws were translated")
   coverage:release()
 end
 

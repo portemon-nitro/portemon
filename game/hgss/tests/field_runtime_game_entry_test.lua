@@ -590,6 +590,13 @@ end
 
 function T.constructor_applies_defaults_and_keeps_injected_identities()
   local originalLoad = FieldRuntime._load
+  local RepoFs = require("libs.storage.src.RepoFs")
+  local originalRepoFsNew = RepoFs.new
+  local repoFsCalls = {}
+  RepoFs.new = function(root, sourceFs)
+    repoFsCalls[#repoFsCalls + 1] = { root = root, sourceFs = sourceFs }
+    return originalRepoFsNew(root, sourceFs)
+  end
   FieldRuntime._load = function() end
   local function validEntry()
     return {
@@ -626,6 +633,13 @@ function T.constructor_applies_defaults_and_keeps_injected_identities()
     Assert.equal(defaulted.viewportHeight, WindowConfig.REFERENCE_HEIGHT)
     Assert.equal(defaulted.presentation, false)
     Assert.notNil(defaulted.overrideFs)
+    Assert.equal(#repoFsCalls, 1, "the default repository reader is constructed once")
+    Assert.equal(repoFsCalls[1].root, love.filesystem.getSourceBaseDirectory())
+    Assert.equal(
+      repoFsCalls[1].sourceFs,
+      love.filesystem,
+      "archived overrides read through the native source filesystem"
+    )
     Assert.isNil(defaulted.saveValidation)
     Assert.notNil(defaulted.localClock)
     Assert.notNil(defaulted.fieldPixelScale)
@@ -641,6 +655,7 @@ function T.constructor_applies_defaults_and_keeps_injected_identities()
       presentation = true,
     })
     Assert.equal(injected.overrideFs, overrideFs)
+    Assert.equal(#repoFsCalls, 1, "an explicit override bypasses the default repository reader")
     Assert.equal(injected.localClock, localClock)
     Assert.equal(injected.viewportWidth, 800)
     Assert.equal(injected.viewportHeight, 600)
@@ -657,6 +672,7 @@ function T.constructor_applies_defaults_and_keeps_injected_identities()
     end, "a game with a blank version must fail construction")
   end, debug.traceback)
   FieldRuntime._load = originalLoad
+  RepoFs.new = originalRepoFsNew
   if not ok then
     error(err, 0)
   end

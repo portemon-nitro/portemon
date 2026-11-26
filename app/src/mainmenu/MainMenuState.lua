@@ -11,6 +11,7 @@ local DisplayContext = require("libs.ui.src.DisplayContext")
 local Errors = require("libs.errors.src.Errors")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local GameVersion = require("romdump.src.source.GameVersion")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local MainMenuController = require("app.src.mainmenu.MainMenuController")
 local MainMenuInterface = require("app.src.mainmenu.MainMenuInterface")
@@ -44,6 +45,7 @@ local MainMenuState = {}
 MainMenuState.__index = MainMenuState
 
 local NEW_GAME_ID = "new-game"
+local GAME_SELECTION_ID = "game-selection"
 
 local function errorSummary(value)
   if Errors.is(value) then
@@ -53,7 +55,10 @@ local function errorSummary(value)
 end
 
 local function globalActions()
-  return { { id = NEW_GAME_ID, kind = "new_game" } }
+  return {
+    { id = NEW_GAME_ID, kind = "new_game" },
+    { id = GAME_SELECTION_ID, kind = "game_selection" },
+  }
 end
 
 -- The real badge count for the save card, read from the durable
@@ -180,6 +185,30 @@ local function semanticStateChanged(before, after)
     or not sameModal(before.confirmation, after.confirmation)
 end
 
+local function publishedSaveTime(entry)
+  if type(entry) ~= "table" then
+    return nil
+  end
+  local value = entry.modifiedAt
+  if type(value) ~= "number" or value ~= value or math.abs(value) == math.huge then
+    return nil
+  end
+  return value
+end
+
+local function newerSave(left, right)
+  if left.modifiedAt == nil or right.modifiedAt == nil then
+    if left.modifiedAt == right.modifiedAt then
+      return left.ordinal < right.ordinal
+    end
+    return right.modifiedAt == nil
+  end
+  if left.modifiedAt == right.modifiedAt then
+    return left.ordinal < right.ordinal
+  end
+  return left.modifiedAt > right.modifiedAt
+end
+
 ---@param seconds number
 ---@return string
 function MainMenuState.formatPlayTime(seconds)
@@ -300,9 +329,24 @@ function MainMenuState:_readSaves()
     error(entriesOrError, 0)
   end
   assert(type(entriesOrError) == "table", "save catalog list must return an array")
-  local saves = {}
+  local records = {}
   for ordinal, entry in ipairs(entriesOrError) do
-    saves[#saves + 1] = validSaveItem(entry, self.readyVersions, ordinal)
+    local otherGame = type(entry.versionId) == "string"
+      and entry.versionId ~= ""
+      and GameVersion.VERSIONS[entry.versionId] ~= nil
+      and not self.readyVersions[entry.versionId]
+    if not otherGame then
+      records[#records + 1] = {
+        item = validSaveItem(entry, self.readyVersions, ordinal),
+        modifiedAt = publishedSaveTime(entry),
+        ordinal = ordinal,
+      }
+    end
+  end
+  table.sort(records, newerSave)
+  local saves = {}
+  for index, record in ipairs(records) do
+    saves[index] = record.item
   end
   return saves, nil
 end
@@ -407,7 +451,7 @@ function MainMenuState:_activate()
     end
     return
   end
-  local accepted = intent.kind == "new_game"
+  local accepted = intent.kind == "new_game" or intent.kind == "game_selection"
   if intent.kind == "continue" or intent.kind == "edit" or intent.kind == "delete" then
     for _, save in ipairs(self.saves) do
       if save.saveId == intent.saveId then
@@ -423,6 +467,8 @@ function MainMenuState:_activate()
   end
   if intent.kind == "new_game" then
     self:_emit({ kind = "new_game" })
+  elseif intent.kind == "game_selection" then
+    self:_emit({ kind = "game_selection" })
   elseif intent.kind == "continue" then
     self:_continue(intent.saveId)
   elseif intent.kind == "edit" then

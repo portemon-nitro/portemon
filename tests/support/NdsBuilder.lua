@@ -11,6 +11,8 @@
 --   unmapped  = { "content", ... },   -- unreferenced FAT entries, next ids
 --   tree = { files = { {name=, content=} }, dirs = { ... } },  -- named files
 --   corrupt = { fatNotDiv8=, sectionOutOfRange= },
+--   banner = "...",                    -- optional static banner block appended after files
+--   bannerOffset = 0,                    -- optional header override for malformed-pointer fixtures
 -- }
 -- Returns (dataString, meta) where meta = { fileCount=, gameCode=, romSize= }.
 
@@ -85,7 +87,6 @@ function NdsBuilder.build(spec)
   local arm9 = spec.arm9 or "ARM9STUB"
   local arm7 = spec.arm7 or "ARM7STUB"
 
-  -- Section offsets.
   local cursor = HEADER_SIZE
   local arm9Off = cursor
   cursor = cursor + #arm9
@@ -106,6 +107,12 @@ function NdsBuilder.build(spec)
   for id = 0, total - 1 do
     starts[id] = cursor
     cursor = cursor + #payloads[id]
+  end
+  local bannerOffset
+  if spec.banner ~= nil then
+    assert(type(spec.banner) == "string", "NdsBuilder banner must be bytes")
+    bannerOffset = cursor
+    cursor = cursor + #spec.banner
   end
   local romSize = cursor
   local fatParts = {}
@@ -135,7 +142,7 @@ function NdsBuilder.build(spec)
   put(0x48, u32(fatOff) .. u32(fatSize))
   put(0x50, u32(ov9Off) .. u32(#ov9Bytes))
   put(0x58, u32(ov7Off) .. u32(#ov7Bytes))
-  put(0x68, u32(0))
+  put(0x68, u32(spec.bannerOffset ~= nil and spec.bannerOffset or bannerOffset or 0))
   put(0x80, u32(romSize))
   put(0x84, u32(0x4000))
 
@@ -159,6 +166,9 @@ function NdsBuilder.build(spec)
     .. fntBytes
     .. fatBytes
     .. table.concat(payloadParts)
+  if spec.banner ~= nil then
+    data = data .. spec.banner
+  end
 
   return data, { fileCount = total, gameCode = spec.gameCode or "IPKE", romSize = romSize }
 end

@@ -164,11 +164,136 @@ function T.level_up_stats_window_draws_over_the_hud()
 
   local plain = composedFrame(nil)
   local windowPriority = plain.animation.priority.window --[[@as integer]]
-  Assert.equal(plain.objects[1].objPriority, windowPriority, "the HUD shares the window's top priority and wins ties")
+  -- Detail composes the ball on its own translucent-capable fragment
+  -- ahead of the HUD fragment so the capture fade can blend the ball
+  -- while HUD stays normal. The invariant is HUD priority relative to
+  -- the stat window, not a particular submission-order integer or an
+  -- unnecessary empty draw pass: only the HUD drops to priority 1
+  -- while the window is open, and the ball fragment (when present)
+  -- stays at 0.
+  local function priorities(frame)
+    local values = {}
+    for _, fragment in ipairs(frame.objects) do
+      if type(fragment) == "table" and type(fragment.objPriority) == "number" then
+        values[#values + 1] = fragment.objPriority
+      end
+    end
+    return values
+  end
+  local function countPriority(frame, priority)
+    local found = 0
+    for _, value in ipairs(priorities(frame)) do
+      if value == priority then
+        found = found + 1
+      end
+    end
+    return found
+  end
+  Assert.isTrue(#plain.objects >= 1, "the detail frame carries its HUD fragment with or without a ball pass")
+  Assert.equal(countPriority(plain, 1), 0, "no HUD drops behind the window without the stat window")
+  Assert.isTrue(countPriority(plain, windowPriority) >= 1, "the HUD shares the window's top priority and wins ties")
 
   local leveled = composedFrame({ rows = { { label = "Max. HP", value = "+3" } } })
   Assert.equal(leveled.animation.priority.window, windowPriority, "the stat window keeps its top BG priority")
-  Assert.isTrue(leveled.objects[1].objPriority > windowPriority, "the HUD drops behind the open level-up stat window")
+  Assert.equal(countPriority(leveled, 1), 1, "exactly the HUD drops behind the open level-up stat window")
+end
+
+-- The successful-catch fade runs the ball as a translucent OBJ with the
+-- native EVA/EVB pair: the production compositor blends the translucent
+-- ball against the second planes with first-target NONE, keeping every
+-- native second plane eligible so world3d/window/transition stay
+-- translucent alongside the battlefield. A scripted compositor blend
+-- never replaces the live capture coefficients, and the retired actor
+-- returns control to the ordinary scene blend.
+function T.capture_fade_projects_native_register_through_production_composition()
+  local palette = {}
+  for index = 0, 15 do
+    palette[index + 1] = { r = index, g = index, b = index }
+  end
+  local graphics = {}
+  function graphics.getColor()
+    return 1, 1, 1, 1
+  end
+  function graphics.setColor() end
+  function graphics.transformPoint(x, y)
+    return x, y
+  end
+  function graphics.push() end
+  function graphics.pop() end
+  function graphics.intersectScissor() end
+  function graphics.draw() end
+  local function composedCapture(spriteBlend, compositorBlend, ballThrow)
+    local captured = nil
+    BattleRenderer.drawPane({
+      graphics = graphics,
+      text = { drawTextForRole = function() end },
+      windows = { drawWindow = function() end },
+      assets = {
+        drawable = function()
+          return nil
+        end,
+        renderPictures = function(_, _, frame)
+          captured = frame
+          return { handle = "picture-composite" }
+        end,
+      },
+      frameKey = "default",
+    }, {
+      battlers = {},
+      effectInstances = {},
+      hudPatchSpans = {},
+      message = "message",
+      textPalettes = { narration = { colors = palette } },
+      spriteBlend = spriteBlend,
+      openingPresentation = ballThrow ~= nil and { ballThrow = ballThrow } or nil,
+      sceneAnimation = {
+        main = {
+          systemBlend = {
+            blend = nil,
+            firstTarget = {},
+            secondTarget = { world3d = true, window = true, transition = true, battlefield = true },
+            objTargets = { second = true },
+          },
+          compositor = compositorBlend ~= nil and { blend = compositorBlend } or {},
+        },
+      },
+    }, "detail", {})
+    return assert(captured, "the detail pane composes one main frame")
+  end
+  local cases = {
+    { a = 15, b = 1 },
+    { a = 8, b = 8 },
+    { a = 1, b = 15 },
+    { a = 0, b = 16 },
+  }
+  for _, sample in ipairs(cases) do
+    -- A live translucent capture actor owns the register: its
+    -- coefficients win over an explicit compositor write and every
+    -- native second plane stays eligible with first-target NONE.
+    local ball = { visible = true, oamMode = "translucent", fadeAlpha = sample.a, fadeBeta = sample.b }
+    local frame = composedCapture({ blendCoefficientA = sample.a, blendCoefficientB = sample.b }, { mode = "alpha", eva = 8, evb = 8, evy = 0 }, ball)
+    local blend = assert(frame.animation.blend, "the capture frame carries its blend register")
+    Assert.equal(blend.mode, "alpha", "the capture fade blends as translucent OBJ")
+    Assert.equal(blend.eva, sample.a, "the capture fade carries native EVA")
+    Assert.equal(blend.evb, sample.b, "the capture fade carries native EVB")
+    local targets = assert(frame.animation.secondTarget, "the capture frame carries its second-target mask")
+    Assert.isTrue(targets.battlefield == true, "the battlefield stays eligible under the fade")
+    Assert.isTrue(targets.world3d == true, "world3d stays eligible under the fade")
+    Assert.isTrue(targets.window == true, "the window plane stays eligible under the fade")
+    Assert.isTrue(targets.transition == true, "the transition plane stays eligible under the fade")
+    local first = frame.animation.firstTarget or {}
+    Assert.isTrue(next(first) == nil, "the capture fade marks no first-target plane")
+  end
+  -- An ordinary scalar move patch without the capture actor keeps the
+  -- generic arbitration: the explicit compositor blend wins and no
+  -- capture second-target expansion applies.
+  do
+    local generic = composedCapture({ blendCoefficientA = 15, blendCoefficientB = 1 }, { mode = "alpha", eva = 8, evb = 8, evy = 0 }, nil)
+    Assert.equal(generic.animation.blend.eva, 8, "the ordinary task keeps compositor precedence without the capture actor")
+    Assert.equal(generic.animation.blend.evb, 8, "the ordinary task keeps compositor precedence without the capture actor")
+  end
+  local retired = composedCapture(nil, nil, nil)
+  Assert.isTrue(retired.animation.blend.mode ~= "alpha" or retired.animation.blend.eva ~= 0, "the retired fade releases the capture register")
 end
 
 -- Strip quads segregate by graphics namespace and strip dimensions: the same

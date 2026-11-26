@@ -1734,9 +1734,15 @@ for ballId, itemKey in ipairs(ballPictureKeys) do
   }
 end
 
+-- The breakout's mode-1 open plays the generic burst: virtual ball 1027
+-- indexes gBallAnimBurstParticles at 1027 - 1000 = 27, whose entry is
+-- {resource 52, skipped 255, emitterCount 2} (asm/battle_anim_data.s).
+-- One shared member serves every ball; it stages beside the per-ball
+-- sets, never as another ball's catch-opening burst or seal.
 BattlePresentationSources.BALL_PARTICLES = {
   archive = "NARC_a_0_9_5",
   entries = ballParticles,
+  generic = { member = 52, emitterCount = 2 },
   -- Balls whose members draw polygon quads, a draw kind the runtime does
   -- not reproduce; they keep their sprite without particles.
   unrepresented = { CHERISH_BALL = "polygon particle draw kind" },

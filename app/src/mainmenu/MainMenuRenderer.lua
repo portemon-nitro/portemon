@@ -4,6 +4,7 @@
 -- inner helper multiplies by a presentation scale. Launcher colors live
 -- here; the Oak selector owns its own tone recipe separately.
 
+local LauncherAssets = require("app.src.launcher.LauncherAssets")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 
@@ -13,12 +14,15 @@ local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 ---@field versionId string
 ---@field background number[]
 ---@field skin ProductMenuSkin
+---@field private returnIcon love.Image|nil
 local MainMenuRenderer = {}
 MainMenuRenderer.__index = MainMenuRenderer
 local MARK = { 0.85, 0.88, 0.9, 1 }
 local MARK_EDGE = { 0.35, 0.4, 0.45, 1 }
 
 local CARD_INSET = 10
+local RETURN_ICON_PATH = "assets/ui/mainmenu/sign-out-left.png"
+local RETURN_ICON_SIZE = 20
 
 local function setColor(graphics, color)
   graphics.setColor(color[1], color[2], color[3], color[4] or 1)
@@ -37,6 +41,29 @@ local function cardTitle(item)
     return item.playerName or "Save unavailable"
   end
   return item.errorSummary or "Save unavailable"
+end
+
+-- The Return glyph is an immutable product raster: read it through the app's
+-- checkout/fused adapter only at first paint and fail loudly if it cannot be
+-- acquired. FileData is released on every outcome; a decoded image is kept
+-- only after its size is verified.
+local function acquireReturnIcon(graphics)
+  local data = assert(LauncherAssets.read(RETURN_ICON_PATH), "required Main Menu icon is missing: " .. RETURN_ICON_PATH)
+  local ok, imageOrError = pcall(function()
+    return graphics.newImage(data)
+  end)
+  data:release()
+  if not ok then
+    error("required Main Menu icon could not be decoded: " .. RETURN_ICON_PATH .. ": " .. tostring(imageOrError), 0)
+  end
+  local image = assert(imageOrError, "required Main Menu icon did not decode: " .. RETURN_ICON_PATH)
+  local width, height = image:getDimensions()
+  if width ~= RETURN_ICON_SIZE or height ~= RETURN_ICON_SIZE then
+    image:release()
+    error("required Main Menu icon must be 20x20: " .. RETURN_ICON_PATH, 0)
+  end
+  image:setFilter("nearest", "nearest")
+  return image
 end
 
 -- Continue-card profile rows in one centered block: labels share the block
@@ -105,6 +132,7 @@ function MainMenuRenderer.new(options)
     skin = skin,
     _imagePool = options.imagePool,
     _ownsImagePool = options.ownsImagePool == true and options.imagePool ~= nil,
+    returnIcon = nil,
   }, MainMenuRenderer)
 end
 
@@ -218,9 +246,26 @@ function MainMenuRenderer:draw(view, plan)
       local globalFocus = view.focus.region == "global"
       local global = assert(shaped.global)
       local shapedGlobal = global --[[@as { actions: table<string, table<string, number>> }]]
-      local newGame = assert(shapedGlobal.actions["new-game"])
-      drawSkinCard(newGame, "normal", globalFocus)
-      drawSkinText("normal", displayUpper("NEW GAME"), newGame.x + CARD_INSET, newGame.y + 10)
+      for _, action in ipairs(assert(view.globalActions)) do
+        local rect = assert(shapedGlobal.actions[action.id], "every global action has resolved geometry")
+        local focused = globalFocus and view.focus.actionId == action.id
+        drawSkinCard(rect, "normal", focused)
+        if action.id == "game-selection" then
+          if self.returnIcon == nil then
+            self.returnIcon = acquireReturnIcon(graphics)
+          end
+          local icon = self.returnIcon
+          ---@cast icon love.Image
+          setColor(graphics, { 1, 1, 1, 1 })
+          graphics.draw(
+            icon,
+            rect.x + math.floor((rect.width - RETURN_ICON_SIZE) / 2),
+            rect.y + math.floor((rect.height - RETURN_ICON_SIZE) / 2)
+          )
+        else
+          drawSkinText("normal", displayUpper("New Game"), rect.x + CARD_INSET, rect.y + (rect.height - 16) / 2)
+        end
+      end
 
       if view.popup then
         local popup = assert(layout.popup)
@@ -318,6 +363,11 @@ function MainMenuRenderer:_drawScrollMark(rect, isUp)
 end
 
 function MainMenuRenderer:dispose()
+  local icon = self.returnIcon
+  self.returnIcon = nil
+  if icon ~= nil then
+    icon:release()
+  end
   if self.text and self.text.release then
     self.text:release()
   end

@@ -35,6 +35,7 @@ local function planFor(layout, width, height, pixelScale)
 end
 
 local CARD_TONE = { r = 123, g = 45, b = 67 }
+local RETURN_ICON_SIZE = 20
 
 local INTRO_WIDGETS = {
   "ball_open",
@@ -999,6 +1000,144 @@ function T.headings_and_chrome_magnify_together_across_integer_scales(scope)
   local largeRim = rimThickness(largePixels, largeFrame)
   Assert.isTrue(smallRim > 0, "the focused card must carry a measurable rim at unit scale")
   Assert.equal(largeRim, smallRim * 2, "card chrome must magnify exactly with its text")
+end
+
+local function captureFooterFrames(scope)
+  local outputDir = os.getenv("PORTEMON_MAIN_MENU_SCREENSHOT_DIR")
+  if outputDir == nil then
+    return
+  end
+  os.execute("mkdir -p " .. string.format("%q", outputDir))
+  local globals = {
+    { id = "new-game", kind = "new_game" },
+    { id = "game-selection", kind = "game_selection" },
+  }
+  local items = {
+    {
+      id = "save-1",
+      saveId = "save-1",
+      playerName = "PLAYER",
+      playTimeLabel = "1:00",
+      canContinue = true,
+      badgeCount = 0,
+      canDelete = true,
+    },
+  }
+  local focus = { region = "global", actionId = "game-selection" }
+  local cases = {
+    { name = "footer-256x192", width = 256, height = 192, scale = 1 },
+    { name = "footer-390x844", width = 390, height = 844, scale = 2 },
+    { name = "footer-844x390", width = 844, height = 390, scale = 2 },
+  }
+  for _, case in ipairs(cases) do
+    local layout = MainMenuLayout.compute(globals, items, focus, case.width, case.height, 0, nil, nil, false)
+    local hostWidth, hostHeight = case.width * case.scale, case.height * case.scale
+    local canvas = scope:own(love.graphics.newCanvas(hostWidth, hostHeight, { format = "rgba8", readable = true }))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    local menuRenderer, _ = renderer(scope)
+    menuRenderer:draw({
+      focusedId = "game-selection",
+      focus = focus,
+      globalActions = globals,
+      saves = items,
+      catalogError = nil,
+      layout = layout,
+    }, planFor(layout, hostWidth, hostHeight, case.scale))
+    love.graphics.setCanvas()
+    menuRenderer:dispose()
+    local pixels = scope:own(canvas:newImageData())
+    local encoded = assert(pixels:encode("png"))
+    local file = assert(io.open(outputDir .. "/" .. case.name .. ".png", "wb"))
+    Assert.isTrue(file:write(encoded:getString()) ~= nil)
+    Assert.isTrue(file:close())
+    encoded:release()
+  end
+end
+
+function T.return_action_paints_only_a_centered_left_facing_icon(scope)
+  local globals = {
+    { id = "new-game", kind = "new_game" },
+    { id = "game-selection", kind = "game_selection" },
+  }
+  local focus = { region = "global", actionId = "game-selection" }
+  local textCalls = {}
+  local textDouble = {
+    textWidth = function(_, value)
+      return #value * 7
+    end,
+    drawText = function(_, value)
+      textCalls[#textCalls + 1] = value
+    end,
+    drawTextWithPalette = function(_, value)
+      textCalls[#textCalls + 1] = value
+    end,
+  }
+  local lg = love.graphics
+  for _, scale in ipairs({ 1, 2 }) do
+    local layout = MainMenuLayout.compute(globals, {}, focus, 320, 240, 0, nil, nil, false)
+    local back = assert(layout.global.actions["game-selection"])
+    local hostWidth, hostHeight = 320 * scale, 240 * scale
+    local canvas = scope:own(lg.newCanvas(hostWidth, hostHeight))
+    lg.setCanvas(canvas)
+    lg.clear(0, 0, 0, 0)
+    local menuRenderer = MainMenuRenderer.new({
+      text = textDouble,
+      cacheFs = FieldUiFixture.cacheWithFontAndFrames(),
+      versionId = "heartgold",
+    })
+    local plan = planFor(layout, hostWidth, hostHeight, scale)
+    local placement = assert(plan.panes[1].placement)
+    menuRenderer:draw({
+      focusedId = "game-selection",
+      focus = focus,
+      globalActions = globals,
+      saves = {},
+      catalogError = nil,
+      layout = layout,
+    }, plan)
+    lg.setCanvas()
+    menuRenderer:dispose()
+
+    for _, value in ipairs(textCalls) do
+      Assert.isFalse(
+        value == "BACK TO GAME" or value == "SELECTION",
+        "Return must not paint its superseded two-line label at scale " .. scale
+      )
+    end
+    local pixels = scope:own(canvas:newImageData())
+    -- The doorway of the mirrored glyph spans more vertical ink than its
+    -- arrowhead; measure both halves of the actual raster through the
+    -- published placement, never against the source SVG text.
+    local function verticalInk(x0, x1, y0, y1)
+      local top, bottom = nil, nil
+      for y = y0, y1 do
+        for x = x0, x1 do
+          local hostX, hostY = LayoutGeometry.logicalToHost(placement, x, y)
+          local r, g, b, a = pixels:getPixel(hostX, hostY)
+          local face = math.abs(r - 0xFB / 255) < 0.05
+            and math.abs(g - 0xFB / 255) < 0.05
+            and math.abs(b - 0xFB / 255) < 0.05
+          if a > 0.5 and not face then
+            top = math.min(top or y, y)
+            bottom = math.max(bottom or y, y)
+          end
+        end
+      end
+      return top ~= nil and bottom - top + 1 or 0
+    end
+    local iconX = back.x + math.floor((back.width - RETURN_ICON_SIZE) / 2)
+    local iconY = back.y + math.floor((back.height - RETURN_ICON_SIZE) / 2)
+    local middle = iconX + math.floor(RETURN_ICON_SIZE / 2)
+    local leftInk = verticalInk(iconX, middle, iconY, iconY + RETURN_ICON_SIZE - 1)
+    local rightInk = verticalInk(middle + 1, iconX + RETURN_ICON_SIZE - 1, iconY, iconY + RETURN_ICON_SIZE - 1)
+    Assert.isTrue(leftInk > 0, "the icon must be visible inside Return at scale " .. scale)
+    Assert.isTrue(
+      rightInk > leftInk,
+      "the mirrored glyph's doorway side carries taller ink than its arrowhead side at scale " .. scale
+    )
+  end
+  captureFooterFrames(scope)
 end
 
 return GraphicsSmoke.suite(T)

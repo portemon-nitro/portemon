@@ -778,30 +778,22 @@ function T.tests.package_source_leases_are_shared_pinned_and_released_before_unm
   )
 end
 
--- The writer's own output path for the real selected version, occupied by a
+-- The writer's own output path for the selected version, occupied by a
 -- directory that holds one file: a real filesystem condition no Lua state can
--- remove, so persistence cannot succeed while the scenario plays. The scenario
--- therefore proves playable readiness that does not depend on a snapshot write,
--- and leaves the marker in place until teardown.
--- Resolved only inside a running scenario: discovery must stay loadable on a
--- machine without a prepared source.
-local function blockedOutputPath()
-  return AcceptanceHarness.defaultVersion() .. "/cache.zip.new"
-end
-
-local function occupySnapshotOutput()
-  local blocked = blockedOutputPath()
-  love.filesystem.createDirectory(blocked)
+-- remove, so persistence cannot succeed while the scenario plays.
+---@param blockedOutput string
+local function occupySnapshotOutput(blockedOutput)
+  love.filesystem.createDirectory(blockedOutput)
   Assert.isTrue(
-    love.filesystem.write(blocked .. "/held", "the snapshot writer cannot open its output"),
+    love.filesystem.write(blockedOutput .. "/held", "the snapshot writer cannot open its output"),
     "the scenario occupies the snapshot writer's output path"
   )
 end
 
-local function releaseSnapshotOutput()
-  local blocked = blockedOutputPath()
-  love.filesystem.remove(blocked .. "/held")
-  love.filesystem.remove(blocked)
+---@param blockedOutput string
+local function releaseSnapshotOutput(blockedOutput)
+  love.filesystem.remove(blockedOutput .. "/held")
+  love.filesystem.remove(blockedOutput)
 end
 
 -- One closed synthetic base: a complete generated graph saved through the
@@ -868,6 +860,7 @@ function T.tests.integrated_selection_keeps_readiness_and_ownership_stable()
   local LuaWriter = require("libs.codec.src.LuaWriter")
   local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
   local versionId = AcceptanceHarness.defaultVersion()
+  local blockedOutput = versionId .. "/cache.zip.new"
   local identity = ModPackageFixture.identity(versionId)
   local overridePath = ModPackageFixture.messageBankPath(OVERRIDE_BANK)
   local closedRoot = "mod-base-probe"
@@ -969,7 +962,7 @@ function T.tests.integrated_selection_keeps_readiness_and_ownership_stable()
       extra = string.rep("integrated-unused;", 2048),
     })
     ModPackageFixture.writeConfig(versionId, { "integrated.zip" })
-    occupySnapshotOutput()
+    occupySnapshotOutput(blockedOutput)
     love.filesystem.write = function(path, ...)
       writes[#writes + 1] = path
       return realWrite(path, ...)
@@ -1014,7 +1007,7 @@ function T.tests.integrated_selection_keeps_readiness_and_ownership_stable()
         )
       end
       Assert.notNil(
-        love.filesystem.getInfo(blockedOutputPath() .. "/held"),
+        love.filesystem.getInfo(blockedOutput .. "/held"),
         "no snapshot succeeded while the field played from resident and selected bytes"
       )
       Assert.equal(game:renderAttempts(), 0, "the scenario stops before GPU rendering")
@@ -1026,8 +1019,7 @@ function T.tests.integrated_selection_keeps_readiness_and_ownership_stable()
     local generatedWrites = 0
     for _, path in ipairs(writes) do
       if type(path) == "string" and (path == versionId or path:sub(1, #versionId + 1) == versionId .. "/") then
-        local blocked = blockedOutputPath()
-        if path:sub(1, #blocked) ~= blocked then
+        if path:sub(1, #blockedOutput) ~= blockedOutput then
           generatedWrites = generatedWrites + 1
         end
       end
@@ -1035,7 +1027,7 @@ function T.tests.integrated_selection_keeps_readiness_and_ownership_stable()
     Assert.equal(generatedWrites, 0, "playing with a selection performs no main-thread generated write")
   end, debug.traceback)
   love.filesystem.write = originalWrite
-  pcall(releaseSnapshotOutput)
+  pcall(releaseSnapshotOutput, blockedOutput)
   pcall(function()
     require("tests.support.SnapshotBootFixture").releaseWriters()
     require("tests.support.SnapshotBootFixture").removeRoot(closedRoot)

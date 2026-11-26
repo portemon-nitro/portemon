@@ -53,6 +53,9 @@ BattleAudio.SINK_SOUNDS = {
   -- resolves by the indexed symbol, so the role carries the ROM name.
   throw = "SEQ_SE_DP_NAGERU",
   captureOpen = "SEQ_SE_DP_BOWA4",
+  -- STATE_GET_POKEMON_BALL_CLICK voices the click after its 12-frame
+  -- hold (battle_command.c PlaySE_SetPan(SEQ_SE_DP_GETTING, 0x75)).
+  ballClick = "SEQ_SE_DP_GETTING",
   ballBounce1 = "SEQ_SE_DP_KON",
   ballBounce2 = "SEQ_SE_DP_KON2",
   ballBounce3 = "SEQ_SE_DP_KON3",

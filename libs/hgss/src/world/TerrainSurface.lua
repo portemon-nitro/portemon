@@ -89,39 +89,72 @@ local function distinctPlatesAt(terrain, plates, localX, localZ)
   return candidates
 end
 
+-- The ordered cell groups behind one plate set: nil for a plain single-cell
+-- artifact (or a lone cell group, which keeps the plain single plate set
+-- behavior), otherwise the central cell first in load order.
+---@param plates table[]
+---@return { plates: table[] }[]?
+local function buildCells(plates)
+  local cells, cellByKey = {}, {}
+  for _, plate in ipairs(plates) do
+    local key = cellOf(plate)
+    if key == nil then
+      return nil
+    end
+    local cell = cellByKey[key]
+    if cell == nil then
+      cell = { plates = {} }
+      cellByKey[key] = cell
+      cells[#cells + 1] = cell
+    end
+    cell.plates[#cell.plates + 1] = plate
+  end
+  -- A lone cell group has no cross-cell composition to resolve: it keeps the
+  -- plain single plate set behavior.
+  if #cells < 2 then
+    return nil
+  end
+  return cells
+end
+
+---@param artifact table<string, unknown>
+---@param plateById table<integer, table<string, unknown>>
+---@return TerrainSurface
+local function indexedSurface(artifact, plateById)
+  return setmetatable({
+    artifact = artifact,
+    plates = artifact.plates,
+    plateById = plateById,
+    cells = buildCells(artifact.plates),
+  }, TerrainSurface)
+end
+
 function TerrainSurface.new(artifact)
   assert(
     type(artifact) == "table" and type(artifact.plates) == "table",
     "TerrainSurface.new requires a terrain artifact"
   )
   local plateById = {}
-  local cells, cellByKey = {}, {}
   for _, plate in ipairs(artifact.plates) do
     assert(plateById[plate.id] == nil, "duplicate terrain surface id")
     plateById[plate.id] = plate
-    local key = cellOf(plate)
-    if key == nil then
-      cells = nil
-      cellByKey = nil
-    elseif cells ~= nil then
-      local cell = cellByKey[key]
-      if cell == nil then
-        cell = { plates = {} }
-        cellByKey[key] = cell
-        cells[#cells + 1] = cell
-      end
-      cell.plates[#cell.plates + 1] = plate
-    end
   end
-  -- A lone cell group has no cross-cell composition to resolve: it keeps the
-  -- plain single plate set behavior.
-  if cells ~= nil and #cells < 2 then
-    cells = nil
-  end
-  return setmetatable(
-    { artifact = artifact, plates = artifact.plates, plateById = plateById, cells = cells },
-    TerrainSurface
+  return indexedSurface(artifact, plateById)
+end
+
+-- Adopt an index built alongside the plates by their producer. Field region
+-- composition assigns each composite id while copying, so publication need not
+-- scan the whole window again. Cell grouping is still derived from the
+-- plates themselves, preserving the composite duplicate-plane policy.
+---@param artifact table<string, unknown>
+---@param plateById table<integer, table<string, unknown>>
+---@return TerrainSurface
+function TerrainSurface.fromIndexedPlates(artifact, plateById)
+  assert(
+    type(artifact) == "table" and type(artifact.plates) == "table" and type(plateById) == "table",
+    "TerrainSurface.fromIndexedPlates requires plates and their index"
   )
+  return indexedSurface(artifact, plateById)
 end
 
 function TerrainSurface:plate(surfaceId)

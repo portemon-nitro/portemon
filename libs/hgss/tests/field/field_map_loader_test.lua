@@ -168,6 +168,31 @@ local function acquireSource(reference)
   return lease
 end
 
+-- A counted acquirer over the same base bytes: every acquired collision
+-- interest is observable until its own release, so a test can prove the staged
+-- transaction returns exactly what it took.
+local function countedAcquireSource()
+  local counted = { leases = {} }
+  function counted.acquire(reference)
+    local lease = { value = assert(reference).data }
+    function lease:release()
+      self.value = nil
+    end
+    counted.leases[#counted.leases + 1] = lease
+    return lease
+  end
+  function counted.outstanding()
+    local outstanding = 0
+    for _, lease in ipairs(counted.leases) do
+      if lease.value ~= nil then
+        outstanding = outstanding + 1
+      end
+    end
+    return outstanding
+  end
+  return counted
+end
+
 -- Every loader in this suite borrows compact collision through the selected
 -- acquirer; the fixture's resident reader supplies the bytes.
 local function newLoader(cache, world, options)
@@ -575,7 +600,8 @@ function T.composes_neighbor_collision_and_terrain_into_runtime_map()
       return { draws = {}, release = function() end }
     end,
   }
-  local loader = newLoader(cache, world, { neighborLoader = neighborLoader })
+  local counted = countedAcquireSource()
+  local loader = newLoader(cache, world, { neighborLoader = neighborLoader, acquireSource = counted.acquire })
   local map = loader:load(0)
   Assert.equal(map.terrainDependencyHash, "g4-composite-terrain-v1|0:0:0:central-0|32:0.5:0:east")
   Assert.isTrue(map.collision:containsLocal(32, 4))
@@ -586,7 +612,9 @@ function T.composes_neighbor_collision_and_terrain_into_runtime_map()
   Assert.equal(candidates[1].cellOffsetX, 32)
   Assert.equal(candidates[1].cellOffsetY, 0.5)
   Assert.equal(map.terrain:sampleHeight(candidates[1].id, 32.5, 4.5), 0.5)
+  Assert.equal(counted.outstanding(), 2, "the published region keeps the central and neighbor collision interests")
   loader:release()
+  Assert.equal(counted.outstanding(), 0, "releasing the resident map returns both composed collision interests")
 end
 
 -- A failed neighbor-ring load releases the acquired scene runtime exactly once
@@ -2032,6 +2060,27 @@ local function stagedSceneLoader(autoReadyAfter)
   return loader, builds
 end
 
+local function advanceToReady(task)
+  for _ = 1, 128 do
+    if task:isReady() then
+      return
+    end
+    task:advance(1)
+  end
+  error("staged load did not complete within the bounded assembly budget", 0)
+end
+
+local function advanceUntilBuild(task, builds, index)
+  index = index or 1
+  for _ = 1, 128 do
+    if #builds >= index then
+      return builds[index]
+    end
+    task:advance(1)
+  end
+  error("staged builder did not start within the bounded preparation budget", 0)
+end
+
 function T.staged_load_completes_and_matches_synchronous_identity()
   local cache, world = fixture(1)
   local sceneLoader, builds = stagedSceneLoader(2)
@@ -2040,11 +2089,15 @@ function T.staged_load_completes_and_matches_synchronous_identity()
   Assert.isFalse(task:isReady(), "a staged load is pending until its scene completes")
   Assert.isNil(loader:get(0), "no entry is published before completion")
   Assert.equal(loader:residentCount(), 0, "no entry is resident before completion")
+  local build = advanceUntilBuild(task, builds)
+  Assert.equal(build.observed, 0, "preparation hands off before advancing the scene")
   task:advance(1)
   Assert.isFalse(task:isReady(), "one unit is not enough for a two-unit scene")
   Assert.isNil(loader:get(0), "no entry is published while the scene is pending")
   task:advance(1)
-  Assert.isTrue(task:isReady(), "the second unit completes the staged scene")
+  Assert.isTrue(builds[1].taken, "the second unit completes the staged scene")
+  Assert.isFalse(task:isReady(), "final assembly remains a separate cooperative stage")
+  advanceToReady(task)
   local staged = task:takeResult()
   Assert.equal(staged.mapId, 0, "the staged result carries the requested map")
   Assert.isTrue(builds[1].taken, "the staged result comes from the scene build")
@@ -2052,6 +2105,56 @@ function T.staged_load_completes_and_matches_synchronous_identity()
   Assert.isTrue(synchronous == staged, "synchronous load returns the staged identity without rebuilding")
   Assert.equal(#builds, 1, "the synchronous hit builds no second scene")
   loader:release()
+end
+
+-- Completing the scene builders does not spend the map's final assembly in
+-- the same call: region composition and publication are their own cooperative
+-- stage, so a cold presented load has no indivisible tail.
+function T.staged_scene_completion_yields_before_final_assembly()
+  local cache, world = fixture(1)
+  local sceneLoader, builds = stagedSceneLoader(1)
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
+  local task = loader:beginLoad(0)
+  advanceUntilBuild(task, builds)
+  task:advance(1)
+  Assert.isFalse(task:isReady(), "the finished scene does not synchronously assemble and publish the map")
+  Assert.isNil(loader:get(0), "final assembly publishes nothing before its own budgeted advance")
+  for _ = 1, 64 do
+    if task:isReady() then
+      break
+    end
+    task:advance(1)
+  end
+  Assert.isTrue(task:isReady(), "cooperative final assembly completes")
+  Assert.notNil(task:takeResult().fieldRegion, "the published map owns its composed region")
+  loader:release()
+end
+
+-- Final assembly owns the finished scene and every acquired collision until
+-- publication. A malformed terrain surface discovered there releases both
+-- exactly once, keeps the previous resident map intact and its own collision
+-- interest pinned, and leaves the failure sticky.
+function T.staged_final_assembly_failure_releases_the_finished_scene()
+  local cache, world, _, _, files = fixture(2)
+  files["data/generated/maps/0001/terrain.lua"].plates = nil
+  local sceneLoader, builds = stagedSceneLoader(1)
+  local counted = countedAcquireSource()
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, acquireSource = counted.acquire })
+  local first = loader:load(0)
+  Assert.equal(counted.outstanding(), 1, "the resident map keeps its own collision interest")
+  local task = loader:beginLoad(1)
+  advanceUntilBuild(task, builds, 2)
+  Assert.equal(counted.outstanding(), 2, "the staged destination owns its prepared collision interest")
+  local ok, err = pcall(task.advance, task, 1)
+  Assert.isFalse(ok, "malformed final terrain fails the assembly advance")
+  Assert.isTrue(builds[2].released, "the finished scene is released by the failed assembly driver")
+  Assert.equal(counted.outstanding(), 1, "the failed destination returns every acquired collision interest")
+  Assert.isNil(loader:get(1), "failed final assembly publishes no destination")
+  Assert.isTrue(loader:get(0) == first, "the previous resident map stays intact")
+  Assert.isFalse(pcall(task.finish, task), "finish after assembly failure stays loud")
+  task:release()
+  loader:release()
+  Assert.equal(counted.outstanding(), 0, "releasing the loader returns the resident map's collision interest")
 end
 
 function T.staged_load_publishes_nothing_before_completion()
@@ -2073,11 +2176,29 @@ function T.staged_load_cancel_before_completion_releases_the_scene_build()
   local sceneLoader, builds = stagedSceneLoader(100)
   local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   local task = loader:beginLoad(0)
-  task:advance(1)
+  local build = advanceUntilBuild(task, builds)
   Assert.isFalse(task:isReady(), "the scene is still pending")
   task:release()
   Assert.isTrue(builds[1].released, "cancelling releases the partial scene build")
   Assert.isNil(loader:get(0), "cancelling publishes no entry")
+  loader:release()
+end
+
+-- Preparation hands the acquired central collision to the suspended driver, so
+-- cancelling while a presented scene is still pending must return that source
+-- interest instead of pinning it on the abandoned coroutine stack.
+function T.staged_load_cancel_returns_the_prepared_collision_interest()
+  local cache, world = fixture(1)
+  local sceneLoader, builds = stagedSceneLoader(100)
+  local counted = countedAcquireSource()
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, acquireSource = counted.acquire })
+  local task = loader:beginLoad(0)
+  advanceUntilBuild(task, builds)
+  Assert.equal(#counted.leases, 1, "preparation acquires the central collision source once")
+  Assert.equal(counted.outstanding(), 1, "the staged transaction owns the prepared collision interest")
+  task:release()
+  Assert.equal(counted.outstanding(), 0, "cancelling returns the prepared collision interest")
+  Assert.isNil(loader:get(0), "a cancelled staged load publishes no entry")
   loader:release()
 end
 
@@ -2087,7 +2208,8 @@ function T.staged_load_failure_releases_partial_scene_and_stays_loud()
   local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
   builds.failAdvance = true
   local task = loader:beginLoad(0)
-  local buildTask = builds[1].task
+  local build = advanceUntilBuild(task, builds)
+  local buildTask = build.task
   function buildTask:advance(_)
     error("injected scene build failure", 0)
   end
@@ -2376,6 +2498,45 @@ function T.headless_begin_defers_generated_materialization_until_budgeted_advanc
   Assert.isFalse(task:isReady(), "the undiscovered headless map starts pending")
   Assert.isNil(loader:get(0), "no entry is published before cooperative preparation")
   Assert.equal(loader:residentCount(), 0, "no entry is resident before cooperative preparation")
+  task:release()
+  loader:release()
+end
+
+-- Presentation-enabled misses use the same lazy preparation boundary as
+-- headless misses: begin resolves only the structural record, and material
+-- acquisition plus scene construction starts only under a positive budget.
+function T.presented_begin_defers_material_acquisition_and_scene_construction()
+  local cache, world = fixture(1)
+  local loadLuaCalls, readCalls = 0, 0
+  local realLoadLua, realRead = cache.loadLua, cache.read
+  cache.loadLua = function(_, path)
+    loadLuaCalls = loadLuaCalls + 1
+    return realLoadLua(cache, path)
+  end
+  cache.read = function(_, path)
+    readCalls = readCalls + 1
+    return realRead(cache, path)
+  end
+  local sceneLoader, builds = stagedSceneLoader(1)
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader })
+  local task = loader:beginLoad(0)
+  Assert.equal(loadLuaCalls, 0, "a presented begin reads no generated Lua")
+  Assert.equal(readCalls, 0, "a presented begin reads no generated bytes")
+  Assert.equal(#builds, 0, "a presented begin starts no scene construction")
+  Assert.isFalse(task:isReady(), "the cold presented map starts pending")
+
+  task:advance(1)
+  Assert.isTrue(loadLuaCalls > 0, "the first budgeted advance starts semantic acquisition")
+  Assert.equal(#builds, 0, "preparation yields before scene construction")
+  for _ = 1, 64 do
+    if task:isReady() then
+      break
+    end
+    task:advance(1)
+  end
+  Assert.isTrue(task:isReady(), "the presented load completes after cooperative preparation")
+  Assert.equal(#builds, 1, "scene construction starts once after preparation")
+  Assert.isTrue(builds[1].taken, "the completed map owns the staged scene")
   task:release()
   loader:release()
 end
@@ -2908,15 +3069,19 @@ function T.staged_load_with_cold_neighbor_stays_pending_without_publishing()
   local neighborLoader, neighborBuilds = stagedNeighborLoader()
   local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
   local task = loader:beginLoad(1)
+  advanceUntilBuild(task, neighborBuilds)
   Assert.equal(task:advance(0), 0, "a zero budget does no work")
   Assert.isFalse(task:isReady(), "nothing is ready before any budgeted advance")
   task:advance(1)
   Assert.isFalse(task:isReady(), "a cold neighbor keeps the staged map pending")
   Assert.isNil(loader:get(1), "no map is published while the neighbor is cold")
-  Assert.equal(#neighborBuilds, 1, "beginning a presented load starts a staged neighbor task")
+  Assert.equal(#neighborBuilds, 1, "cooperative preparation starts the staged neighbor task")
   neighborBuilds[1].held = false
   task:advance(1)
-  Assert.isTrue(task:isReady(), "the map completes once the neighbor worker replies")
+  Assert.isTrue(neighborBuilds[1].taken, "the neighbor result transfers before final assembly")
+  Assert.isFalse(task:isReady(), "final assembly remains pending after the neighbor reply")
+  advanceToReady(task)
+  Assert.isTrue(task:isReady(), "the map completes after cooperative final assembly")
   local map = task:takeResult()
   Assert.equal(map.mapId, 1, "the staged result carries the requested map")
   Assert.isTrue(neighborBuilds[1].taken, "the published map carries the staged neighbor result")
@@ -2934,9 +3099,9 @@ function T.staged_load_cancel_releases_scene_and_neighbor_stages_without_publish
   local neighborLoader, neighborBuilds = stagedNeighborLoader()
   local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
   local task = loader:beginLoad(1)
-  task:advance(1)
+  advanceUntilBuild(task, neighborBuilds)
   Assert.isFalse(task:isReady(), "both stages are still pending")
-  Assert.equal(#neighborBuilds, 1, "beginning a presented load starts a staged neighbor task")
+  Assert.equal(#neighborBuilds, 1, "cooperative preparation starts the staged neighbor task")
   task:release()
   Assert.isTrue(sceneBuilds[1].released, "cancelling releases the partial scene build")
   Assert.isTrue(neighborBuilds[1].released, "cancelling releases the pending neighbor stage")
@@ -2945,6 +3110,33 @@ function T.staged_load_cancel_releases_scene_and_neighbor_stages_without_publish
   local map = loader:load(1)
   Assert.notNil(map.neighborRuntime, "an independent load still attaches its neighbor ring")
   Assert.isTrue(loader:get(1) == map, "the independent load publishes its identity")
+  loader:release()
+end
+
+-- Region assembly acquires each neighbor cell's collision wrapper between
+-- cooperative checkpoints. Cancelling there must return the central and
+-- already-acquired neighbor interests exactly once instead of leaving them on
+-- the abandoned assembly coroutine.
+function T.staged_load_cancel_returns_collisions_acquired_during_region_assembly()
+  local cache, world, _, _, files = fixture(1)
+  withNeighborCell(files, 0)
+  local sceneLoader, builds = stagedSceneLoader(1)
+  local counted = countedAcquireSource()
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, acquireSource = counted.acquire })
+  local task = loader:beginLoad(0)
+  advanceUntilBuild(task, builds)
+  for _ = 1, 64 do
+    if #counted.leases >= 2 then
+      break
+    end
+    task:advance(1)
+  end
+  Assert.equal(#counted.leases, 2, "assembly acquires the neighbor collision after the central one")
+  Assert.equal(counted.outstanding(), 2, "both acquired interests stay pinned while the region is pending")
+  Assert.isFalse(task:isReady(), "the composed region is not published yet")
+  task:release()
+  Assert.equal(counted.outstanding(), 0, "cancelling mid-assembly returns every acquired collision interest")
+  Assert.isNil(loader:get(0), "a cancelled assembly publishes no entry")
   loader:release()
 end
 
@@ -2960,6 +3152,7 @@ function T.staged_load_neighbor_failure_keeps_prior_map_and_stays_loud()
   local first = loader:load(0)
   Assert.equal(#neighborBuilds, 0, "a map without neighbors starts no neighbor stage")
   local task = loader:beginLoad(1)
+  advanceUntilBuild(task, neighborBuilds)
   task:advance(1)
   Assert.isFalse(task:isReady(), "a cold neighbor keeps the staged map pending")
   Assert.isNil(loader:get(1), "no map is published while the neighbor is cold")
@@ -2988,11 +3181,10 @@ function T.staged_load_neighbor_failure_keeps_prior_map_and_stays_loud()
   loader:release()
 end
 
--- A neighbor constructor that throws synchronously must not orphan the
--- staged scene task already started by beginLoad: the scene build is
--- released exactly once, nothing is published, and the loader stays
--- usable for a later load.
-function T.staged_begin_neighbor_failure_releases_pending_scene_task_without_publishing()
+-- A neighbor constructor that throws during cooperative preparation must not
+-- orphan the staged scene task already started by the driver: the scene build
+-- is released exactly once, nothing is published, and the loader stays usable.
+function T.staged_neighbor_constructor_failure_releases_pending_scene_task()
   local cache, world, _, _, files = fixture(2)
   withNeighborCell(files, 1)
   local sceneLoader, sceneBuilds = stagedSceneLoader(100)
@@ -3007,12 +3199,13 @@ function T.staged_begin_neighbor_failure_releases_pending_scene_task_without_pub
     return healthyNeighbor.begin(cacheFs, descriptors, options)
   end
   local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
-  local ok, err = pcall(loader.beginLoad, loader, 1)
-  Assert.isFalse(ok, "a throwing neighbor constructor fails the staged begin")
+  local task = loader:beginLoad(1)
+  local ok, err = pcall(task.advance, task, 128)
+  Assert.isFalse(ok, "a throwing neighbor constructor fails the staged advance")
   Assert.equal(tostring(err), "injected neighbor begin failure", "the original neighbor failure propagates")
   Assert.isTrue(sceneBuilds[1].released, "the started scene task is released exactly once")
-  Assert.isNil(loader:get(1), "a failed begin publishes no entry")
-  Assert.equal(loader:residentCount(), 0, "a failed begin leaves no resident")
+  Assert.isNil(loader:get(1), "failed preparation publishes no entry")
+  Assert.equal(loader:residentCount(), 0, "failed preparation leaves no resident")
   local map = loader:load(1)
   Assert.notNil(map.neighborRuntime, "the loader stays usable for a later load")
   Assert.isTrue(loader:get(1) == map, "the later load publishes its identity")
@@ -3023,7 +3216,7 @@ end
 -- staged task; a throwing neighbor constructor must release that runtime
 -- exactly once, while a successful startup keeps it owned until the
 -- normal release path.
-function T.staged_begin_neighbor_failure_releases_ready_scene_runtime_without_publishing()
+function T.staged_neighbor_constructor_failure_releases_ready_scene_runtime()
   local cache, world, sceneLoader, releases, files = fixture(2)
   withNeighborCell(files, 1)
   local neighborLoader = {}
@@ -3031,12 +3224,13 @@ function T.staged_begin_neighbor_failure_releases_ready_scene_runtime_without_pu
     error("injected neighbor begin failure", 0)
   end
   local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
-  local ok, err = pcall(loader.beginLoad, loader, 1)
-  Assert.isFalse(ok, "a throwing neighbor constructor fails the staged begin")
+  local task = loader:beginLoad(1)
+  local ok, err = pcall(task.advance, task, 128)
+  Assert.isFalse(ok, "a throwing neighbor constructor fails the staged advance")
   Assert.equal(tostring(err), "injected neighbor begin failure", "the original neighbor failure propagates")
   Assert.equal(releases[1], 1, "the materialized scene runtime is released exactly once")
-  Assert.isNil(loader:get(1), "a failed begin publishes no entry")
-  Assert.equal(loader:residentCount(), 0, "a failed begin leaves no resident")
+  Assert.isNil(loader:get(1), "failed preparation publishes no entry")
+  Assert.equal(loader:residentCount(), 0, "failed preparation leaves no resident")
   loader:release()
   Assert.equal(releases[1], 1, "release stays exactly once")
 
@@ -3048,10 +3242,12 @@ function T.staged_begin_neighbor_failure_releases_ready_scene_runtime_without_pu
     neighborLoader = healthyNeighbor,
   })
   local task = healthyLoader:beginLoad(1)
+  advanceUntilBuild(task, healthyBuilds)
   Assert.isNil(healthyReleases[1], "a successful startup releases nothing up front")
   healthyBuilds[1].held = false
   task:advance(1)
-  Assert.isTrue(task:isReady(), "the staged map completes once the neighbor worker replies")
+  advanceToReady(task)
+  Assert.isTrue(task:isReady(), "the staged map completes after the neighbor and assembly stages")
   local map = task:takeResult()
   Assert.notNil(map.sceneRuntime, "the published map owns its scene runtime")
   Assert.notNil(map.neighborRuntime, "the published map owns its neighbor ring")
@@ -3063,7 +3259,7 @@ end
 
 -- Cleanup is best-effort: if releasing the started scene task itself
 -- throws, the outward error stays the neighbor construction cause.
-function T.staged_begin_neighbor_failure_preserves_cause_when_scene_release_throws()
+function T.staged_neighbor_constructor_failure_preserves_cause_when_scene_release_throws()
   local cache, world, _, _, files = fixture(2)
   withNeighborCell(files, 1)
   local innerLoader, _ = stagedSceneLoader(100)
@@ -3083,15 +3279,16 @@ function T.staged_begin_neighbor_failure_preserves_cause_when_scene_release_thro
     error("injected neighbor begin failure", 0)
   end
   local loader = newLoader(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
-  local ok, err = pcall(loader.beginLoad, loader, 1)
-  Assert.isFalse(ok, "the neighbor constructor failure still fails the staged begin")
+  local task = loader:beginLoad(1)
+  local ok, err = pcall(task.advance, task, 128)
+  Assert.isFalse(ok, "the neighbor constructor failure still fails the staged advance")
   Assert.equal(
     tostring(err),
     "injected neighbor begin failure",
     "the original neighbor cause surfaces, not the cleanup failure"
   )
   Assert.equal(releaseAttempts, 1, "cleanup is attempted exactly once")
-  Assert.isNil(loader:get(1), "a failed begin publishes no entry")
+  Assert.isNil(loader:get(1), "failed preparation publishes no entry")
   loader:release()
 end
 

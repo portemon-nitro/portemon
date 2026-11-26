@@ -9,6 +9,14 @@
 local Errors = require("libs.errors.src.Errors")
 local GameVersion = require("romdump.src.source.GameVersion")
 
+---@class RomSource
+---@field data string?
+---@field name string
+---@field private _bytes love.Data?
+---@field private _sha1 string?
+---@field private _size integer?
+---@field _candidatePath string?
+---@field _origin { kind: string, path: string|false, zipEntry: string|false, displayName: string }
 local RomSource = {}
 RomSource.__index = RomSource
 
@@ -24,6 +32,9 @@ local function basename(path)
   return (path:gsub("\\", "/"):match("([^/]+)$")) or path
 end
 
+---@param data string
+---@param displayName string?
+---@return RomSource
 function RomSource.fromString(data, displayName)
   assert(type(data) == "string", "RomSource requires string data")
   local name = displayName or "rom"
@@ -38,8 +49,13 @@ end
 -- A borrowed view over one immutable shared buffer. The view never owns the
 -- buffer: release() only forgets the reference so peer views keep reading.
 -- Callers that need the buffer itself (for channel handoff) use byteData().
+---@param byteData love.Data
+---@param displayName string?
+---@return RomSource
 function RomSource.fromByteData(byteData, displayName)
-  assert(type(byteData) == "userdata" and type(byteData.getSize) == "function", "RomSource requires shared buffer data")
+  assert(type(byteData) == "userdata", "RomSource requires shared buffer data")
+  ---@cast byteData love.Data
+  assert(type(byteData.getSize) == "function", "RomSource requires shared buffer data")
   local name = displayName or "rom"
   return setmetatable({
     _bytes = byteData,
@@ -95,6 +111,162 @@ local function isSafeZipMember(member)
     end
   end
   return true
+end
+
+local managedMountSequence = 0
+
+-- Managed opens never overlap for one archive, but each Lua state can open a
+-- different archive. The shared clock plus a live-namespace check gives each
+-- short mount a process-unique identity.
+---@param fs love.filesystem
+---@return string
+local function nextManagedMountIdentity(fs)
+  while true do
+    managedMountSequence = managedMountSequence + 1
+    local stamp = math.floor(love.timer.getTime() * 1000000)
+    local identity = string.format("managed-rom-%d-%d", stamp, managedMountSequence)
+    if fs.getInfo(identity) == nil then
+      return identity
+    end
+  end
+end
+
+-- Read one exact root member from a physical save-relative archive. Managed
+-- archives have the fixed one-member root listing; the compressed file is mounted
+-- in place and never copied into a Lua string. The returned Data-backed source
+-- outlives the mount, which is released on every path.
+---@param relativePath string
+---@param exactMember string
+---@param snapshot boolean? mount an isolated native Data snapshot instead of the physical archive
+---@return RomSource?
+---@return Errors.Error?
+function RomSource.fromManagedZip(relativePath, exactMember, snapshot)
+  if not isSafeZipMember(relativePath) then
+    return nil,
+      Errors.new(
+        "ROM_ARCHIVE_INVALID",
+        "managed archive path is not a safe save-relative path",
+        { path = tostring(relativePath) }
+      )
+  end
+  if not isSafeZipMember(exactMember) then
+    return nil,
+      Errors.new(
+        "ROM_ARCHIVE_INVALID",
+        "managed archive member is unsafe",
+        { path = relativePath, entry = tostring(exactMember) }
+      )
+  end
+  local fs = love.filesystem
+  local info = fs.getInfo(relativePath)
+  if info == nil then
+    return nil, Errors.new("ROM_ARCHIVE_INVALID", "managed archive is missing", { path = relativePath })
+  end
+  if info.type ~= "file" then
+    return nil, Errors.new("ROM_ARCHIVE_INVALID", "managed archive is not a file", { path = relativePath })
+  end
+  local namespace = nextManagedMountIdentity(fs)
+  local mountedArchive
+  local mountName = relativePath
+  local unmountName = relativePath
+  local mounted
+  local function releaseMount()
+    fs.unmount(unmountName)
+  end
+  if snapshot or not relativePath:lower():match("%.zip$") then
+    -- A repair reads one immutable Data snapshot under its own namespace, so
+    -- a compiler's physical mount of the same archive remains independent.
+    -- PHYSFS also needs a .zip name for checked .zip.new stages.
+    local data, readError = fs.read("data", relativePath)
+    if data == nil then
+      return nil,
+        Errors.new("ROM_ARCHIVE_INVALID", "managed archive could not be read", {
+          path = relativePath,
+          cause = tostring(readError),
+        })
+    end
+    if snapshot then
+      mountName = namespace
+    else
+      mountName = relativePath:lower():match("%.zip$") and relativePath or (relativePath .. ".zip")
+    end
+    unmountName = snapshot and namespace or mountName
+    ---@cast data love.FileData
+    mountedArchive = fs.newFileData(data, mountName)
+    data:release()
+    mounted = fs.mount(mountedArchive, namespace)
+  else
+    mounted = fs.mount(relativePath, namespace)
+  end
+  if not mounted then
+    releaseMount()
+    if mountedArchive then
+      mountedArchive:release()
+    end
+    return nil, Errors.new("ROM_ARCHIVE_INVALID", "managed archive could not be mounted", { path = relativePath })
+  end
+  local found
+  local failure
+  local ok, lookupErr = pcall(function()
+    local entries = fs.getDirectoryItems(namespace)
+    if #entries ~= 1 or entries[1] ~= exactMember then
+      failure = Errors.new("ROM_ARCHIVE_INVALID", "managed archive must contain exactly one root member", {
+        path = relativePath,
+        entries = entries,
+      })
+      return
+    end
+    local full = namespace .. "/" .. exactMember
+    local memberInfo = fs.getInfo(full)
+    if memberInfo == nil then
+      failure = Errors.new("ROM_ARCHIVE_INVALID", "managed archive member is missing", {
+        path = relativePath,
+        entry = exactMember,
+      })
+      return
+    end
+    if memberInfo.type ~= "file" then
+      failure = Errors.new("ROM_ARCHIVE_INVALID", "managed archive member is not a file", {
+        path = relativePath,
+        entry = exactMember,
+      })
+      return
+    end
+    local data = fs.read("data", full)
+    if data == nil then
+      failure = Errors.new("ROM_ARCHIVE_INVALID", "managed archive member could not be read", {
+        path = relativePath,
+        entry = exactMember,
+      })
+      return
+    end
+    ---@cast data love.FileData
+    found = RomSource.fromByteData(data, basename(relativePath) .. ":" .. exactMember)
+    found._origin = {
+      kind = "zip",
+      path = relativePath,
+      zipEntry = exactMember,
+      displayName = basename(relativePath),
+    }
+  end)
+  releaseMount()
+  if mountedArchive then
+    mountedArchive:release()
+  end
+  if not ok then
+    if Errors.is(lookupErr) then
+      return nil, lookupErr
+    end
+    return nil,
+      Errors.new("ROM_ARCHIVE_INVALID", "managed archive could not be read", {
+        path = relativePath,
+        cause = tostring(lookupErr),
+      })
+  end
+  if failure then
+    return nil, failure
+  end
+  return found
 end
 
 -- Read exactly one member from an in-memory zip. Missing, non-file, or
@@ -308,6 +480,7 @@ function RomSource:size()
   return self._size or 0
 end
 
+---@return love.Data
 function RomSource:byteData()
   if self._bytes then
     return self._bytes
@@ -369,7 +542,9 @@ function RomSource:release()
   if self.data then
     self._size = #self.data
   elseif self._bytes and not self._size then
-    self._size = self._bytes:getSize()
+    local size = self._bytes:getSize()
+    ---@cast size integer
+    self._size = size
   end
   -- Borrowed views only forget their reference: the shared buffer itself is
   -- never released here, so peer views keep reading after one view closes.

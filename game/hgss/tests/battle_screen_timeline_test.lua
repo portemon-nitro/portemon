@@ -3685,6 +3685,136 @@ function T.switch_voices_recall_and_send_out_with_the_side_pan()
   Assert.equal(sounds.played[3].pan, BattleAudio.SIDE_PAN.player, "the send-out pans to the player side")
 end
 
+-- Task_RecallPokemon mode-5 opens the ball in place with the shared
+-- generic burst while the mon shrinks: the recall wires the mode-5
+-- selector through its production route, keeping the generic resources
+-- for their verified consumer instead of an unused capture-era set.
+function T.recall_wires_mode5_generic_burst_through_its_production_route()
+  local timeline = BattleTimeline.new({ sound = sink().sound })
+  local view = openingView()
+  view.own[2] = {
+    combatant = 2,
+    participant = 1,
+    side = 1,
+    controller = "player",
+    active = false,
+    hp = 30,
+    maxHp = 30,
+    species = "EEVEE",
+    form = 0,
+    name = "BENCH",
+    ballKey = "POKE_BALL",
+    level = 20,
+    experience = 8000,
+  }
+  timeline:reset(view)
+  local after = openingView()
+  after.own[2] = view.own[2]
+  local swap = event("switch", { from = 1, to = 2, position = 1 }, { [1] = 52, [3] = 57 })
+  swap.cause = { kind = "switch" }
+  local delivery = packet(1, { swap }, after)
+  delivery.before.own[2] = view.own[2]
+  Assert.isTrue(timeline:present(delivery), "the switch is accepted")
+  -- The recall ball-particles cue starts once its narration page
+  -- releases: drain until the mode-5 start appears, like the production
+  -- screen steps its particle owner alongside the timeline.
+  local generics = {}
+  for _ = 1, 600 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    for _, start in ipairs(timeline:takeBallParticleStarts()) do
+      if type(start) == "table" and start.effect == "generic-burst" then
+        generics[#generics + 1] = start
+      end
+    end
+    if #generics >= 1 then
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.equal(#generics, 1, "the recall starts one mode-5 generic burst")
+  Assert.equal(generics[1].ballKey, "POKE_BALL", "the generic burst rides the recalled ball")
+  Assert.isTrue(type(generics[1].x) == "number" and type(generics[1].y) == "number", "the generic burst carries its in-place spot")
+  -- The mode-5 ball actor stages with the burst and stays up through
+  -- the shrink: it retires in ball-recall-end after the idle join,
+  -- before the HUD slides and the incoming send-out.
+  do
+    local presentation = timeline:openingPresentation()
+    local actor = type(presentation) == "table" and presentation.ballThrow or nil
+    Assert.isTrue(type(actor) == "table" and actor.visible == true, "the recall stages its in-place ball actor")
+    Assert.equal(actor.selector, "ball:POKE_BALL", "the recall actor rides the recalled ball")
+  end
+  for _ = 1, 600 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the recall drains through its burst join before the send-out")
+  do
+    local presentation = timeline:openingPresentation()
+    local actor = type(presentation) == "table" and presentation.ballThrow or nil
+    Assert.isTrue(actor == nil or actor.visible ~= true, "the recall actor retires before the incoming scene")
+  end
+end
+
+-- Follower recalls run Task_RecallFollowMon with no ball: even a
+-- departed carrying a ball identity stages no generic burst.
+function T.recall_skips_mode5_generic_burst_for_followers()
+  local timeline = BattleTimeline.new({ sound = sink().sound })
+  local view = openingView()
+  view.own[1].slot = 0
+  view.followMonSlot = 0
+  view.own[2] = {
+    combatant = 2,
+    participant = 1,
+    side = 1,
+    controller = "player",
+    active = false,
+    slot = 1,
+    hp = 30,
+    maxHp = 30,
+    species = "EEVEE",
+    form = 0,
+    name = "BENCH",
+    ballKey = "POKE_BALL",
+    level = 20,
+    experience = 8000,
+  }
+  timeline:reset(view)
+  local after = openingView()
+  after.own[1].slot = 0
+  after.followMonSlot = 0
+  after.own[2] = view.own[2]
+  local swap = event("switch", { from = 1, to = 2, position = 1 }, { [1] = 52, [3] = 57 })
+  swap.cause = { kind = "switch" }
+  local delivery = packet(1, { swap }, after)
+  delivery.before.own[2] = view.own[2]
+  delivery.before.own[1].slot = 0
+  delivery.before.followMonSlot = 0
+  Assert.isTrue(timeline:present(delivery), "the follower switch is accepted")
+  local generics = 0
+  for _ = 1, 600 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    for _, start in ipairs(timeline:takeBallParticleStarts()) do
+      if type(start) == "table" and start.effect == "generic-burst" then
+        generics = generics + 1
+      end
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.equal(generics, 0, "the follower recall stages no mode-5 burst")
+end
+
 -- subscript_0011_ThrowBall names the throwing trainer, the target enters
 -- the ball before any shake, shakes print nothing, and a break-out sends
 -- the target back out before its line.
@@ -3996,6 +4126,25 @@ function T.mid_battle_send_out_flashes_the_ball_white_through_the_arc()
   }
   local switch = event("switch", { from = 1, incoming = 2 }, { [1] = 52, [3] = 57 })
   Assert.isTrue(timeline:present(packet(1, { switch }, after)), "the mid-battle switch is accepted")
+  -- The mode-5 recall stages its own ball first: drain it through its
+  -- retirement before observing the send-out throw.
+  do
+    local sawRecall = false
+    for _ = 1, 600 do
+      if timeline:messageActive() then
+        timeline:ack()
+      end
+      advance(timeline, TICK)
+      timeline:takeBallParticleStarts()
+      local ball = timeline:openingPresentation().ballThrow
+      if type(ball) == "table" and ball.visible == true then
+        sawRecall = true
+      end
+      if sawRecall and (type(ball) ~= "table" or ball.visible ~= true) then
+        break
+      end
+    end
+  end
   -- The send-out script prints its line and slides the party gauge before
   -- the throw, so advance to the first visible ball and then observe it
   -- frame by frame.
@@ -4129,6 +4278,25 @@ function T.mid_battle_foe_send_out_shows_the_source_open_cell_and_flash()
   local switch = event("switch", { from = 3, incoming = 5 }, { [1] = 52, [5] = 57 })
   switch.sequence = 2
   Assert.isTrue(timeline:present(packet(2, { switch }, after)), "the mid-battle foe switch is accepted")
+  -- The mode-5 recall stages its own ball first: drain it through its
+  -- retirement before observing the send-out throw.
+  do
+    local sawRecall = false
+    for _ = 1, 600 do
+      if timeline:messageActive() then
+        timeline:ack()
+      end
+      advance(timeline, TICK)
+      timeline:takeBallParticleStarts()
+      local ball = timeline:openingPresentation().ballThrow
+      if type(ball) == "table" and ball.visible == true then
+        sawRecall = true
+      end
+      if sawRecall and (type(ball) ~= "table" or ball.visible ~= true) then
+        break
+      end
+    end
+  end
   local throwStart = nil
   for tick = 1, 600 do
     if timeline:messageActive() then
@@ -4413,9 +4581,11 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
   -- Fixed-point truncation lands one pixel above the nominal spot with
   -- no snap (BattleAnimUtil_UpdateLinearMotion), matching the source.
   Assert.equal(ball.y, 87, "the ball rests where it fell")
-  -- BREAK_OUT re-sends the target with the same capture ball: the
-  -- resting ball opens again where it fell, then the seal, the ball
-  -- sound, and the cry follow exactly like a send-out.
+  -- BREAK_OUT hijacks the send-out with mode 1 (ThrowArcAndOpen): the
+  -- old capture ball stays two frames while the attempted ball holds
+  -- in place for 12 ticks, then opens with the forced frame-2 white
+  -- blend; the seal, the ball sound, and the cry follow from the open.
+  -- No generic burst plays on this path (mode 5 owns the recall burst).
   timeline:takeBallParticleStarts()
   local queued = #timeline._queue
   local broke = event("broke_free", { shakes = 1 }, { [1] = 52, [3] = 57 })
@@ -4425,33 +4595,20 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
     timeline:present(packet(2, { broke }, after), { [2] = "Aargh! Almost had it!" }),
     "the break-out is accepted with its selected wording"
   )
-  local opens, sounds, seals, reveals = {}, {}, {}, {}
+  local opens, reveals = {}, {}
   for index = queued + 1, #timeline._queue do
     local cue = timeline._queue[index]
-    if cue.kind == "ball-throw" then
+    if cue.kind == "ball-breakout-open" then
       opens[#opens + 1] = cue
-    elseif cue.kind == "sound" then
-      sounds[#sounds + 1] = cue
-    elseif cue.kind == "ball-particles" and cue.effect == "seal" then
-      seals[#seals + 1] = cue
     elseif cue.kind == "reveal" then
       reveals[#reveals + 1] = cue
     end
   end
   Assert.equal(#opens, 1, "the break-out re-opens the resting ball")
-  Assert.isTrue(opens[1].trainerless == true, "no trainer tracks the re-opened ball")
-  Assert.isTrue(opens[1].openOnly == true, "the fresh ball opens in place")
-  Assert.equal(opens[1].targetX, 192, "the re-open plays at the foe's source spot")
-  Assert.equal(opens[1].targetY, 86, "the re-open plays at the foe's source spot")
-  local resendSound = false
-  for _, cue in ipairs(sounds) do
-    if type(cue.cue) == "table" and cue.cue.kind == "effect" then
-      resendSound = resendSound or cue.cue.symbol == BattleAudio.SINK_SOUNDS.ballOpen
-    end
-  end
-  Assert.isTrue(resendSound, "the re-open voices the ball sound")
-  Assert.equal(#seals, 1, "the re-open starts the capture ball's seal")
-  Assert.equal(seals[1].ballKey, "GREAT_BALL", "the seal rides the capture ball, not the origin ball")
+  Assert.equal(opens[1].ballKey, "GREAT_BALL", "the re-open plays the attempted ball")
+  Assert.equal(opens[1].oldBallKey, "GREAT_BALL", "the overlapped ball is the capture ball")
+  Assert.equal(opens[1].x, 192, "the re-open plays at the foe's source spot")
+  Assert.equal(opens[1].y, 86, "the re-open plays at the foe's source spot")
   Assert.equal(#reveals, 1, "the break-out reveals its battler")
   Assert.isTrue(reveals[1].fadeColor ~= nil, "the re-open poofs with the capture ball's color")
   Assert.notNil(reveals[1].sendOutCry, "the re-open cries with the reveal")
@@ -4460,13 +4617,22 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
   Assert.isTrue(battler(timeline:battlers(), 3).visible, "the target comes back out")
   local ball = timeline:openingPresentation().ballThrow
   Assert.isFalse(ball.visible, "the re-opened ball hides behind the poof")
-  local bursts = {}
+  local bursts, generics, seals = {}, {}, {}
   for _, start in ipairs(timeline:takeBallParticleStarts()) do
     if type(start) == "table" and start.effect == "burst" then
       bursts[#bursts + 1] = start
     end
+    if type(start) == "table" and start.effect == "generic-burst" then
+      generics[#generics + 1] = start
+    end
+    if type(start) == "table" and start.effect == "seal" then
+      seals[#seals + 1] = start
+    end
   end
-  Assert.equal(#bursts, 0, "the re-open starts no burst stand-in")
+  Assert.equal(#bursts, 0, "the re-open starts no ball-specific opening burst")
+  Assert.equal(#generics, 0, "ordinary breakout never plays the mode-5 generic burst")
+  Assert.equal(#seals, 1, "the re-open starts the capture ball's seal from the open")
+  Assert.equal(seals[1].ballKey, "GREAT_BALL", "the seal rides the capture ball, not the origin ball")
 end
 
 return { tests = T }

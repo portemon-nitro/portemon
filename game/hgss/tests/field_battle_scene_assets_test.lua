@@ -886,7 +886,7 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
   }
   for selector, entry in pairs(manifest.battleBalls.entries) do
     leafRecords[BattlePresentationCache.ballPath(selector)] = {
-      schema = "g4-battle-ball-v4",
+      schema = "g4-battle-ball-v5",
       selector = selector,
       catalogIdentity = manifest.catalogIdentity,
       entry = entry,
@@ -2871,7 +2871,7 @@ function T.modded_trainer_and_ball_payloads_stage_without_catalog_recheck()
       entry = trainerEntry,
     },
     [BattlePresentationCache.ballPath("ball:MODDED")] = {
-      schema = "g4-battle-ball-v4",
+      schema = "g4-battle-ball-v5",
       selector = "ball:MODDED",
       catalogIdentity = "modded-catalog",
       entry = ballEntry,

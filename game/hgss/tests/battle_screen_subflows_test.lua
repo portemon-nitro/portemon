@@ -52,7 +52,7 @@ local function screenManifest()
   -- launch entries (numeric trainer class 2 resolves to YOUNGSTER).
   local manifest = BattlePresentationManifestFixture.launchView(
     { "back:PKMN_TRAINER_ETHAN", "front:YOUNGSTER" },
-    { "ball:POKE_BALL" }
+    { "ball:POKE_BALL", "ball:MASTER_BALL" }
   )
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
   return manifest
@@ -1031,9 +1031,20 @@ function T.bag_selection_consumes_only_through_native_execution()
     Assert.deepEqual(capture.submits[1].choices[1], ballFragment, "the throw matches its native fragment" .. tag)
     -- Pump through the terminal narration and decline the optional
     -- nickname question so the launch reaches its terminal result.
+    -- The capture wobble is the only motion that leaves a small nonzero
+    -- ball rotation behind: arcs spin in 0x2000 steps while drops, bounces,
+    -- and clicks hold zero, so a non-multiple here proves the shake cues
+    -- ran against the same published ball the renderer samples.
+    local wobbled = false
     for _ = 1, 1200 do
       ackNarration(capture)
       capture.pump(1)
+      local opening = capture.screen:view().openingPresentation
+      local ball = type(opening) == "table" and opening.ballThrow or nil
+      local rotation = type(ball) == "table" and ball.rotation or nil
+      if type(rotation) == "number" and rotation ~= 0 and rotation % 0x2000 ~= 0 then
+        wobbled = true
+      end
       local completion = capture.screen:status().completion
       if completion ~= nil and completion.kind == "capture_nickname" and completion.stage == "question" then
         capture.screen:input({ { type = "navigate", direction = "down" } })
@@ -1060,6 +1071,7 @@ function T.bag_selection_consumes_only_through_native_execution()
         .. ")"
     )
     Assert.equal(capture.battle:status().result, "capture", "the guaranteed ball reports its capture" .. tag)
+    Assert.isTrue(wobbled, "the thrown ball visibly wobbles through its shakes" .. tag)
     Assert.equal(capture.bag:quantity("MASTER_BALL"), 0, "the thrown ball publishes exactly once" .. tag)
     local demandedBall = false
     for _, demand in ipairs(capture.assets.prepared) do

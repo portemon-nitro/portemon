@@ -286,6 +286,7 @@ function T.resumable_composition_matches_the_blocking_constructor()
     Assert.equal(other.distance, plate.distance)
   end
   Assert.equal(resumed:sourceSurface("1:0", 0), blocking:sourceSurface("1:0", 0))
+  Assert.equal(resumed.terrain:sampleHeight(resumed:sourceSurface("1:0", 0), 32.5, 4.5), 3)
   Assert.isTrue(resumed.collision:isBlockedLocal(32, 4), "the composed collision still routes to the neighbor")
 end
 

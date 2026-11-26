@@ -266,22 +266,28 @@ function T.heavy_ball_follows_the_weight_stages()
   Assert.equal(light.calc.odds, 3, "the light subtraction floors without going negative")
 end
 
--- The Nest Ball stages by target level: triple at 11, double through 21,
--- single from 22 on, with the below-one result clamped at 32.
+-- The Nest Ball stages 40 minus the target level in tenths below level
+-- 40, floored at one ball (battle_command.c NEST_BALL case): native
+-- level 1 is 3.9x, 11 is 2.9x, 22 is 1.8x, 29 is 1.1x, and 30+ is 1x.
 function T.nest_ball_follows_the_level_stages()
   local cases = {
-    { level = 11, odds = 100 },
-    { level = 12, odds = 66 },
-    { level = 21, odds = 66 },
-    { level = 22, odds = 33 },
-    { level = 32, odds = 33 },
+    { level = 1, odds = 130 },
+    { level = 10, odds = 100 },
+    { level = 11, odds = 96 },
+    { level = 12, odds = 93 },
+    { level = 20, odds = 66 },
+    { level = 21, odds = 63 },
+    { level = 22, odds = 60 },
+    { level = 29, odds = 36 },
+    { level = 30, odds = 33 },
+    { level = 40, odds = 33 },
   }
   for _, case in ipairs(cases) do
     local outcome = calculate("NEST_BALL", targetFacts({ catchRate = 100, level = case.level }), wildEnv(), { 0, 0, 0 })
     Assert.equal(outcome.calc.odds, case.odds, "level " .. case.level .. " stages exactly")
   end
   local staged = calculate("NEST_BALL", targetFacts({ catchRate = 100, level = 11 }), wildEnv(), { 0, 0, 0 })
-  Assert.equal(staged.calc.threshold, 52428, "the triple-odds threshold is staged exactly")
+  Assert.equal(staged.calc.threshold, 52428, "the level-11 threshold is staged exactly")
 end
 
 -- The Level Ball compares floored halves and quarters of the attacker

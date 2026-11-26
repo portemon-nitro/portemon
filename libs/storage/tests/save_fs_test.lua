@@ -321,6 +321,67 @@ function T.exists_sees_directories_without_reading_bytes()
   Assert.equal(reads, before, "existence must not read payload bytes")
 end
 
+-- Published payload time is read-only metadata. It follows the same confined
+-- path as every save operation, returns the backend's finite value unchanged,
+-- and treats absent or unknown host timestamps as unknown rather than inventing
+-- one from the catalog, backups, or current clock.
+function T.modtime_reads_confined_payload_metadata_without_reading_bytes()
+  local backend = FakeCache.new()
+  local modtimes = {
+    ["saves/games/save-00000001.lua"] = 1700000000.25,
+    ["saves/catalog.lua"] = 1800000000,
+    ["saves/backups/save-00000001.1.lua"] = 1900000000,
+  }
+  local originalGetInfo = backend.getInfo
+  local reads = 0
+  function backend:getInfo(path)
+    local info = originalGetInfo(self, path)
+    if info ~= nil and info.type == "file" then
+      info.modtime = modtimes[path]
+    end
+    return info
+  end
+  local originalRead = backend.read
+  function backend:read(path)
+    reads = reads + 1
+    return originalRead(self, path)
+  end
+  local s = SaveFs.global(backend)
+  s:write("games/save-00000001.lua", "PAYLOAD")
+  s:write("catalog.lua", "CATALOG")
+  s:write("backups/save-00000001.1.lua", "BACKUP")
+
+  Assert.equal(s:getModtime("games/save-00000001.lua"), 1700000000.25, "the payload timestamp is returned unchanged")
+  Assert.isNil(s:getModtime("games/missing.lua"), "a missing payload has no timestamp")
+  Assert.isNil(s:getModtime("games"), "a directory is not a published payload timestamp")
+  Assert.equal(reads, 0, "timestamp metadata never reads save bytes")
+end
+
+function T.modtime_does_not_synthesize_unknown_or_nonfinite_host_values()
+  for _, value in ipairs({ false, "unknown", 0 / 0, math.huge, -math.huge }) do
+    local backend = FakeCache.new()
+    backend.files["saves/games/save-00000001.lua"] = "PAYLOAD"
+    local originalGetInfo = backend.getInfo
+    function backend:getInfo(path)
+      local info = originalGetInfo(self, path)
+      if info ~= nil then
+        info.modtime = value
+      end
+      return info
+    end
+    Assert.isNil(SaveFs.global(backend):getModtime("games/save-00000001.lua"), "unknown time stays unknown")
+  end
+end
+
+function T.modtime_confines_paths_to_the_save_root()
+  throwsCode(StorageErrors.SAVE_PATH_INVALID, function()
+    SaveFs.global(FakeCache.new()):getModtime("../heartgold/field-session.lua")
+  end)
+  throwsCode(StorageErrors.SAVE_PATH_INVALID, function()
+    save("heartgold"):getModtime("games/../../catalog.lua")
+  end)
+end
+
 function T.replace_reports_backend_failure()
   local backend = FakeCache.new()
   local s = save("heartgold", backend)

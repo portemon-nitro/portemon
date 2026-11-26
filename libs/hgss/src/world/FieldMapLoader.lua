@@ -352,6 +352,31 @@ local function releaseRegionCollision(region)
   end
 end
 
+-- Dispose every collision wrapper a staged transaction acquired but has not
+-- yet transferred into a composed region, exactly once. Until a region owns
+-- them, this list is their only owner: dropping a wrapper from a suspended
+-- coroutine's locals would pin its source interest forever.
+---@param collisions table[]
+local function releaseAcquiredCollisions(collisions)
+  for index = #collisions, 1, -1 do
+    local collision = collisions[index]
+    collisions[index] = nil
+    if type(collision.dispose) == "function" then
+      collision:dispose()
+    end
+  end
+end
+
+-- Drop the transaction's claims on wrappers a composed region now owns. The
+-- region disposes them through its own cells, so transferring must never
+-- return their source interests here.
+---@param collisions table[]
+local function transferAcquiredCollisions(collisions)
+  for index = #collisions, 1, -1 do
+    collisions[index] = nil
+  end
+end
+
 -- Dispose the collision wrapper a runtime map owns outside a composed region.
 ---@param runtimeMap table<string, unknown>
 function releaseMapCollision(runtimeMap)
@@ -375,8 +400,9 @@ end
 ---@param descriptor { file: string }
 ---@param missingCode string
 ---@param context table<string, unknown>
+---@param acquired table[] owner list the wrapper registers with before returning
 ---@return CollisionGrid
-local function loadCollision(loader, descriptor, missingCode, context)
+local function loadCollision(loader, descriptor, missingCode, context, acquired)
   local sourcePath = descriptor.file
   local reference = loader.cacheFs:resolveAsset(sourcePath)
   if reference == nil then
@@ -391,11 +417,13 @@ local function loadCollision(loader, descriptor, missingCode, context)
     sourceLease:release()
     error(openErr, 0)
   end
-  return CollisionGrid.new(view, {
+  local grid = CollisionGrid.new(view, {
     worldOriginX = context.worldOriginX or 0,
     worldOriginZ = context.worldOriginZ or 0,
     sourceLease = sourceLease,
   })
+  acquired[#acquired + 1] = grid
+  return grid
 end
 
 ---@param loader FieldMapLoader
@@ -403,8 +431,9 @@ end
 ---@param centralCollision table<string, unknown>
 ---@param centralTerrain table<string, unknown>
 ---@param checkpoint fun()? cooperative yield invoked once per neighbor element when staging
+---@param acquired table[] owner list every acquired collision registers with
 ---@return table<string, unknown> composite region
-local function loadNeighborRegion(loader, scene, centralCollision, centralTerrain, checkpoint)
+local function loadNeighborRegion(loader, scene, centralCollision, centralTerrain, checkpoint, acquired)
   local cacheFs = loader.cacheFs
   local neighbors = {}
   for _, descriptor in ipairs(scene.neighbors) do
@@ -422,13 +451,14 @@ local function loadNeighborRegion(loader, scene, centralCollision, centralTerrai
       offsetTilesY = descriptor.offsetTilesY,
       offsetTilesZ = descriptor.offsetTilesZ,
     })
+    local collision = loadCollision(loader, descriptor.collision, FieldErrors.FIELD_MAP_NEIGHBOR_CACHE_MISSING, {
+      mapId = scene.mapId,
+    }, acquired)
     neighbors[#neighbors + 1] = {
       offsetTilesX = descriptor.offsetTilesX,
       offsetTilesY = descriptor.offsetTilesY,
       offsetTilesZ = descriptor.offsetTilesZ,
-      collision = loadCollision(loader, descriptor.collision, FieldErrors.FIELD_MAP_NEIGHBOR_CACHE_MISSING, {
-        mapId = scene.mapId,
-      }),
+      collision = collision,
       terrain = TerrainSurface.new(terrainArtifact),
     }
     if checkpoint then
@@ -814,23 +844,6 @@ local function makeLogicalMap(record, fieldData)
   return logicalMap
 end
 
--- The compiled visual scene record of one map: a plain Lua metadata read naming
--- the area type, camera, and descriptor layout. It acquires no terrain,
--- collision, GPU, or presentation resource, so a caller can decide whether a
--- map even has a physical window before starting a full load. A missing record
--- means the visual closure was never published, and stays a loud failure.
----@param idOrSymbol string|integer
----@return table<string, unknown>
-function FieldMapLoader:sceneRecord(idOrSymbol)
-  assert(not self.released, "field map loader is released")
-  local record = worldRecord(self.world, idOrSymbol)
-  return loadRequired(
-    self.cacheFs,
-    MapAssetCache.mapDir(record.id) .. "/scene.lua",
-    FieldErrors.FIELD_MAP_VISUAL_CACHE_MISSING
-  )
-end
-
 -- Acquires the scene-free semantic map for logical residency: scripts,
 -- actors, zone identity, weather/audio selection, interactions, transition
 -- metadata, and world coordinates. Consults only the semantic readiness
@@ -1026,8 +1039,9 @@ end
 ---@param loader FieldMapLoader
 ---@param record table<string, unknown>
 ---@param checkpoint fun()? cooperative yield invoked after each material operation when staging
+---@param acquiredCollisions table[] owner list for every collision wrapper this transaction acquires
 ---@return table<string, unknown>
-local function prepareLoad(loader, record, checkpoint)
+local function prepareLoad(loader, record, checkpoint, acquiredCollisions)
   local fieldData = loader:_acquireSemantic(record)
   if checkpoint then
     checkpoint()
@@ -1115,7 +1129,7 @@ local function prepareLoad(loader, record, checkpoint)
       mapId = record.id,
       worldOriginX = scene.matrix.worldOriginX,
       worldOriginZ = scene.matrix.worldOriginZ,
-    })
+    }, acquiredCollisions)
     if checkpoint then
       checkpoint()
     end
@@ -1140,6 +1154,7 @@ local function prepareLoad(loader, record, checkpoint)
     terrainArtifact = terrainArtifact,
     centralCollision = centralCollision,
     mapProps = mapProps,
+    acquiredCollisions = acquiredCollisions,
   }
 end
 
@@ -1253,8 +1268,13 @@ local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
       if checkpoint then
         checkpoint()
       end
-      region = loadNeighborRegion(loader, scene, ctx.centralCollision, centralTerrain, checkpoint)
+      region =
+        loadNeighborRegion(loader, scene, ctx.centralCollision, centralTerrain, checkpoint, ctx.acquiredCollisions)
       box.region = region
+      -- The composed region owns every grid through its cells from here on, so
+      -- the transaction's acquisitions are disarmed before publication can
+      -- fail for an unrelated reason.
+      transferAcquiredCollisions(ctx.acquiredCollisions)
     end
     local runtimeMap = {
       mapId = record.id,
@@ -1364,6 +1384,7 @@ local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
         sceneRuntime:release()
       end
       releaseRegionCollision(box.region)
+      releaseAcquiredCollisions(ctx.acquiredCollisions)
       error(result, 0)
     end
     loader:_evict(record.id)
@@ -1394,6 +1415,7 @@ end
 ---@field _sceneRuntime FieldMapLoader.SceneRuntime?
 ---@field _neighborTask table<string, unknown>?
 ---@field _neighborRuntime table<string, unknown>?
+---@field _acquiredCollisions table[] collision wrappers this transaction owns until a region takes them
 ---@field _ready boolean
 ---@field _result table<string, unknown>?
 ---@field _failed unknown?
@@ -1442,30 +1464,32 @@ local function failStaged(task, err)
       neighborRuntime:release()
     end)
   end
+  releaseAcquiredCollisions(task._acquiredCollisions)
   task._failed = err
   error(err, 0)
 end
 
--- Completes one staged transaction: the scene and staged neighbor runtimes
--- move into the single assembly transaction so a failure releases each
--- exactly once, and the published resident map marks the task ready.
+-- Starts final assembly in the same cooperative driver shape as preparation.
+-- Scene and neighbor ownership moves into the driver box until the published
+-- runtime map takes it, so cancellation and failure keep one cleanup owner.
 ---@param task FieldMapLoader.StagedTask
-local function completeAssembly(task)
+local function beginAssemblyDriver(task)
   local sceneRuntime = task._sceneRuntime
-  task._sceneRuntime = nil
   local neighborRuntime = task._neighborRuntime
+  task._sceneRuntime = nil
   task._neighborRuntime = nil
-  local box = {}
-  if neighborRuntime ~= nil then
-    box.neighborRuntime = neighborRuntime
-  end
-  local okAssemble, mapOrErr = pcall(assembleComplete, task._loader, task._ctx, sceneRuntime, nil, box)
-  if not okAssemble then
-    task._failed = mapOrErr
-    error(mapOrErr, 0)
-  end
-  task._result = mapOrErr
-  task._ready = true
+  local box = { sceneRuntime = sceneRuntime, neighborRuntime = neighborRuntime }
+  local loader = assert(task._loader)
+  local ctx = assert(task._ctx)
+  local thread = coroutine.create(function()
+    local function checkpoint()
+      coroutine.yield(1)
+    end
+    local runtimeMap = assembleComplete(loader, ctx, sceneRuntime, checkpoint, box)
+    box.sceneRuntime = nil
+    return runtimeMap
+  end)
+  task._driver = { thread = thread, box = box }
 end
 
 -- Fails a headless driver task: releases task-owned partial runtimes
@@ -1492,19 +1516,50 @@ local function failDriver(task, box, err)
       doomed:release()
     end)
   end
+  if box.neighborTask ~= nil then
+    local doomed = box.neighborTask
+    box.neighborTask = nil
+    pcall(function()
+      doomed:release()
+    end)
+  end
+  if box.sceneTask ~= nil then
+    local doomed = box.sceneTask
+    box.sceneTask = nil
+    pcall(function()
+      doomed:release()
+    end)
+  end
+  releaseAcquiredCollisions(task._acquiredCollisions)
   task._failed = err
   error(err, 0)
 end
 
--- Resumes a lazy headless driver for at most maxWorkUnits cooperative
--- checkpoints. Each checkpoint reports exactly one consumed unit; the
--- driver publishes the resident entry only on its final return.
+-- Move a prepared context and its delegated builds out of the driver box.
+-- The staged task then owns them through the same advance/finish/release
+-- paths as a resident hit's collaborators.
+---@param task FieldMapLoader.StagedTask
+---@param box table<string, unknown>
+local function adoptDriver(task, box)
+  task._ctx = box.ctx
+  task._sceneTask = box.sceneTask
+  task._sceneRuntime = box.sceneRuntime
+  task._neighborTask = box.neighborTask
+  task._neighborRuntime = box.neighborRuntime
+  task._driver = nil
+end
+
+-- Resumes a lazy load driver for at most maxWorkUnits cooperative checkpoints.
+-- Each checkpoint reports one consumed unit; preparation may hand delegated
+-- builders to the staged task, while a fully synchronous composition publishes
+-- only on its final return.
 ---@param task FieldMapLoader.StagedTask
 ---@param maxWorkUnits integer
 ---@return integer consumed work units within the caller budget
 local function advanceDriver(task, maxWorkUnits)
   local driver = assert(task._driver)
   local thread = assert(driver.thread)
+  local box = driver.box
   local consumed = 0
   while consumed < maxWorkUnits do
     local ok, yielded = coroutine.resume(thread)
@@ -1512,33 +1567,43 @@ local function advanceDriver(task, maxWorkUnits)
       failDriver(task, driver.box, yielded)
     end
     if coroutine.status(thread) == "dead" then
-      task._result = assert(yielded, "headless load returned no runtime map")
-      task._ready = true
-      task._driver = nil
+      if box.ctx ~= nil then
+        adoptDriver(task, box)
+      else
+        task._result = assert(yielded, "staged load returned no runtime map")
+        task._ready = true
+        task._driver = nil
+      end
       break
     else
-      assert(yielded == 1, "headless load yielded an invalid work unit")
+      assert(yielded == 1, "staged load yielded an invalid work unit")
       consumed = consumed + 1
     end
   end
   return consumed
 end
 
--- Finishes a lazy headless driver synchronously: the same cooperative
--- transaction runs to completion with no budget cap.
+-- Finishes a lazy load driver synchronously: the same cooperative transaction
+-- runs to completion with no budget cap, handing off delegated builders when
+-- preparation completes.
 ---@param task FieldMapLoader.StagedTask
 local function finishDriver(task)
   local driver = assert(task._driver)
   local thread = assert(driver.thread)
+  local box = driver.box
   while task._driver ~= nil do
     local ok, yielded = coroutine.resume(thread)
     if not ok then
       failDriver(task, driver.box, yielded)
     end
     if coroutine.status(thread) == "dead" then
-      task._result = assert(yielded, "headless load returned no runtime map")
-      task._ready = true
-      task._driver = nil
+      if box.ctx ~= nil then
+        adoptDriver(task, box)
+      else
+        task._result = assert(yielded, "staged load returned no runtime map")
+        task._ready = true
+        task._driver = nil
+      end
     end
   end
 end
@@ -1608,14 +1673,13 @@ function StagedLoadTask:advance(workUnits)
   if self._sceneTask ~= nil or self._neighborTask ~= nil then
     return consumed
   end
-  -- Assembly is loader-owned work worth one unit: when the delegated
-  -- builds already consumed the whole budget, publication waits for
-  -- a later advance or a blocking finish instead of overspending.
+  -- Final assembly is its own cooperative stage. If delegated builds spent
+  -- the whole budget, publication waits for a later advance or blocking finish.
   if consumed >= workUnits then
     return consumed
   end
-  completeAssembly(self)
-  return consumed + 1
+  beginAssemblyDriver(self)
+  return consumed + advanceDriver(self, workUnits - consumed)
 end
 
 ---@return boolean
@@ -1645,7 +1709,8 @@ function StagedLoadTask:finish()
   if not self._ready then
     if self._driver ~= nil then
       finishDriver(self)
-    else
+    end
+    if not self._ready then
       if self._sceneTask ~= nil then
         local sceneTask = assert(self._sceneTask)
         local okFinish, runtimeOrErr = pcall(sceneTask.finish, sceneTask)
@@ -1664,7 +1729,8 @@ function StagedLoadTask:finish()
         end
         self._neighborRuntime = runtimeOrErr
       end
-      completeAssembly(self)
+      beginAssemblyDriver(self)
+      finishDriver(self)
     end
   end
   return self:takeResult()
@@ -1698,6 +1764,22 @@ function StagedLoadTask:release()
           doomed:release()
         end)
       end
+      releaseRegionCollision(box.region)
+      box.region = nil
+      if box.neighborTask ~= nil then
+        local doomed = box.neighborTask
+        box.neighborTask = nil
+        pcall(function()
+          doomed:release()
+        end)
+      end
+      if box.sceneTask ~= nil then
+        local doomed = box.sceneTask
+        box.sceneTask = nil
+        pcall(function()
+          doomed:release()
+        end)
+      end
     end
     if self._sceneTask ~= nil then
       local sceneTask = assert(self._sceneTask)
@@ -1727,23 +1809,32 @@ function StagedLoadTask:release()
         neighborRuntime:release()
       end)
     end
+    releaseAcquiredCollisions(self._acquiredCollisions)
   end
   self._result = nil
 end
 
--- Runs the lazy headless transaction inside its driver coroutine: the
--- same preparation and assembly the blocking path uses, with a yielding
--- checkpoint between material operations so advances stay budgeted.
+-- Runs the common lazy transaction inside its driver coroutine. Preparation
+-- and assembly yield between material operations. Once scene or neighbor
+-- builders exist, their resumable tasks move to the staged task owner; a
+-- fully synchronous composition completes in this same driver.
 ---@param loader FieldMapLoader
 ---@param record table<string, unknown>
 ---@param box table<string, unknown>
 ---@param checkpoint fun()
----@return table<string, unknown> runtimeMap
-local function runHeadlessDriver(loader, record, box, checkpoint)
-  local ctx = prepareLoad(loader, record, checkpoint)
+---@return table<string, unknown>?
+local function runLoadDriver(loader, record, box, checkpoint)
+  local ctx = prepareLoad(loader, record, checkpoint, box.acquiredCollisions)
   local sceneTask, sceneRuntime = startScene(loader, ctx)
-  assert(sceneTask == nil, "headless load started a scene build")
+  box.ctx = ctx
+  box.sceneTask = sceneTask
   box.sceneRuntime = sceneRuntime
+  local neighborTask = startNeighbor(loader, ctx)
+  box.neighborTask = neighborTask
+  if sceneTask ~= nil or neighborTask ~= nil then
+    return nil
+  end
+  box.ctx = nil
   local runtimeMap = assembleComplete(loader, ctx, sceneRuntime, checkpoint, box)
   box.sceneRuntime = nil
   return runtimeMap
@@ -1779,59 +1870,29 @@ function FieldMapLoader:beginLoad(idOrSymbol)
     function task:release() end
     return task
   end
-  -- Without presentation collaborators the miss transaction stays lazy:
-  -- only the in-memory structural record resolves here, and generated
-  -- field/scene/collision/terrain materialization waits for a
-  -- positive-budget advance (or a blocking finish) of the returned task.
-  -- With presentation collaborators the transaction keeps its existing
-  -- eager preparation and staged scene-task shape.
-  if self.sceneLoader == nil and self.neighborLoader == nil then
-    local box = {}
-    local loaderSelf = self
-    local recordForDriver = record
-    local thread = coroutine.create(function()
-      local function checkpoint()
-        coroutine.yield(1)
-      end
-      return runHeadlessDriver(loaderSelf, recordForDriver, box, checkpoint)
-    end)
-    return setmetatable({
-      _loader = self,
-      _ctx = nil,
-      _sceneTask = nil,
-      _sceneRuntime = nil,
-      _driver = { thread = thread, box = box },
-      _ready = false,
-      _result = nil,
-      _failed = nil,
-      _released = false,
-      _transferred = false,
-    }, StagedLoadTask)
-  end
-  local ctx = prepareLoad(self, record)
-  local sceneTask, sceneRuntime = startScene(self, ctx)
-  local okNeighbor, neighborTaskOrErr = pcall(startNeighbor, self, ctx)
-  if not okNeighbor then
-    if sceneTask ~= nil then
-      pcall(function()
-        sceneTask:release()
-      end)
-    elseif sceneRuntime ~= nil then
-      pcall(function()
-        sceneRuntime:release()
-      end)
+  -- Every miss is lazy: beginning resolves only the in-memory structural
+  -- record. A positive-budget advance performs preparation, starts any
+  -- presentation builders, and drives the single publication transaction.
+  -- The acquisition list is created before the driver can acquire anything and
+  -- stays on the task, so cancellation owns every wrapper even while the
+  -- driver coroutine is suspended between checkpoints.
+  local box = { acquiredCollisions = {} }
+  local loaderSelf = self
+  local thread = coroutine.create(function()
+    local function checkpoint()
+      coroutine.yield(1)
     end
-    error(neighborTaskOrErr, 0)
-  end
-  local neighborTask = neighborTaskOrErr
+    return runLoadDriver(loaderSelf, record, box, checkpoint)
+  end)
   return setmetatable({
     _loader = self,
-    _ctx = ctx,
-    _sceneTask = sceneTask,
-    _sceneRuntime = sceneRuntime,
-    _neighborTask = neighborTask,
+    _ctx = nil,
+    _sceneTask = nil,
+    _sceneRuntime = nil,
+    _neighborTask = nil,
     _neighborRuntime = nil,
-    _driver = nil,
+    _acquiredCollisions = box.acquiredCollisions,
+    _driver = { thread = thread, box = box },
     _ready = false,
     _result = nil,
     _failed = nil,

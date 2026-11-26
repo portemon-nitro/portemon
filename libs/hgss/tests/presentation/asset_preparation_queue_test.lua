@@ -217,6 +217,22 @@ local function meshResponse(token, path)
   }
 end
 
+local function imageDerivativeResponse(token, path)
+  return {
+    token = token,
+    ok = true,
+    kind = "image-derivative",
+    path = path,
+    pixelHash = "test-hash",
+    width = 1,
+    height = 1,
+    representation = "indexed",
+    colors = 1,
+    indexData = ownedBuffer("\0"),
+    paletteData = ownedBuffer("\0"),
+  }
+end
+
 local function failureResponse(token, kind, path)
   return { token = token, ok = false, kind = kind, path = path, error = "injected worker failure" }
 end
@@ -429,6 +445,29 @@ function T.release_while_idle_joins_the_worker_and_is_idempotent()
     queue:release()
     Assert.equal(#host.threads, 1, "one persistent worker is owned for the queue lifetime")
     Assert.equal(host.threads[1].waits, 1, "release joins the worker exactly once even if called twice")
+  end)
+end
+
+function T.release_while_busy_signals_stop_and_joins_the_worker()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(fakeCacheFs())
+    local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, running))
+    queue:release()
+    queue:release()
+    Assert.equal(host.threads[1].waits, 1, "quit joins the worker before releasing owners")
+    local shutdownSeen = false
+    for _, pushed in ipairs(host.allPushes) do
+      if type(pushed.value) == "table" and pushed.value.op == "shutdown" then
+        shutdownSeen = true
+      end
+    end
+    Assert.isTrue(shutdownSeen, "release still asks the worker to stop")
+    Assert.throws(function()
+      queue:poll(running)
+    end, "a released queue discards outstanding tokens rather than reviving them")
   end)
 end
 
@@ -1566,6 +1605,227 @@ function T.a_demand_follower_of_a_prefetched_read_still_dispatches_its_decode()
     queue:take(filler)
     queue:cancel(awaited)
     queue:cancel(speculative)
+    queue:release()
+  end)
+end
+
+-- Demand belongs to the surviving logical consumer, not to whichever token
+-- temporarily owns the shared source read. Cancelling that owner must promote
+-- the oldest heir without losing a later consumer's urgency.
+function T.a_demanded_consumer_survives_source_owner_cancellation_at_the_ceiling()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(mixedCacheFs(), { readyPayloadByteLimit = 1, workerSlots = 2 })
+    local path = "pkg/generated/field/30/succession-a.png"
+    local owner = queue:request("image-derivative", path, "prefetch")
+    local olderFollower = queue:request("image-derivative", path, "prefetch")
+    local demanded = queue:request("image-derivative", path, "prefetch")
+    local sourceIndex = assert(requestChannelIndexFor(host, owner), "the shared source read dispatched")
+
+    local filler = queue:request("mesh", "geometry/succession-filler.g4mesh", "prefetch")
+    responseChannelFor(host, filler):push(meshResponse(filler, "geometry/succession-filler.g4mesh"))
+    Assert.equal(queue:poll(filler), "ready", "the ready ceiling is occupied")
+
+    queue:promote(demanded, "demand")
+    queue:cancel(owner)
+    responseChannelFor(host, sourceIndex):push(sourceResponse(owner, path, string.rep("s", 24)))
+    Assert.equal(queue:poll(demanded), "pending", "the source successor still owes its decode")
+    Assert.equal(#pushesFor(host, olderFollower), 1, "the oldest heir dispatches one demanded decode")
+    Assert.equal(pushesFor(host, olderFollower)[1].kind, "image-derivative", "the successor performs the shared decode")
+    Assert.equal(sourcePushCount(host), 1, "succession never duplicates the selected read")
+
+    queue:take(filler)
+    queue:cancel(olderFollower)
+    queue:cancel(demanded)
+    queue:release()
+  end)
+end
+
+function T.a_demand_follower_survives_an_older_prefetch_heir()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(mixedCacheFs(), { readyPayloadByteLimit = 1, workerSlots = 2 })
+    local path = "pkg/generated/field/30/succession-b.png"
+    local owner = queue:request("image-derivative", path, "prefetch")
+    local olderFollower = queue:request("image-derivative", path, "prefetch")
+    local demanded = queue:request("image-derivative", path, "demand")
+    local sourceIndex = assert(requestChannelIndexFor(host, owner), "the shared source read dispatched")
+
+    local filler = queue:request("mesh", "geometry/succession-filler-b.g4mesh", "prefetch")
+    responseChannelFor(host, filler):push(meshResponse(filler, "geometry/succession-filler-b.g4mesh"))
+    Assert.equal(queue:poll(filler), "ready", "the ready ceiling is occupied")
+
+    queue:cancel(owner)
+    responseChannelFor(host, sourceIndex):push(sourceResponse(owner, path, string.rep("t", 24)))
+    Assert.equal(queue:poll(demanded), "pending", "the surviving demand waits for its shared decode")
+    Assert.equal(#pushesFor(host, olderFollower), 1, "the older prefetch heir inherits the surviving demand")
+
+    queue:take(filler)
+    queue:cancel(olderFollower)
+    queue:cancel(demanded)
+    queue:release()
+  end)
+end
+
+-- A queued source owner can be cancelled while a different decode selector
+-- still needs the same bytes. The read transfers to that survivor and keeps its
+-- demand without dispatching the cancelled owner's unrelated decode.
+function T.a_queued_source_owner_transfers_the_read_to_a_different_selector()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(mixedCacheFs())
+    local running = queue:request("mesh", "geometry/source-selector-running.g4mesh", "demand")
+    local path = "pkg/generated/field/30/shared-bank.g4gx"
+    local owner = queue:request("image-derivative", path, "prefetch")
+    local survivor = queue:request("g4tx", {
+      file = path,
+      textureName = "survivor",
+    }, "demand")
+    Assert.equal(pushCountFor(host, owner), 0, "the speculative source owner is still queued")
+    Assert.equal(pushCountFor(host, survivor), 0, "the demanded selector coalesces on that read")
+
+    queue:cancel(owner)
+    responseChannelFor(host, running):push(meshResponse(running, "geometry/source-selector-running.g4mesh"))
+    Assert.equal(queue:poll(survivor), "pending", "the surviving selector waits for its transferred read")
+    Assert.equal(sourcePushCount(host), 1, "the read dispatches once for the surviving selector")
+    Assert.equal(pushesFor(host, survivor)[1].kind, "source", "the survivor first receives the physical read")
+    Assert.equal(pushCountFor(host, owner), 0, "the cancelled owner never dispatches")
+
+    local sourceIndex = requestChannelIndexFor(host, survivor)
+    responseChannelFor(host, sourceIndex):push(sourceResponse(survivor, path, string.rep("w", 24)))
+    Assert.equal(queue:poll(survivor), "pending", "source settlement starts the survivor's decode")
+    Assert.equal(pushesFor(host, survivor)[2].kind, "g4tx", "only the required selector decode runs")
+    Assert.notNil(pushesFor(host, survivor)[2].data, "the selected decode receives its source bytes")
+
+    queue:take(running)
+    queue:cancel(survivor)
+    queue:release()
+  end)
+end
+
+-- A direct source consumer raises the shared read's priority, but must not
+-- turn the read owner's unrelated speculative decode into demand work.
+function T.source_demand_does_not_promote_an_unrelated_owner_decode()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(mixedCacheFs(), { readyPayloadByteLimit = 1, workerSlots = 2 })
+    local path = "pkg/generated/field/30/shared-source.png"
+    local owner = queue:request("image-derivative", path, "prefetch")
+    local sourceIndex = assert(requestChannelIndexFor(host, owner), "the speculative source read dispatched")
+    local sourceConsumer = queue:request("source", path, "demand")
+
+    local filler = queue:request("mesh", "geometry/source-demand-filler.g4mesh", "prefetch")
+    responseChannelFor(host, filler):push(meshResponse(filler, "geometry/source-demand-filler.g4mesh"))
+    Assert.equal(queue:poll(filler), "ready", "the ready ceiling is occupied")
+
+    responseChannelFor(host, sourceIndex):push(sourceResponse(owner, path, string.rep("u", 24)))
+    Assert.equal(queue:poll(sourceConsumer), "ready", "the demanded source completes")
+    Assert.equal(queue:poll(owner), "pending", "the unrelated decode remains speculative")
+    Assert.equal(#pushesFor(host, owner), 1, "source demand does not bypass the ceiling for an unrelated decode")
+
+    queue:take(filler)
+    queue:take(sourceConsumer)
+    queue:cancel(owner)
+    queue:release()
+  end)
+end
+
+-- Two independent reasons to raise one queued selected read -- another
+-- consumer's prerequisite demand and the owner's own decode demand -- still
+-- leave exactly one pending entry: one physical source read dispatches, and
+-- the decode that follows dispatches once for the coalesced requesters.
+function T.one_queued_source_read_promoted_through_both_urgency_paths_dispatches_once()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(mixedCacheFs(), { workerSlots = 2 })
+    local blockerA = queue:request("mesh", "geometry/promotion-blocker-a.g4mesh", "demand")
+    local blockerB = queue:request("mesh", "geometry/promotion-blocker-b.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, blockerA), "the first slot takes the first blocker")
+    Assert.isTrue(requestWasPushedFor(host, blockerB), "the second slot takes the second blocker")
+    local path = "pkg/generated/field/30/double-promotion.png"
+    local owner = queue:request("image-derivative", path, "prefetch")
+    Assert.equal(#pushesFor(host, owner), 0, "the speculative owner waits for both slots")
+
+    -- A compact consumer raises the shared read's prerequisite urgency.
+    local consumer = queue:request("source", path, "demand")
+    -- The owner's own blocked consumer raises its decode urgency.
+    queue:promote(owner, "demand")
+    Assert.equal(#pushesFor(host, owner), 0, "queued promotions never dispatch by themselves")
+
+    responseChannelFor(host, blockerB):push(meshResponse(blockerB, "geometry/promotion-blocker-b.g4mesh"))
+    responseChannelFor(host, blockerA):push(meshResponse(blockerA, "geometry/promotion-blocker-a.g4mesh"))
+    Assert.equal(queue:poll(blockerA), "ready", "both blockers settle through the shared reply channel")
+    Assert.equal(sourcePushCount(host), 1, "the read promoted through both paths dispatches on one slot")
+    Assert.equal(#pushesFor(host, owner), 1, "no duplicate entry dispatches the same source token twice")
+
+    responseChannelFor(host, requestChannelIndexFor(host, owner)):push(sourceResponse(owner, path, string.rep("x", 24)))
+    Assert.equal(queue:poll(consumer), "ready", "the compact consumer receives the shared read")
+    Assert.equal(queue:poll(owner), "pending", "the owner still owes its coalesced decode")
+    Assert.equal(#pushesFor(host, owner), 2, "exactly one decode follows the one source read")
+    Assert.equal(pushesFor(host, owner)[2].kind, "image-derivative", "the second physical job is the decode")
+
+    responseChannelFor(host, requestChannelIndexFor(host, owner)):push(imageDerivativeResponse(owner, path))
+    Assert.equal(queue:poll(owner), "ready", "the coalesced decode publishes once")
+    local decoded = queue:take(owner)
+    local read = queue:take(consumer)
+    Assert.equal(assert(decoded.value).kind, "image-derivative", "the decode result transfers to the owner")
+    Assert.notNil(assert(read.value).payload, "the read result transfers to the compact consumer")
+    Assert.equal(next(queue._decodeLeases), nil, "the dispatched decode returned exactly its own input lease")
+    local decodedOwner = queue._decoded
+    decodedOwner:returnLease(decoded)
+    decodedOwner:returnLease(read)
+    decodedOwner:returnLease(queue:take(blockerA))
+    decodedOwner:returnLease(queue:take(blockerB))
+    Assert.equal(decodedOwner:stats().pinnedBytes, 0, "every read and decode lease is back with the shared owner")
+    queue:release()
+    decodedOwner:clear()
+  end)
+end
+
+-- A queued decode succession transfers the complete input: the borrowed source
+-- lease and the exact Data it pins must reach the heir together.
+function T.a_queued_decode_heir_receives_the_live_input_and_serves_every_follower()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(mixedCacheFs(), { readyPayloadByteLimit = 1, workerSlots = 2 })
+    local path = "pkg/generated/field/30/queued-successor.png"
+    local primary = queue:request("image-derivative", path, "prefetch")
+    local heir = queue:request("image-derivative", path, "prefetch")
+    local follower = queue:request("image-derivative", path, "prefetch")
+    local sourceIndex = assert(requestChannelIndexFor(host, primary), "the selected read dispatched")
+
+    local filler = queue:request("mesh", "geometry/queued-successor-filler.g4mesh", "prefetch")
+    responseChannelFor(host, filler):push(meshResponse(filler, "geometry/queued-successor-filler.g4mesh"))
+    local busy = queue:request("mesh", "geometry/queued-successor-busy.g4mesh", "demand")
+    Assert.equal(queue:poll(filler), "ready", "the ready ceiling is occupied and the second slot takes new work")
+    Assert.isTrue(requestWasPushedFor(host, busy), "the second slot stays occupied")
+    local input = sourceResponse(primary, path, string.rep("v", 24))
+    responseChannelFor(host, sourceIndex):push(input)
+    Assert.equal(queue:poll(primary), "pending", "source settlement leaves the decode queued behind the busy slot")
+    local inputData = assert(queue._tokens[primary].data, "the queued primary owns its decoded input")
+
+    queue:cancel(primary)
+    Assert.equal(#pushesFor(host, heir), 0, "cancellation does not fabricate an idle worker")
+    responseChannelFor(host, busy):push(meshResponse(busy, "geometry/queued-successor-busy.g4mesh"))
+    Assert.equal(queue:poll(heir), "pending", "the speculative heir still respects the ready ceiling")
+    queue:promote(heir, "demand")
+    Assert.equal(queue:poll(heir), "pending", "the heir dispatches when a physical slot becomes free")
+    local dispatched = assert(pushesFor(host, heir)[1], "the promoted heir reaches the worker")
+    Assert.equal(dispatched.kind, "image-derivative", "the heir performs the shared decode")
+    Assert.isTrue(dispatched.data == inputData, "the heir receives the same live Data pinned by the transferred lease")
+
+    responseChannelFor(host, requestChannelIndexFor(host, heir)):push(imageDerivativeResponse(heir, path))
+    Assert.equal(queue:poll(heir), "ready", "the heir publishes the shared result")
+    Assert.equal(queue:poll(follower), "ready", "the remaining follower observes the same completion")
+    Assert.isTrue(queue:take(heir).value == queue:take(follower).value, "both survivors borrow one decoded value")
+    queue:take(busy)
+    queue:take(filler)
     queue:release()
   end)
 end

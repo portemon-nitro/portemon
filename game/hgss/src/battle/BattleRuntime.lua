@@ -995,6 +995,11 @@ function BattleRuntime:_sessionSpeciesFacts(speciesForms)
     end
     assert(type(formRecord.levelUpMoves) == "table", "species forms carry their learnsets")
     assert(type(speciesRecord.baseExpYield) == "number", "species records carry their base experience yield")
+    -- The catalog catch rate rides the projection so the live capture
+    -- boundary stages the real species rate instead of guessing it:
+    -- the rate belongs to the species (GetMonBaseStat BASE_CATCH_RATE),
+    -- never to the individual or the renderer.
+    assert(type(speciesRecord.catchRate) == "number", "species records carry their catalog catch rate")
     assert(type(speciesRecord.evYield) == "table", "species records carry their effort yield")
     -- Gender ratios travel for attract and captivate law; the executor
     -- resolves battle genders without reaching back into the catalog.
@@ -1014,6 +1019,7 @@ function BattleRuntime:_sessionSpeciesFacts(speciesForms)
     end
     bucket[entry.form] = {
       baseStats = copyValue(formRecord.baseStats),
+      catchRate = speciesRecord.catchRate,
       growthCurve = copyValue(curveByKey(source, curveKey --[[@as string]])),
       types = types,
       levelUpMoves = copyValue(formRecord.levelUpMoves),
@@ -1967,6 +1973,13 @@ end
 -- without a card; tutorial and pal-park captures never present one.
 ---@param entry table<string, unknown> successful native ledger record
 function BattleRuntime:_projectDexCapture(entry)
+  -- The scripted catching lesson is a nonpersistent isolated setup
+  -- (BattleSetup_New_Tutorial): its temporary catch stages no Dex
+  -- observation or first-catch registration at this owner, before any
+  -- card can reach the terminal packet. Ordinary captures are unchanged.
+  if type(self._scenario) == "table" and self._scenario.tutorial == true then
+    return
+  end
   local dex = assert(self._dex, "dex facts freeze through the live knowledge owner")
   local mon = entry.mon --[[@as table<string, unknown>?]]
   if type(mon) ~= "table" then

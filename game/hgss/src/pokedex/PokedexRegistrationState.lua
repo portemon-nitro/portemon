@@ -396,12 +396,16 @@ local function completeCard(self)
     self._palette = fadeInit(FADE_MAX, FADE_MAX, true)
     self._picture = fadeInit(FADE_MAX, FADE_MAX, false)
   else
-    -- The frozen final exit keeps the centered captured picture under the
-    -- terminal cover: the departure slides away, the completed card stays.
+    -- The frozen final exit keeps the departure end state under the
+    -- terminal cover: the picture stays centered, the popup sprites stay
+    -- hidden, and the completed card holds black until its owner releases
+    -- it. Never snap back home: the departure already retired the card
+    -- pose, and a reset would blink the whole overlay and its mon sprite
+    -- for the single frozen frame.
     self._palette = fadeInit(FADE_MAX, FADE_MAX, true)
     self._picture = fadeInit(0, 0, false)
-    self._pictureX = CARD_PICTURE_X
-    self._spritesHidden = false
+    self._pictureX = DEPART_PICTURE_END
+    self._spritesHidden = true
   end
   self._dismissible = false
   self._dismissRequested = false
@@ -428,16 +432,10 @@ local function stepSource(self)
   if self._phase == "announcement" then
     local okSettled, settled = pcall(self._timeline.settled, self._timeline)
     if okSettled and settled == true then
-      self._palette = fadeInit(0, FADE_MAX, true)
-      self._picture = fadeInit(0, FADE_MAX, false)
-      self._phase = "entryFade"
-    end
-    return
-  end
-  if self._phase == "entryFade" then
-    fadeStepPalette(self._palette)
-    fadeStepPicture(self._picture)
-    if self._palette.active ~= true and self._picture.active ~= true then
+      -- The native transition fades the battle main before publishing
+      -- the card: the card is hidden through the announcement, then
+      -- fades in once from black. Never fade an already-visible card
+      -- out and back in.
       self._pictureX = CARD_PICTURE_X
       self._spritesHidden = false
       self._palette = fadeInit(FADE_MAX, 0, true)
@@ -635,6 +633,12 @@ end
 ---@param resources table<string, unknown> draw resources carrying the host graphics
 function PokedexRegistrationState:draw(resources)
   if self._disposed or self._bundle == nil then
+    return
+  end
+  -- The card publishes only after the battle announcement retires:
+  -- drawing during announcement would cover the battle message too
+  -- early and flash the card before its fade-in.
+  if self._phase == "announcement" or self._phase == "preparing" then
     return
   end
   assert(type(resources) == "table" and resources.graphics ~= nil, "registration drawing needs its host graphics")

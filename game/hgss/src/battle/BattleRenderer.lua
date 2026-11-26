@@ -1305,17 +1305,55 @@ local function compositionAnimation(view, engine, priorityOverride)
       evy = clampCoefficient(systemBlend.blend.evy),
     }
   end
+  local captureBlendActive = false
   if engine == "main" then
+    -- Capture owns the blend register only while its translucent actor
+    -- is live: a generic scalar patch must never expand the capture
+    -- masks or suppress an explicit compositor write. Both branches
+    -- share the ball actor as the single source of truth.
+    local captureBallActive = false
+    local opening = view.openingPresentation
+    if type(opening) == "table" then
+      local fadeBall = opening.ballThrow
+      if type(fadeBall) == "table" and fadeBall.visible == true and fadeBall.oamMode == "translucent" then
+        local fadeA = fadeBall.fadeAlpha
+        local fadeB = fadeBall.fadeBeta
+        if type(fadeA) == "number" and fadeA >= 0 and fadeA <= 16 and type(fadeB) == "number" then
+          captureBallActive = true
+        end
+      end
+    end
     local spriteBlend = view.spriteBlend --[[@as table<string, unknown>?]]
     if type(spriteBlend) == "table" and type(spriteBlend.blendCoefficientA) == "number" then
-      blend = {
-        mode = "alpha",
-        eva = clampCoefficient(spriteBlend.blendCoefficientA),
-        evb = clampCoefficient(spriteBlend.blendCoefficientB),
-        evy = 0,
-      }
-      firstTarget[worldRole] = true
-      secondTarget.battlefield = true
+      if captureBallActive then
+        blend = {
+          mode = "alpha",
+          eva = clampCoefficient(spriteBlend.blendCoefficientA),
+          evb = clampCoefficient(spriteBlend.blendCoefficientB),
+          evy = 0,
+        }
+        -- Native ball first-target NONE: the translucent OBJ blends
+        -- against the second planes, never by marking the world plane
+        -- first-target. Mark every native second plane eligible so the
+        -- ball stays translucent over world3d/window/transition as well
+        -- as the battlefield; an ineligible immediate second plane would
+        -- otherwise force the shader back to opaque.
+        secondTarget.world3d = true
+        secondTarget.window = true
+        secondTarget.transition = true
+        secondTarget.battlefield = true
+        captureBlendActive = true
+      else
+        -- Ordinary move-animation scalar patch: publish its coefficients
+        -- without capture masks or precedence. An explicit compositor
+        -- blend below still wins, preserving the generic arbitration.
+        blend = {
+          mode = "alpha",
+          eva = clampCoefficient(spriteBlend.blendCoefficientA),
+          evb = clampCoefficient(spriteBlend.blendCoefficientB),
+          evy = 0,
+        }
+      end
     end
   else
     -- Ordinary sub-engine menus blend BG1 over the planes below it
@@ -1330,7 +1368,9 @@ local function compositionAnimation(view, engine, priorityOverride)
       secondTarget.battlefield = true
     end
   end
-  if type(compositor.blend) == "table" then
+  -- A scripted compositor blend never replaces the live capture-ball
+  -- coefficients while the translucent actor owns the register.
+  if type(compositor.blend) == "table" and captureBlendActive ~= true then
     local source = compositor.blend --[[@as table<string, unknown>]]
     blend = {
       mode = source.mode or "none",
@@ -1951,11 +1991,14 @@ local function drawKeypadCursor(graphics, assets, view, layout, regions)
   if view.cursorVisible ~= true or type(view.selection) ~= "string" then
     return
   end
-  -- The Shift and use-next prompts track Yes/No while the source
+  -- The Shift, use-next, and capture-nickname prompts track Yes/No while the source
   -- two-option planes name their confirm/back cells: resolve the answer
   -- onto its cell.
   local wanted = view.selection
-  if (view.mode == "shift" or view.mode == "use-next") and type(wanted) == "string" then
+  if
+    (view.mode == "shift" or view.mode == "use-next" or (view.mode == "outcome" and view.completionQuestion == true))
+    and type(wanted) == "string"
+  then
     wanted = wanted == "yes" and "confirm" or wanted == "no" and "back" or wanted
   end
   local selected = nil
@@ -2756,8 +2799,9 @@ end
 ---@param graphics table<string, unknown> injected host graphics
 ---@param image table<string, unknown>|userdata staged ball drawable
 ---@param flash integer|nil source blend coefficient 0..16
+---@param flashColor number[]|nil source RGB blend target as a normalized array, default white
 ---@param ... unknown placement arguments forwarded to the draw call
-local function drawBallCell(graphics, image, flash, ...)
+local function drawBallCell(graphics, image, flash, flashColor, ...)
   if flash == nil or flash == 0 then
     drawArtwork(graphics, image, nil, ...)
     return
@@ -2766,6 +2810,14 @@ local function drawBallCell(graphics, image, flash, ...)
     type(flash) == "number" and flash % 1 == 0 and flash >= 0 and flash <= 16,
     "ball flash is a source blend 0..16"
   )
+  local target = { 1, 1, 1 }
+  if type(flashColor) == "table" then
+    assert(
+      type(flashColor[1]) == "number" and type(flashColor[2]) == "number" and type(flashColor[3]) == "number",
+      "ball flash colors carry RGB array"
+    )
+    target = { flashColor[1], flashColor[2], flashColor[3] }
+  end
   local drawable = image
   local palette = nil
   local sampler = samplerOf(image)
@@ -2785,7 +2837,7 @@ local function drawBallCell(graphics, image, flash, ...)
       end
     end
   end
-  drawPaletteFaded(graphics, { 1, 1, 1 }, flash, palette, 0, drawable, ...)
+  drawPaletteFaded(graphics, target, flash, palette, 0, drawable, ...)
 end
 
 -- Draws the thrown Poke Ball sprite over the battlefield. Ball cells are
@@ -2795,13 +2847,8 @@ end
 -- carrying the source palette flash draws through the shared blend.
 ---@param graphics table<string, unknown> borrowed host graphics
 ---@param assets table<string, unknown> borrowed battle asset holder
----@param view table<string, unknown> internal semantic snapshot
-local function drawThrownBall(graphics, assets, view)
-  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
-  local ball = opening ~= nil and opening.ballThrow or nil
-  if ball == nil then
-    return
-  end
+---@param ball table<string, unknown> one ball actor record under drawing
+local function drawOneBall(graphics, assets, ball)
   assert(type(ball) == "table", "ball throw cues arrive as records")
   local selector = assert(ball.selector, "ball throw cues name their semantic ball") --[[@as string]]
   local ballKey = selector:match("^ball:([%w_]+)$")
@@ -2817,12 +2864,20 @@ local function drawThrownBall(graphics, assets, view)
     local image = assets:drawable(key)
     if image ~= nil then
       -- Ball cells anchor at their own center: the throw cells are 16x16
-      -- and the opening animation's burst cell is 32x32.
+      -- and the opening animation's burst cell is 32x32. The
+      -- successful-catch fade keeps opaque texels and lets the shared
+      -- compositor blend the translucent OBJ with the published EVA/EVB
+      -- pair; no host alpha approximation runs here.
       local width, height = imageCellExtent(image)
+      local fadeAlpha = ball.fadeAlpha --[[@as integer?]]
+      if type(fadeAlpha) == "number" then
+        assert(fadeAlpha % 1 == 0 and fadeAlpha >= 0 and fadeAlpha <= 16, "ball fade carries native 16..0")
+      end
       drawBallCell(
         graphics,
         image,
         ball.paletteFlash --[[@as integer?]],
+        ball.paletteFlashColor, --[[@as table<string, number>?]]
         x,
         y,
         rotation / 0x10000 * 2 * math.pi,
@@ -2832,6 +2887,27 @@ local function drawThrownBall(graphics, assets, view)
         math.floor(height / 2)
       )
     end
+  end
+end
+
+---@param graphics table<string, unknown> borrowed host graphics
+---@param assets table<string, unknown> borrowed battle asset holder
+---@param view table<string, unknown> internal semantic snapshot
+local function drawThrownBall(graphics, assets, view)
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  if opening == nil then
+    return
+  end
+  -- The breakout overlap runs two independent ball actors for two
+  -- frames: the resting cleanup and the fresh send-out. Both ride the
+  -- same OBJ pass in submission order; invisible actors submit nothing.
+  local oldBall = opening.ballThrowOld
+  if type(oldBall) == "table" then
+    drawOneBall(graphics, assets, oldBall)
+  end
+  local ball = opening.ballThrow
+  if type(ball) == "table" then
+    drawOneBall(graphics, assets, ball)
   end
 end
 
@@ -2941,8 +3017,10 @@ local function drawDetail(resources, view)
     end
     planes.transition = { draw = drawStripeTransition }
   end
-  local function drawDetailObjects()
+  local function drawDetailBall()
     drawThrownBall(graphics, assets, view)
+  end
+  local function drawDetailObjects()
     local players, enemies = BattleViewRoster.liveSides(view)
     local singles = not doublesFormat(view, players, enemies)
     if singles then
@@ -2959,12 +3037,26 @@ local function drawDetail(resources, view)
       )
     end
   end
+  -- The thrown ball rides its own OBJ fragment so the capture fade can
+  -- run it as translucent with the published EVA/EVB pair while HUD
+  -- fragments stay normal.
+  local ballThrow = type(view.openingPresentation) == "table" and view.openingPresentation.ballThrow or nil
+  local ballMode = type(ballThrow) == "table" and type(ballThrow.oamMode) == "string" and ballThrow.oamMode or "normal"
+  if ballMode ~= "normal" and ballMode ~= "translucent" and ballMode ~= "semitransparent" then
+    ballMode = "normal"
+  end
   -- While the level-up stat window is open, the source drops every HP
   -- box to OAM priority 1 so the window plane covers them.
   local objects = {
     {
-      objPriority = view.levelUpStats ~= nil and 1 or 0,
+      objPriority = 0,
       submissionOrder = 1,
+      oamMode = ballMode,
+      draw = drawDetailBall,
+    },
+    {
+      objPriority = view.levelUpStats ~= nil and 1 or 0,
+      submissionOrder = 2,
       oamMode = "normal",
       draw = drawDetailObjects,
     },
@@ -3140,7 +3232,7 @@ local function drawControls(resources, view, layout, regions)
         label("menu", menuText.cancel, CANCEL_ANCHOR, true, offsetY, sourcePalette(view, "menu", 2, 10, 11, 12))
       elseif
         layout == "two-option"
-        and (view.mode == "shift" or view.mode == "use-next")
+        and (view.mode == "shift" or view.mode == "use-next" or (view.mode == "outcome" and view.completionQuestion == true))
         and (id == "confirm" or id == "back")
         and type(view.twoOption) == "table"
       then
@@ -3416,10 +3508,12 @@ end
 -- visible browser page composites first, disabled button faces repaint
 -- over empty controls (DrawPageButtons frame 3) and the staged press
 -- dip repaints the pressed button (UpdateButtonAnim frames 1-2) ahead
--- of the row text. Item icons ride their center-anchored spots, the
--- lesson finger and the d-pad cursor corners ride their spots while
--- active, then each projected row paints its label through its retail
--- font and window colors. List names ride font 4 MAKE_TEXT_COLOR(3,2,1) centered on their button with quantities in
+-- of the row text. Item icons ride their center-anchored spots, then
+-- each projected row paints its label through its retail font and
+-- window colors, and the lesson finger and the d-pad cursor corners
+-- ride above them all while active like the retail OBJ sprites above
+-- the BG text (battle_bag_menu.c UpdateTutorialFinger).
+-- List names ride font 4 MAKE_TEXT_COLOR(3,2,1) centered on their button with quantities in
 -- font 0 MAKE_TEXT_COLOR(1,2,0) at the template slot right of the icon
 -- (PrintItemListEntry y=7/y=4); pocket-menu and USE rows center font 4
 -- (3,2,1) in their buttons (PrintPocketMenuPage y=7/23, PrintCenteredText
@@ -3551,29 +3645,11 @@ local function drawBagChild(resources, view, child)
       drawArtwork(graphics, iconArt, nil, icon.x - math.floor(width / 2), icon.y + dy - math.floor(height / 2))
     end
   end
-  -- The lesson finger centers on its per-page spot while the tutorial
-  -- auto-plays (battle_bag_menu.c UpdateTutorialFinger, staged like the
-  -- item spots).
-  local finger = BattleBagPockets.fingerDraw(native)
-  if finger ~= nil then
-    drawTutorialFinger(graphics, assets, finger.x, finger.y)
-  end
-  -- D-pad cursor corners frame the focused box while the cursor is
-  -- active (BattleDpadCursor_SetRect over the page cursor boxes; set by
-  -- keys, cleared by touch). Sprites center on the corners like the
-  -- item spots. A missing staged corner draws nothing under the
-  -- existing pending path, never a substitute or a text marker.
-  local bagTick = view.bagCursorTick --[[@as integer?]] or 0
-  for _, corner in ipairs(BattleBagPockets.cursorDraws(native, bagPage, child.focusId, bagTick, view.bagCursorFrames)) do
-    local cornerArt = assets:drawable(corner.key)
-    if cornerArt ~= nil then
-      local width, height = drawableDims(cornerArt)
-      if type(width) ~= "number" or type(height) ~= "number" then
-        width, height = 32, 32
-      end
-      drawArtwork(graphics, cornerArt, nil, corner.x - math.floor(width / 2), corner.y - math.floor(height / 2))
-    end
-  end
+  -- The lesson finger and the d-pad cursor corners paint after the row
+  -- text at the end of this function: both are OBJ sprites above the BG
+  -- text planes (battle_bag_menu.c UpdateTutorialFinger, staged like the
+  -- item spots), so painting them here would leave the row labels
+  -- covering the indicator they are supposed to highlight.
   -- Window template palettes behind each page (battle_menu_data.s):
   -- pocket-menu windows all ride palette 0; item-list name windows
   -- ride palette 0 while quantity windows 1/3/5/7/9/11 plus the
@@ -3813,6 +3889,31 @@ local function drawBagChild(resources, view, child)
         drawRoleText(text, "hud", currentText, slashX - currentWidth, 160 + 4, bagListQtyPalette())
         drawRoleText(text, "hud", lastText, slashX + slashWidth, 160 + 4, bagListQtyPalette())
       end
+    end
+  end
+  -- The lesson finger centers on its per-page spot while the tutorial
+  -- auto-plays (battle_bag_menu.c UpdateTutorialFinger, staged like the
+  -- item spots). Both the finger and the d-pad cursor corners are OBJ
+  -- sprites above the BG text planes, so they paint after every row
+  -- label and the bottom bar instead of under them.
+  local finger = BattleBagPockets.fingerDraw(native)
+  if finger ~= nil then
+    drawTutorialFinger(graphics, assets, finger.x, finger.y)
+  end
+  -- D-pad cursor corners frame the focused box while the cursor is
+  -- active (BattleDpadCursor_SetRect over the page cursor boxes; set by
+  -- keys, cleared by touch). Sprites center on the corners like the
+  -- item spots. A missing staged corner draws nothing under the
+  -- existing pending path, never a substitute or a text marker.
+  local bagTick = view.bagCursorTick --[[@as integer?]] or 0
+  for _, corner in ipairs(BattleBagPockets.cursorDraws(native, bagPage, child.focusId, bagTick, view.bagCursorFrames)) do
+    local cornerArt = assets:drawable(corner.key)
+    if cornerArt ~= nil then
+      local width, height = drawableDims(cornerArt)
+      if type(width) ~= "number" or type(height) ~= "number" then
+        width, height = 32, 32
+      end
+      drawArtwork(graphics, cornerArt, nil, corner.x - math.floor(width / 2), corner.y - math.floor(height / 2))
     end
   end
 end
@@ -4642,12 +4743,14 @@ local function drawInteraction(resources, view, content, placement)
   -- palettes carry the flash), but the controls belong to command input:
   -- intro, narration, resolution, and outcome panes show gauges alone,
   -- so the reveal never replays over already-visible controls. The held
-  -- offers own their two-option controls the same way.
+  -- offers and the capture-nickname question own their two-option
+  -- controls the same way.
   local inputMode = view.mode == "command"
     or view.mode == "moves"
     or view.mode == "target"
     or view.mode == "shift"
     or view.mode == "use-next"
+    or (view.mode == "outcome" and view.completionQuestion == true)
   -- Retail hides every plane but SUB_2 while no menu is open
   -- (BattleInput_ShowOnlySubBgLayer2): the plain backdrop without
   -- the button tilemaps.
@@ -4768,13 +4871,38 @@ local function drawCompactScene(resources, view, content, compactUI)
     local windowDraw = ui.window --[[@as fun()]]
     planes.window = { draw = windowDraw }
   end
+  -- The thrown ball rides the shared present like the detail objects:
+  -- captures, send-outs, and break-outs own the field in compact mode
+  -- too, and dropping the fragment hides the ball behind its own
+  -- sounds and messages. The world fit applies to source geometry, so
+  -- the native sprite coordinates land on the fitted battlers.
+  local objects = {}
+  local opening = type(view.openingPresentation) == "table" and view.openingPresentation or nil
+  if type(opening) == "table" and type(opening.ballThrow) == "table" then
+    local graphics = assert(resources.graphics, "the compact scene borrows its host graphics")
+    local assets = assert(resources.assets, "the compact scene borrows its asset holder")
+    local function drawCompactBall()
+      drawThrownBall(graphics, assets, view)
+    end
+    local ballThrow = opening.ballThrow --[[@as table<string, unknown>]]
+    local ballMode = type(ballThrow.oamMode) == "string" and ballThrow.oamMode or "normal"
+    if ballMode ~= "normal" and ballMode ~= "translucent" and ballMode ~= "semitransparent" then
+      ballMode = "normal"
+    end
+    objects[#objects + 1] = {
+      objPriority = view.levelUpStats ~= nil and 1 or 0,
+      submissionOrder = 1,
+      oamMode = ballMode,
+      draw = drawCompactBall,
+    }
+  end
   -- Compact HUD rides at its planned target coordinates after the
   -- shared present: the world fit applies only to source geometry,
   -- never to HUD placement. During live effects the HUD still enters
   -- through the compositor via the typed frame; static command views
   -- carry no active blend or window state, so direct target drawing
   -- preserves placement without clipping into the world padding.
-  presentMainFrame(resources, view, layout, planes, {})
+  presentMainFrame(resources, view, layout, planes, objects)
   if type(ui.hud) == "function" then
     local hudDraw = ui.hud --[[@as fun()]]
     hudDraw()

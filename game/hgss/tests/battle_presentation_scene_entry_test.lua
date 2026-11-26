@@ -1887,6 +1887,36 @@ function T.settled_palette_frames_publish_readiness_without_new_uploads()
   rig.screen:dispose()
 end
 
+-- Above-single battle speed with slow staging can complete the
+-- fifty-frame encounter before the first staged fade upload publishes:
+-- the entry gate must still release the cover once the scene stages,
+-- instead of requiring per-frame fade uploads that no longer exist and
+-- holding the opaque cover forever while the battle runs behind it.
+function T.retired_encounter_stays_ready_without_fade_uploads()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(40, 36))
+  rig.pump(5)
+  Assert.isTrue(rig.port.enter({ launchId = rig.launchId, kind = "wild" }), "entry admits the staged scene")
+  presentOpening(rig)
+  rig.pump(8)
+  Assert.isTrue(rig.screen:firstNativeBattleFrameReady(), "the first frame releases the entry cover")
+  for _ = 1, 200 do
+    rig.pump(1)
+    if rig.screen:view().openingPresentation.encounterFrame == nil then
+      break
+    end
+  end
+  Assert.isNil(
+    rig.screen:view().openingPresentation.encounterFrame,
+    "the encounter task retired before the readiness probe"
+  )
+  Assert.isTrue(
+    rig.screen:firstNativeBattleFrameReady(),
+    "the retired encounter keeps the staged scene releasable instead of holding black cover"
+  )
+  rig.screen:dispose()
+end
+
 return {
   tests = T,
 }

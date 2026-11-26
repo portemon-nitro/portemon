@@ -143,9 +143,10 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
   local App = require("app.src.App")
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
   local CacheFs = require("libs.storage.src.CacheFs")
-  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local LoadingModule = require("app.src.launcher.LauncherLoadingPresentation")
   local HgssGame = require("game.hgss.src.HgssGame")
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local RomArchive = require("romdump.src.source.RomArchive")
   local saved = {
     state = App.state,
     importer = App.importer,
@@ -164,6 +165,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     loadingNew = LoadingModule.new,
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
     random = love.math.random,
+    managedPath = RomArchive.recoverablePath,
   }
   local demands = {}
   local epochs = 0
@@ -274,6 +276,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     LoadingModule.new = saved.loadingNew
     HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
     love.math.random = saved.random
+    RomArchive.recoverablePath = saved.managedPath
   end
   local ok, err = xpcall(function()
     StartupAssetCache.loadWalker = function()
@@ -308,15 +311,41 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     App._bootBlockedVersionId = nil
     App._startupWarmup = nil
     App.opts = { dev = false }
+    App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
+    App._safeRect = { x = 0, y = 0, width = 800, height = 600 }
+    App._displayContext = App._launcherDisplayContext()
+    App._bootIntro = nil
+    App._importAttempt = nil
+    App._bootSwallowedInputs = {}
+    App._realTouches = {}
+    App._foreground = true
+    App._touchGamepadSuspended = false
+    App._forceDisplayPublication = false
+    App._iconRepairAttempted = {}
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil then
+        App._iconRepairAttempted[info.sha1] = true
+      end
+    end
+    RomArchive.recoverablePath = function(sha1)
+      for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+        local info = require("romdump.src.source.GameVersion").info(versionId)
+        if info ~= nil and info.sha1 == sha1 then
+          return "managed/" .. sha1 .. ".zip"
+        end
+      end
+      return nil
+    end
     App._selectVersion("soulsilver")
     for _ = 1, 5 do
       App.update(0.016)
     end
     Assert.equal(App.pairIndex, 23, "the epoch keeps its one random fallback pair")
-    Assert.isTrue(#demands >= 1, "the shared visuals are demanded from the worker")
+    Assert.isTrue(#demands >= 1, "the title journey warms the shared walking visuals")
     for _, demand in ipairs(demands) do
-      Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
-      Assert.equal(demand.urgency, "required", "the shared demand stays required")
+      Assert.isNil(demand.pairIndex, "the warmed demand carries no pair identity")
+      Assert.equal(demand.urgency, "near", "selection never gates the launcher on walking artwork")
     end
     Assert.equal(getmetatable(App.state).__index, StartupTitleState, "the prepared fallback pair completes the handoff")
   end, debug.traceback)
@@ -334,7 +363,7 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
   local App = require("app.src.App")
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
   local CacheFs = require("libs.storage.src.CacheFs")
-  local LoadingModule = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local LoadingModule = require("app.src.launcher.LauncherLoadingPresentation")
   local HgssGame = require("game.hgss.src.HgssGame")
   local saved = {
     state = App.state,
@@ -360,6 +389,8 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
   local randomCalls = 0
   local randomValues = { 7, 25 }
   local scanCalls = 0
+  local RomArchiveForFixture = require("romdump.src.source.RomArchive")
+  saved.recoverablePath = RomArchiveForFixture.recoverablePath
   local service = {}
   function service:select(_)
     epochs = epochs + 1
@@ -459,6 +490,7 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     LoadingModule.new = saved.loadingNew
     HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
     love.math.random = saved.random
+    RomArchiveForFixture.recoverablePath = saved.recoverablePath
   end
   local ok, err = xpcall(function()
     StartupAssetCache.loadWalker = function(_, _)
@@ -495,6 +527,37 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     App._bootBlockedVersionId = nil
     App._startupWarmup = nil
     App.opts = { dev = false }
+    App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
+    App._safeRect = { x = 0, y = 0, width = 800, height = 600 }
+    App._displayContext = App._launcherDisplayContext()
+    App._bootIntro = nil
+    App._importAttempt = nil
+    App._bootSwallowedInputs = {}
+    App._realTouches = {}
+    App._suspendedTouchIds = {}
+    App._foreground = true
+    App._touchGamepadSuspended = false
+    App._forceDisplayPublication = false
+    App._iconRepairAttempted = {}
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil then
+        App._iconRepairAttempted[info.sha1] = true
+      end
+    end
+    -- Synthetic managed source at the archive boundary: no real ROM is
+    -- required to exercise epoch/pair selection. It stays installed for
+    -- the whole journey so the second selection follows the same
+    -- managed-source path; restore() releases it unconditionally.
+    local RomArchive = require("romdump.src.source.RomArchive")
+    local heartgoldInfo = require("romdump.src.source.GameVersion").info("heartgold")
+    local originalRecoverable = saved.recoverablePath
+    RomArchive.recoverablePath = function(sha1)
+      if heartgoldInfo ~= nil and sha1 == heartgoldInfo.sha1 then
+        return "managed/synthetic-heartgold.zip"
+      end
+      return originalRecoverable(sha1)
+    end
     App._selectVersion("heartgold")
     Assert.equal(App.pairIndex, 7, "the first epoch keeps its drawn pair")
     for _ = 1, 5 do
@@ -507,10 +570,10 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     end
     Assert.equal(randomCalls, 2, "each epoch draws exactly once")
     Assert.equal(scanCalls, 0, "selection never scans the published catalog")
-    Assert.isTrue(#demands >= 2, "both epochs demand the shared visuals")
+    Assert.isTrue(#demands >= 1, "the title journey warms the shared walking visuals")
     for _, demand in ipairs(demands) do
-      Assert.isNil(demand.pairIndex, "the shared demand carries no pair identity")
-      Assert.equal(demand.urgency, "required", "the shared demand stays required")
+      Assert.isNil(demand.pairIndex, "the worker demand carries no pair identity")
+      Assert.equal(demand.urgency, "near", "selection draws pairs for later surfaces without gating the launcher")
     end
   end, debug.traceback)
   restore()

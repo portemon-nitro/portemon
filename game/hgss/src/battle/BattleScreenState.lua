@@ -1531,6 +1531,14 @@ function BattleScreenState.new(opts)
     slotGeometry = self._manifest.battlefield.slots,
     faintAppearance = faintAppearance,
   })
+  -- Capture joins gate on the ball particle systems' retirement: the
+  -- owning screen consumes started effects on its own frame, so the
+  -- timeline holds its open/click joins until the systems drain instead
+  -- of guessing an emitter lifetime. Headless drivers without a screen
+  -- keep their explicit probe behind the same join.
+  self._timeline:setParticleIdleProbe(function()
+    return self._ballParticles:isIdle() and #self._ballParticles:failures() == 0
+  end)
   local cases = nil
   if type(overrides.cases) == "table" then
     cases = overrides.cases
@@ -2766,6 +2774,53 @@ function BattleScreenState:_snapshot(borrowStatic)
   end
   self._scene:observe(battlers)
   enrichScene(self, battlers)
+  -- The native nickname scene replaces the battle with the caught
+  -- specimen centered at (128,72) over black after the Dex popup
+  -- retires (ALREADY_CAUGHT constructs it there; first catches slide
+  -- it to center then delete the popup). Both new and repeat catches
+  -- enter this scene from the hidden foe: project the staged portrait
+  -- as the sole main-scene picture with a neutral pose, no shadow,
+  -- HUD, or battle effects, instead of appending a copy behind the
+  -- still-live player and HUD. Contest/tutorial keep their own paths
+  -- and never enter here.
+  if self._kind == "wild" and self:_completionQuestionActive() then
+    local donor = nil
+    for _, candidate in ipairs(battlers) do
+      if type(candidate) == "table" and candidate.side ~= 1 and type(candidate.portraitSelector) == "string" then
+        donor = candidate
+        break
+      end
+    end
+    if donor ~= nil then
+      local specimen = copyValue(donor)
+      specimen.visible = true
+      specimen.vanished = nil
+      specimen.dontDraw = nil
+      specimen.hudVisible = false
+      specimen.active = true
+      specimen.affineMode = nil
+      specimen.affineWidth = nil
+      specimen.affineHeight = nil
+      specimen.paletteFade = nil
+      specimen.motionBlend = nil
+      specimen.pictureVisible = nil
+      specimen.shadowAffine = nil
+      specimen.pictureYOffset = nil
+      specimen.pictureXOffset = nil
+      local sourceHeight = type(specimen.sourceHeight) == "number" and specimen.sourceHeight or 0
+      specimen.sourceHeight = sourceHeight
+      local row = BattleScene.slotRow(specimen, nil, self._manifest.battlefield.slots)
+      specimen.sideType = row.sideType
+      specimen.entryDx = 128 - row.settledX
+      specimen.entryDy = 72 - (row.settledY + sourceHeight)
+      specimen.shakeDx = 0
+      specimen.motionDx = 0
+      specimen.motionDy = 0
+      -- Scene replacement, not an extra foe: the old player, HUD, and
+      -- donor records retire with the battle main.
+      battlers = { specimen }
+    end
+  end
   local roster, foes, names = snapshotRoster(self, battlers)
   local message, levelUpStats = snapshotMessage(self, names)
   local acting = snapshotActing(self, names, battlers)
@@ -2807,7 +2862,79 @@ function BattleScreenState:_snapshot(borrowStatic)
     side[visual.kind] = self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, visual.sideType)
   end
   local childView, completionPrompt, buttonFeedback, armed = snapshotCompletionViews(self)
+  local completionQuestion = self:_completionQuestionActive()
+  local questionTwoOption = nil
+  if completionQuestion and type(childView) == "table" then
+    questionTwoOption = (childView --[[@as table<string, unknown>]]).twoOption
+  end
   local terrainSpritesView = snapshotTerrainSprites(self, terrainSprites)
+  -- The successful-catch fade runs the ball as a translucent OBJ with
+  -- the source EVA/EVB pair: publish the ball's coefficients as the
+  -- sprite blend so the shared compositor blends the translucent ball
+  -- over the battlefield while HUD fragments stay normal. The override
+  -- lives only while the translucent actor owns the register: a hidden
+  -- or retired ball falls back to the ordinary scene blend.
+  local spriteBlend = self._scene:blendCoefficients()
+  local fadeBall = type(openingPresentation) == "table" and openingPresentation.ballThrow or nil
+  local captureFadeActive = false
+  if type(fadeBall) == "table" and fadeBall.visible == true and fadeBall.oamMode == "translucent" then
+    local fadeA = fadeBall.fadeAlpha --[[@as integer?]]
+    local fadeB = fadeBall.fadeBeta
+    if type(fadeA) == "number" and fadeA >= 0 and fadeA <= 16 and type(fadeB) == "number" then
+      spriteBlend = { blendCoefficientA = fadeA, blendCoefficientB = fadeB }
+      captureFadeActive = true
+    end
+  end
+  -- The native capture fades the actual battle main to black before
+  -- destroying its graphics and creating the Dex popup; the nickname
+  -- question likewise centers the specimen over black. Fade the
+  -- battlefield only while the registration card is still running or the
+  -- nickname question owns the outcome prompt. A completed card kept
+  -- for the handoff no longer drives the fade on its own.
+  local sceneAnimation = self._scene:animationFrame()
+  local registrationActive = self._registrationChild ~= nil and self._registrationComplete ~= true
+  local nicknameActive = self:_completionQuestionActive()
+  -- The native ball enables first-target NONE and second-target
+  -- BG0..BG3/OBJ/BD. Mirror the existing animation-system mask while
+  -- the translucent capture actor owns the register so overlapping
+  -- world3d/window/transition pixels stay eligible instead of
+  -- inheriting a stale battlefield-only mask.
+  if captureFadeActive then
+    local copy = copyValue(sceneAnimation)
+    if type(copy) ~= "table" then
+      copy = {}
+    end
+    local main = copy.main
+    if type(main) ~= "table" then
+      main = {}
+      copy.main = main
+    end
+    main.systemBlend = {
+      blend = nil,
+      firstTarget = {},
+      secondTarget = { world3d = true, window = true, transition = true, battlefield = true },
+      objTargets = { second = true },
+    }
+    sceneAnimation = copy
+  end
+  if registrationActive or nicknameActive then
+    local copy = copyValue(sceneAnimation)
+    if type(copy) ~= "table" then
+      copy = {}
+    end
+    local main = copy.main
+    if type(main) ~= "table" then
+      main = {}
+      copy.main = main
+    end
+    local compositor = main.compositor
+    if type(compositor) ~= "table" then
+      compositor = {}
+      main.compositor = compositor
+    end
+    compositor.battlefieldFade = { color = { r = 0, g = 0, b = 0 }, amount = 16 }
+    sceneAnimation = copy
+  end
   return {
     battleKind = self._kind,
     menuMode = self:_menuMode(),
@@ -2846,8 +2973,8 @@ function BattleScreenState:_snapshot(borrowStatic)
     -- engine planes, blend/window/brightness writes, mosaic and the
     -- source scanline buffer. Task-owned sprite blend weights ride
     -- alongside for the compositor mapping.
-    sceneAnimation = self._scene:animationFrame(),
-    spriteBlend = self._scene:blendCoefficients(),
+    sceneAnimation = sceneAnimation,
+    spriteBlend = spriteBlend,
     slotGeometry = self._manifest.battlefield.slots,
     hudSections = { player = self._manifest.hud.player, enemy = self._manifest.hud.enemy },
     -- Retained paint views borrow the immutable gauge families: the
@@ -2876,7 +3003,7 @@ function BattleScreenState:_snapshot(borrowStatic)
       target = self._manifest.menus.target.screens,
       twoOption = self._manifest.menus.twoOption.screens,
     },
-    twoOption = copyValue(self:_shiftTwoOption() or self:_useNextTwoOption()),
+    twoOption = copyValue(self:_shiftTwoOption() or self:_useNextTwoOption() or questionTwoOption),
     hudPatchSpans = self._manifest.hud.patchSpans,
     cursor = self._manifest.hud.cursor,
     menuText = self:_menuText(),
@@ -2899,6 +3026,7 @@ function BattleScreenState:_snapshot(borrowStatic)
     stagedChoices = staged,
     childIntent = self._child ~= nil and copyValue(self._child) or nil,
     childView = childView,
+    completionQuestion = completionQuestion,
   }
 end
 
@@ -3403,6 +3531,16 @@ function BattleScreenState:openCompletion(intent)
   self._completionChild = nil
   self._evolution = nil
   self._completionResult = nil
+  if self._completion ~= nil and self._completion.kind == "capture_nickname" then
+    self._selection = "yes"
+    -- The completed registration card retires before the nickname
+    -- question draws: its opaque 256x192 compact cover would otherwise
+    -- paint over the parent's Yes/No controls while input falls
+    -- through to the completion. The battlefield stays black through
+    -- the nickname fade; the centered specimen handoff stays a
+    -- follow-up (repeat catches already enter this scene with no card).
+    self:_disposeRegistrationChild()
+  end
   self:_invalidatePublishedView()
   return true
 end
@@ -3428,6 +3566,10 @@ function BattleScreenState:takeCompletion()
     self._evolution:dispose()
     self._evolution = nil
   end
+  -- The retained registration card retires with the nickname answer:
+  -- a Yes opens naming (which already disposed it) while a No ends
+  -- the handoff here.
+  self:_disposeRegistrationChild()
   if self._completion ~= nil then
     self._consumedCompletions[self._completion.completionId] = true
     self._completion = nil
@@ -3554,6 +3696,9 @@ function BattleScreenState:_openCompletionNaming()
     self._error = "capture naming failed for launch " .. self._launchId .. ": " .. tostring(childErr)
     return
   end
+  -- The naming controller takes the full screen: retire the centered
+  -- registration card now that its specimen handoff is done.
+  self:_disposeRegistrationChild()
   self._completionChild = child
   completion.stage = "naming"
 end
@@ -3691,6 +3836,7 @@ function BattleScreenState:_consumeCompletion(event)
   if completion.stage == "question" then
     if event.type == "navigate" then
       completion.answer = completion.answer == 1 and 2 or 1
+      self._selection = completion.answer == 1 and "yes" or "no"
       return true
     end
     if event.type == "confirm" then
@@ -3763,6 +3909,16 @@ function BattleScreenState:_drainCompletion()
       nickname = result.choice.text,
     })
   end
+end
+
+---@return boolean active true while the capture-nickname Yes/No question owns the outcome prompt
+function BattleScreenState:_completionQuestionActive()
+  local completion = self._completion
+  return completion ~= nil
+    and completion.kind == "capture_nickname"
+    and completion.stage == "question"
+    and self._completionResult == nil
+    and self._outcomeDone == true
 end
 
 ---@param current table<string, unknown>? action child view under projection
@@ -4386,10 +4542,12 @@ function BattleScreenState:input(events)
       self:cancelPointerCapture()
       self._signature = signature
     end
-    -- An open registration card owns its input exclusively: the raw host
-    -- batch routes straight to the child, never through the stale battle
-    -- plan. Layout remeasure and pointer cancellation above still apply.
-    if self._registrationChild ~= nil then
+    -- An open registration card owns its input exclusively while it runs:
+    -- the raw host batch routes straight to the child, never through the
+    -- stale battle plan. A completed card waiting for the nickname handoff
+    -- falls through so the open capture-nickname completion answers.
+    -- Layout remeasure and pointer cancellation above still apply.
+    if self._registrationChild ~= nil and self._registrationComplete ~= true then
       local card = self._registrationChild --[[@as table<string, unknown>]]
       local takeInput = card.input --[[@as fun(self: table<string, unknown>, events: table<integer, table<string, unknown>>)?]]
       if type(takeInput) == "function" then
@@ -4407,8 +4565,10 @@ function BattleScreenState:input(events)
     for _, event in ipairs(converted) do
       self:_consume(event)
       -- Constructing the card consumes its creating edge and drops the
-      -- rest of the batch so no stale choice seals behind it.
-      if self._registrationChild ~= nil then
+      -- rest of the batch so no stale choice seals behind it. A retained
+      -- completed card no longer owns input, so only an incomplete card
+      -- breaks the batch.
+      if self._registrationChild ~= nil and self._registrationComplete ~= true then
         break
       end
     end
@@ -5956,7 +6116,13 @@ end
 -- Polls the open registration card after the parent timeline: a card
 -- failure fails the screen exactly once, completion releases the readiness hold, and the active
 -- card steps on accepted time. Never replays the creating edge into the
--- card and never advances battle choices behind it.
+-- card and never advances battle choices behind it. A completed card is
+-- released at once like the retail popup delete: keeping it would paint
+-- its frozen black cover over the nickname prompt and swallow every input
+-- edge meant for the open capture-nickname completion. The completed card
+-- keeps its frozen departure end state under its terminal cover until the
+-- capture-nickname completion opens and disposes it, so the swap is atomic
+-- with no battle-UI flash in between.
 ---@param dt number accepted presentation seconds
 function BattleScreenState:_pollRegistrationChild(dt)
   local child = self._registrationChild --[[@as table<string, unknown>?]]
@@ -5985,6 +6151,8 @@ function BattleScreenState:_pollRegistrationChild(dt)
     if self._registrationComplete ~= true then
       self._registrationComplete = true
     end
+    -- Keeps the frozen terminal cover for the nickname handoff; the
+    -- capture-nickname open disposes it atomically.
     return
   end
   local okStep, stepErr = pcall(stepChild, child, dt)
@@ -5999,8 +6167,11 @@ function BattleScreenState:_pollRegistrationChild(dt)
     self._error = "battle registration failed for launch " .. self._launchId .. ": " .. done.error
     return
   end
-  if okDone and type(done) == "table" and done.complete == true and self._registrationComplete ~= true then
-    self._registrationComplete = true
+  if okDone and type(done) == "table" and done.complete == true then
+    if self._registrationComplete ~= true then
+      self._registrationComplete = true
+    end
+    -- Keeps the completed card for the nickname handoff (see above).
   end
 end
 
@@ -6225,8 +6396,17 @@ function BattleScreenState:_consume(event)
       -- A dialogue tap arms exactly like a command press so the matched
       -- release can acknowledge the shown page; an unmatched press never
       -- arms and its release falls away through the shared capture check.
+      -- The capture-nickname question answers its tapped cell directly
+      -- instead: Yes opens naming, No declines, like the held offers.
       local control = event.control --[[@as table<string, unknown>?]]
-      if type(control) == "table" and control.scope == self._mode then
+      if
+        self:_completionQuestionActive()
+        and type(control) == "table"
+        and control.scope == "two-option"
+        and (control.id == "confirm" or control.id == "back")
+      then
+        self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
+      elseif type(control) == "table" and control.scope == self._mode then
         self._armed = { scope = control.scope, id = control.id, pointerId = event.pointerId }
       end
     end
@@ -6248,7 +6428,14 @@ function BattleScreenState:_consume(event)
     then
       if self._mode == "narration" or self._mode == "outcome" then
         local control = event.control --[[@as table<string, unknown>?]]
-        if type(control) == "table" and control.scope == self._mode then
+        if
+          self:_completionQuestionActive()
+          and type(control) == "table"
+          and control.scope == "two-option"
+          and (control.id == "confirm" or control.id == "back")
+        then
+          self:_answerCompletionQuestion(control.id ~= "confirm")
+        elseif type(control) == "table" and control.scope == self._mode then
           self._timeline:ack()
         end
       elseif self._mode == "shift" then
@@ -7986,8 +8173,17 @@ function BattleScreenState:firstNativeBattleFrameReady()
     end
   end
   local opening = self._timeline:openingPresentation()
-  if type(opening) ~= "table" or opening.encounterFrame == nil then
+  if type(opening) ~= "table" then
     return false
+  end
+  if opening.encounterFrame == nil then
+    -- The encounter fade retired (or never ran) before the entry cover
+    -- released: above single battle speed with slow staging the
+    -- fifty-frame encounter can complete before the first staged fade
+    -- upload publishes, and requiring its per-frame uploads then holds
+    -- the opaque cover forever while the battle runs behind it. The
+    -- staged scene above is the first presentable frame from here.
+    return true
   end
   if self._paletteDrawableFrame ~= opening.encounterFrame then
     return false
@@ -8055,10 +8251,19 @@ end
 
 -- Steps the ball particles with the cue timeline: effects the timeline
 -- started this tick are placed and played from the staged ball records.
+-- The idle fast-path also requires empty draw systems: retired systems
+-- leave their final pre-advance frame published, and skipping the step
+-- would freeze that frame on screen forever as stuck stars.
 function BattleScreenState:_stepBallParticles()
   local starts = self._timeline:takeBallParticleStarts()
   local queued = self._timeline:queuedParticleBalls()
-  if next(starts) == nil and next(queued) == nil and self._ballParticles:isIdle() then
+  if
+    next(starts) == nil
+    and next(queued) == nil
+    and self._ballParticles:isIdle()
+    and #self._ballParticles:drawSystems() == 0
+    and #self._ballParticles:failures() == 0
+  then
     return
   end
   local entries = self._manifest.battleBalls.entries
@@ -8069,13 +8274,39 @@ function BattleScreenState:_stepBallParticles()
     return entry ~= nil and entry.particles or nil
   end
   ---@param ballKey string
-  ---@param kind "seal"|"burst"
+  ---@return boolean|nil staged false only for affirmatively staged no-effect balls, nil when the entry has not staged yet
+  local function hasParticles(ballKey)
+    local entry = entries["ball:" .. ballKey]
+    if entry == nil then
+      return nil
+    end
+    if entry.particles == nil then
+      return false
+    end
+    return true
+  end
+  ---@param ballKey string
+  ---@param kind "seal"|"burst"|"genericBurst"
   ---@param textureId integer
   ---@return table<string, unknown>|userdata|nil
   local function textureOf(ballKey, kind, textureId)
     return (self._assets:drawable("battle-ball-particle:" .. ballKey .. ":" .. kind .. ":" .. textureId))
   end
-  self._ballParticles:step(starts, queued, { particles = particlesOf, texture = textureOf })
+  self._ballParticles:step(starts, queued, { particles = particlesOf, has = hasParticles, texture = textureOf })
+  local failures = self._ballParticles:failures()
+  if #failures > 0 and self._mode ~= "failed" then
+    local first = failures[1] --[[@as table<string, unknown>]]
+    local start = first.start --[[@as table<string, unknown>]]
+    self._mode = "failed"
+    self._error = "battle ball effect "
+      .. tostring(start.effect)
+      .. " for ball "
+      .. tostring(start.ballKey)
+      .. " failed: "
+      .. tostring(first.reason)
+      .. " for launch "
+      .. tostring(self._launchId)
+  end
 end
 
 -- One fixed update: prepare, cancel held presses across remeasure, map
@@ -8423,8 +8654,10 @@ function BattleScreenState:draw(resources)
     self._error = "battle render failed for launch " .. self._launchId .. ": " .. tostring(renderErr)
   end
   -- The retained parent view draws first; the card draws its own phase
-  -- over it without advancing any state. The completed card keeps its
-  -- static final view and terminal cover so the old foe cannot reappear.
+  -- over it without advancing any state. A completed card persists only
+  -- until the capture-nickname completion opens (which disposes it
+  -- before the Yes/No question draws), so the frozen cover never
+  -- occludes the nickname controls.
   if self._mode ~= "failed" and self._mode ~= "disposed" and self._registrationChild ~= nil then
     local child = self._registrationChild --[[@as table<string, unknown>]]
     local drawFn = child.draw --[[@as fun(self: table<string, unknown>, resources: table<string, unknown>)?]]

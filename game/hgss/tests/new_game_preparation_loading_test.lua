@@ -181,6 +181,19 @@ function T.failed_pair_art_stays_cosmetic_while_the_intro_gate_transfers()
   Assert.equal(watch.disposes, 1, "the transfer still releases the stage exactly once")
 end
 
+function T.initial_game_load_enrolls_the_walking_visual_demand_with_its_loading_screen()
+  local host, calls = keyedHost({ introReady = true, walkerReady = false })
+  local state = newEntry(host)
+  Assert.isTrue(
+    #calls.walker >= 1,
+    "the initial game load requests the walking sprites before its first loader frame"
+  )
+  for _, call in ipairs(calls.walker) do
+    Assert.equal(call.urgency, "near", "the initialization demand stays nonblocking")
+  end
+  state:dispose()
+end
+
 function T.escape_disposes_the_stage_once_and_never_transfers_late()
   local host, _, behavior = keyedHost({ introReady = false })
   local readyCalls, cancelCalls = 0, 0

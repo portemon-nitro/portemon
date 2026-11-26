@@ -1,26 +1,24 @@
 -- First-run import orchestration and state machine. Two roles:
 --
---   * RomImporter.isReady(versionId) -- the cheap source-binding readiness
---     contract the boot flow depends on. It never opens the ROM or reads
---     large resources: a strict persisted binding suffices, and the actual
---     source bytes are opened lazily on the first genuine cache miss.
+--   * RomImporter.isReady(versionId) -- the cheap managed-or-legacy source
+--     readiness contract the boot flow depends on. It never opens the ROM or
+--     reads large resources.
 --
---   * An interactive/headless importer driving validation inside a
---     coroutine: validate the ROM fully (NdsRom.open: size, SHA-1, header,
---     game code) BEFORE any cache mutation, then atomically record the
---     source binding, yielding periodically so the UI stays responsive.
---     Nothing is extracted: derived caches compile directly from the
---     user-owned ROM on demand. The validated bytes stay available exactly
---     once through takeVerifiedSource for the controller handoff; every
---     other terminal path releases the source and a single GC is run.
+--   * A direct/headless importer driving validation inside a coroutine and an
+--     interactive importer driving one physical background worker. Direct
+--     imports retain their external binding. Queued imports validate in memory,
+--     prepare and publish a managed archive, and keep validated bytes available
+--     exactly once through takeVerifiedSource for the controller handoff.
 --
--- Progress is monotonic by construction (ordered phase fractions). All
--- love coupling is confined to the default `now` clock, the shared-buffer
--- conversion, and the lazy draw helper.
+-- Progress is monotonic by construction. Queued completion is emitted only
+-- after checked durable publication; every other terminal path releases the
+-- source. All love coupling is confined to the default clock, shared-buffer
+-- conversion, and managed/temporary filesystem ownership.
 
 local GameVersion = require("romdump.src.source.GameVersion")
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomBinding = require("romdump.src.source.RomBinding")
+local RomArchive = require("romdump.src.source.RomArchive")
 local RomSource = require("romdump.src.source.RomSource")
 local NdsRom = require("romdump.src.source.NdsRom")
 local Errors = require("libs.errors.src.Errors")
@@ -34,14 +32,14 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _now (fun(): number)?
 ---@field private _expectedVersionId string? edition required by a targeted import
 ---@field private _verified table<string, unknown>? one-shot validated buffer for the controller handoff
----@field private _registerGate (fun(): nil)? worker-only authorization before the binding write
 ---@field private _queued table<string, unknown>? live background session, when queued
 ---@field private _queueSeq integer background session counter guarding late packets
 ---@field private _queueCanceled boolean whether the queued session was retired
 ---@field private _queueRequest table<string, unknown>? restartable worker input for one retry
 ---@field private _pendingStart table<string, unknown>? deferred worker input while the process lease is occupied
 ---@field private _queueAttempts integer background starts for the live request
----@field private _commitSent boolean whether the live session authorized registration
+---@field private _commitSent boolean whether the live session authorized publication
+---@field private _temporaryPath string? accepted imports/ stage owned by this request
 local RomImporter = {}
 RomImporter.__index = RomImporter
 
@@ -125,18 +123,17 @@ local function serviceRetiredLease()
 end
 
 -- `versions` lets the importer verify readiness against an injected catalog in
--- tests; production callers (boot flow, batch CLI, test runner) use the
--- default GameVersion. Readiness is the strict persisted source binding
--- only: the registered file is never opened here, so a moved ROM never
--- blocks an installed cache and actual bytes load lazily on a real miss.
--- Whether the version already carries a persisted source registration.
--- Checked through the version cache only: the binding proves a prior
--- registration without opening the ROM, while a filename or launch route
--- alone never does. A failed or corrupt read counts as unregistered.
+-- tests; production callers use the default GameVersion. A published managed
+-- archive is authoritative availability; the legacy binding is consulted only
+-- when no canonical or recoverable managed archive exists.
 ---@param cacheFs table<string, function> version cache holding the registration
 ---@param versionId string
 ---@return boolean
 function RomImporter.isRegistered(cacheFs, versionId)
+  local info = GameVersion.VERSIONS[versionId]
+  if type(info) == "table" and RomArchive.recoverablePath(info.sha1) ~= nil then
+    return true
+  end
   local ok, binding = pcall(RomBinding.read, cacheFs, versionId)
   return ok and binding ~= nil
 end
@@ -156,6 +153,9 @@ function RomImporter.isReady(versionId, cache, versions)
     return false
   end
   cache = cache or CacheFs.forVersion(versionId)
+  if RomArchive.recoverablePath(info.sha1) ~= nil then
+    return true
+  end
   local binding = RomBinding.read(cache, versionId, versions)
   return binding ~= nil
 end
@@ -170,20 +170,14 @@ local function defaultNow()
   return 0
 end
 
--- opts: { onComplete=, versions=, cacheFactory=, now=, registerGate= }. All
--- optional; tests inject a synthetic version catalog, a FakeCache-backed
--- cacheFactory, and a static `now` (which disables yielding, so one
--- update() runs to completion). registerGate is worker-only: the
--- background worker authorizes its binding write through it, while the
--- direct path continues without a gate.
+-- opts: { onComplete=, versions=, cacheFactory=, now= }. All optional; tests
+-- inject a synthetic version catalog, a FakeCache-backed cacheFactory, and a
+-- static `now` (which disables yielding, so one update() runs to completion).
 function RomImporter.new(opts)
   opts = opts or {}
   local expectedVersionId = opts.expectedVersionId
   if expectedVersionId ~= nil then
     assert(GameVersion.VERSIONS[expectedVersionId], "unknown expected game version")
-  end
-  if opts.registerGate ~= nil then
-    assert(type(opts.registerGate) == "function", "registerGate must be a function")
   end
   return setmetatable({
     _onComplete = opts.onComplete,
@@ -193,7 +187,6 @@ function RomImporter.new(opts)
     end,
     _now = opts.now or defaultNow,
     _expectedVersionId = expectedVersionId,
-    _registerGate = opts.registerGate,
     _queueSeq = 0,
     _queueCanceled = false,
     _queueAttempts = 0,
@@ -216,6 +209,7 @@ function RomImporter:status()
     report = self._report,
     error = self._error,
     errorCode = self._errorCode,
+    canCancel = (self._queued ~= nil or self._pendingStart ~= nil) and not self._queueCanceled and not self._commitSent,
   }
 end
 
@@ -234,11 +228,28 @@ function RomImporter:_requireNotBusy()
   end
 end
 
+-- Only an accepted temporary stage belongs to the importer. Pending/no-worker
+-- and terminal paths may remove it here; an active worker removes its own input
+-- after source closure.
+function RomImporter:_cleanupTemporaryInput()
+  local path = self._temporaryPath
+  if path == nil then
+    return
+  end
+  local ok, removed = pcall(love.filesystem.remove, path)
+  if ok and removed ~= false then
+    self._temporaryPath = nil
+  end
+end
+
 function RomImporter:_fail(err)
   if self._source then
     self._source:release()
   end
   self._source, self._co, self._verified = nil, nil, nil
+  if self._queued == nil and self._pendingStart == nil then
+    self:_cleanupTemporaryInput()
+  end
   self._error = err
   self._errorCode = Errors.is(err) and err.code or nil
   self.state = RomImporter.STATES.ERROR
@@ -252,6 +263,9 @@ function RomImporter:_complete(report)
     self._source:release()
   end
   self._source, self._co = nil, nil
+  if self._queued == nil and self._pendingStart == nil then
+    self:_cleanupTemporaryInput()
+  end
   self._report = report
   self.progress = 1
   self.state = RomImporter.STATES.COMPLETE
@@ -275,8 +289,8 @@ end
 -- already converted the retained string into the one immutable shared
 -- buffer before completion; the first take wraps it in a borrowed view,
 -- and later takes (or takes before completion and takes after a failure)
--- answer nil. The bytes never enter the generated cache: only the binding
--- is persisted.
+-- answer nil. Queued imports persist that buffer in managed storage; direct
+-- imports persist their existing external binding instead.
 ---@return table<string, unknown>? borrowed-source view over the shared buffer
 function RomImporter:takeVerifiedSource()
   local verified = self._verified
@@ -355,15 +369,6 @@ function RomImporter:_beginWork()
       if ok and durable then
         origin.path = candidate
       end
-    end
-    -- Worker-only authorization seam directly before the binding write.
-    -- The direct path registers no gate, so its behavior is unchanged; the
-    -- background worker announces its validated version here and waits for
-    -- the game thread's explicit commit, and a cancel raises out of the
-    -- validation coroutine so nothing is recorded.
-    local gate = self._registerGate
-    if gate ~= nil then
-      gate()
     end
     local recorded, recordErr = RomBinding.record(cache, rom, {
       kind = origin.kind,
@@ -543,6 +548,7 @@ function RomImporter:_startQueued(request, requestId, attempts)
   self._queueCanceled = false
   self._commitSent = false
   self._queueAttempts = attempts or 1
+  self._temporaryPath = request.kind == "temporary" and request.path or nil
   self._queueRequest = {
     kind = request.kind,
     path = request.path,
@@ -591,8 +597,11 @@ function RomImporter:_startQueued(request, requestId, attempts)
     return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import thread failed to start", {}))
   end
   local thread = threadOrErr --[[@as table<string, function>]]
-  if not pcall(thread.start, thread, package.path, inbox, outbox) then
-    return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import thread failed to start", {}))
+  local startOk, startedThread, startError = pcall(thread.start, thread, package.path, inbox, outbox)
+  if not startOk or startedThread == false then
+    return self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import thread failed to start", {
+      cause = tostring(startError),
+    }))
   end
   activeWorkerLease = { thread = thread, inbox = inbox, outbox = outbox, id = id, retired = false }
   self._queued = { id = id, thread = thread, inbox = inbox, outbox = outbox }
@@ -610,6 +619,42 @@ function RomImporter:queuePath(path, requestId)
   self:_requireNotBusy()
   assert(type(path) == "string" and path ~= "", "queuePath requires a ROM path")
   return self:_startQueued({ kind = "path", path = path }, requestId)
+end
+
+-- Accept one completed private picker stage. Path shape, regular-file
+-- existence, and busy rejection happen before ownership transfers. Once true
+-- is returned, every later startup/processing failure and cleanup belongs to
+-- the importer, including an immediate synchronous worker-start failure.
+---@param relativePath string confined imports/<token>.nds|.zip path
+---@param requestId unknown? caller correlation
+---@return boolean? accepted
+---@return Errors.Error? rejection
+function RomImporter:queueTemporaryPath(relativePath, requestId)
+  if self:isBusy() then
+    return nil, Errors.new(IMPORT_ERROR_CODES.BUSY, "an import is already in progress", { state = self.state })
+  end
+  local token, extension
+  if type(relativePath) == "string" then
+    token, extension = relativePath:match("^imports/([A-Za-z0-9_-]+)%.([A-Za-z]+)$")
+  end
+  if token == nil or extension:lower() ~= "nds" and extension:lower() ~= "zip" then
+    return nil,
+      Errors.new("ROM_IMPORT_REQUEST_INVALID", "temporary import path is not an owned imports/ stage", {
+        path = relativePath,
+      })
+  end
+  local infoOk, info = pcall(love.filesystem.getInfo, relativePath)
+  if not infoOk or info == nil or info.type ~= "file" then
+    return nil, Errors.new("ROM_OPEN_FAILED", "temporary import stage is not a readable file", { path = relativePath })
+  end
+  self._temporaryPath = relativePath
+  local started, startError = pcall(self._startQueued, self, { kind = "temporary", path = relativePath }, requestId)
+  if not started then
+    self:_fail(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import could not start", {
+      cause = tostring(startError),
+    }))
+  end
+  return true
 end
 
 ---@param name unknown raw dropped file label
@@ -658,10 +703,74 @@ function RomImporter:queueDroppedFile(droppedFile, requestId)
 end
 
 -- Retire the queued background session without blocking: the worker is told
--- to abandon its registration gate, late packets are invalidated, and the
+-- to abandon its publication gate, late packets are invalidated, and the
 -- session returns to idle. The physical lease is retained until the retired
 -- thread actually exits and its outbox is drained. A direct (non-queued)
--- import is untouched.
+-- import is untouched. A pending temporary stage has no reader and is removed
+-- immediately; an active worker removes its stage after source closure.
+--
+-- Signal cancellation to whatever physical worker is live, whether or not
+-- an importer instance still owns it. A cancel-then-quit orphan keeps
+-- occupying the process lease after its attempt cleared, so final shutdown
+-- must reach the lease itself rather than the current attempt's session.
+local function signalProcessLeaseCancel()
+  local lease = activeWorkerLease
+  if lease == nil then
+    return
+  end
+  lease.retired = true
+  local inbox = lease.inbox
+  if inbox ~= nil then
+    pcall(inbox.push, inbox, { id = lease.id, op = "cancel" })
+  end
+end
+
+-- Join the physical worker thread after cancellation was signalled.
+-- LÖVE Thread:wait blocks until the worker exits: the final shutdown
+-- guarantee. Table fakes implement wait, so production and unit coverage
+-- share the one blocking ownership path.
+---@param thread table<string, function>|userdata|nil
+---@return boolean joined
+local function joinLeaseThread(thread)
+  if thread == nil then
+    return true
+  end
+  if type(thread.wait) == "function" then
+    pcall(function()
+      thread:wait()
+    end)
+    return not leaseThreadAlive(thread)
+  end
+  return not leaseThreadAlive(thread)
+end
+
+-- Final process-shutdown drain for the single worker lease, owned by this
+-- module. Signals cancellation to any live worker, joins the physical
+-- thread, then drains the retired outbox so no late packet can publish
+-- after the LÖVE session closes. Independent of any single attempt: call
+-- it unconditionally on final shutdown even when no importer is current.
+-- Never waits for a worker-owned publication: the commit gate in App.quit
+-- vetoes shutdown once publication was authorized.
+---@return boolean freed whether the process lease is free
+function RomImporter.shutdownProcessLease()
+  signalProcessLeaseCancel()
+  local lease = activeWorkerLease
+  if lease ~= nil then
+    joinLeaseThread(lease.thread)
+  end
+  for _ = 1, 128 do
+    serviceRetiredLease()
+    if activeWorkerLease == nil then
+      break
+    end
+  end
+  return activeWorkerLease == nil
+end
+
+-- Retire the queued background session without blocking: the worker is told
+-- to abandon its publication gate, late packets are invalidated, and the
+-- session returns to idle. The physical lease is retained until the retired
+-- thread actually exits and its outbox is drained.
 function RomImporter:cancelQueued()
   local queued = self._queued
   local pending = self._pendingStart
@@ -672,6 +781,7 @@ function RomImporter:cancelQueued()
   self._queueCanceled = true
   if pending ~= nil then
     self._pendingStart = nil
+    self:_cleanupTemporaryInput()
   end
   if queued ~= nil then
     self._queued = nil
@@ -692,6 +802,7 @@ function RomImporter:cancelQueued()
     end
   end
   self._verified = nil
+  self._queueRequest = nil
   if self.state ~= RomImporter.STATES.COMPLETE and self.state ~= RomImporter.STATES.ERROR then
     self.state = RomImporter.STATES.IDLE
   end
@@ -719,21 +830,30 @@ function RomImporter:_applyWorkerStatus(packet)
   end
 end
 
--- Sending commit is the registration linearization point: it is answered
--- only for the live session, so a retired session can never authorize a
--- binding it no longer owns.
+-- Sending commit is the publication linearization point: it is answered
+-- only for the live session, so a retired session can never authorize an
+-- archive it no longer owns.
 ---@param queued table<string, unknown> live background session
 ---@return nil
 function RomImporter:_answerValidationGate(queued)
+  if self._commitSent or self._queueCanceled or self._queued ~= queued then
+    return
+  end
   local inbox = queued.inbox --[[@as table<string, function>]]
-  pcall(inbox.push, inbox, { id = queued.id, op = "commit" })
+  local sent, pushError = pcall(inbox.push, inbox, { id = queued.id, op = "commit" })
+  if not sent then
+    return self:_failWorker({
+      errorCode = "IMPORT_WORKER_UNAVAILABLE",
+      message = "background import could not authorize publication",
+      context = { cause = tostring(pushError) },
+    })
+  end
   self._commitSent = true
 end
 
--- Accept one terminal worker result for the live session: publish the
--- worker-decided binding through the configured cache with the same
--- atomicity as a direct registration, then complete with the same
--- one-shot handoff. No revalidation happens on this thread.
+-- Accept one durable terminal worker result for the live session. The worker
+-- has already checked and published the managed archive; this thread performs
+-- no ROM read, validation, compression, or binding write.
 ---@param packet table<string, unknown>
 ---@return nil
 function RomImporter:_acceptWorkerResult(packet)
@@ -742,17 +862,6 @@ function RomImporter:_acceptWorkerResult(packet)
   self._pendingStart = nil
   if activeWorkerLease ~= nil and activeWorkerLease.id == sessionId then
     activeWorkerLease.retired = true
-  end
-  local cache = (self._cacheFactory --[[@as fun(versionId: string): table]])(packet.versionId)
-  local published, publishErr = pcall(function()
-    cache:writeLua(RomBinding.STAGE_PATH, packet.binding)
-    cache:replace(RomBinding.STAGE_PATH, RomBinding.PATH)
-  end)
-  if not published then
-    if Errors.is(publishErr) then
-      return self:_fail(publishErr)
-    end
-    return self:_fail(publishErr)
   end
   self._versionId = packet.versionId
   self._displayName = packet.displayName
@@ -782,12 +891,11 @@ function RomImporter:_failWorker(packet)
 end
 
 -- Restart a session whose worker produced no validation outcome.
--- Bounded to one retry: a repeated infrastructure failure still surfaces,
--- and validation failures never retry. The restart is safe at any point
--- before completion: the worker records only into its own staging, which
--- dies with it, while the durable publication happens on this thread for
--- the current session id alone. The retired session is canceled first, so
--- at most one worker stays current and its late packets no longer match.
+-- Bounded to one retry for ordinary path/drop requests before commit
+-- authorization. Temporary inputs are never retried, and an uncertain result
+-- after commit is not retried because publication may already have succeeded.
+-- The retired session is canceled first, so at most one worker stays current
+-- and its late packets no longer match.
 ---@param packet table<string, unknown> terminal infrastructure failure
 ---@return nil
 function RomImporter:_failOrRetryWorker(packet)
@@ -795,7 +903,13 @@ function RomImporter:_failOrRetryWorker(packet)
   local infrastructure = code == "IMPORT_WORKER_LOST" or code == "ROM_IMPORT_WORKER_FAILED"
   local request = self._queueRequest
   local attempts = self._queueAttempts or 1
-  if infrastructure and attempts < 2 and type(request) == "table" then
+  if
+    infrastructure
+    and attempts < 2
+    and not self._commitSent
+    and type(request) == "table"
+    and request.kind ~= "temporary"
+  then
     self:cancelQueued()
     local retry = {
       kind = request.kind,

@@ -1,30 +1,27 @@
--- Neutral repository-root reader for the script override system: reads checked-in
--- content under the repository root (e.g. `data/scripts/overrides`) that
--- lives outside the LÖVE source and save directories. The LÖVE build's
--- love.filesystem.mount cannot attach host directories, so this adapter uses
--- plain io (the repo root comes from love.filesystem.getSourceBaseDirectory
--- at construction). It implements the read-shaped contract the script loader
--- consumes; the loader enumerates overrides through the checked-in manifest,
--- never through directory listing. Interface layer: never imported by domain
--- modules.
+-- Neutral repository-root reader for checked-in resources. An injected source
+-- reader (for example love.filesystem inside a portable archive) is consulted
+-- before the physical checkout. Paths stay confined to one canonical
+-- repo-relative spelling; missing files remain nil.
 
 ---@class RepoFs
 ---@field private _root string
+---@field private _sourceFs { read: fun(path: string): string|nil }?
 local RepoFs = {}
 RepoFs.__index = RepoFs
 
 ---@param root string repo root (source base directory)
+---@param sourceFs { read: fun(path: string): string|nil }? archive/source reader
 ---@return RepoFs
-function RepoFs.new(root)
+function RepoFs.new(root, sourceFs)
   assert(type(root) == "string" and root ~= "", "repo fs requires the repo root")
-  return setmetatable({ _root = root }, RepoFs)
+  assert(sourceFs == nil or type(sourceFs.read) == "function", "repo fs source reader requires read(path)")
+  return setmetatable({ _root = root, _sourceFs = sourceFs }, RepoFs)
 end
 
--- Confines a repo-relative path below the root: normalize separators, reject
--- absolute paths and `.`/`..` components, then verify the joined canonical
--- path still sits inside the root. Rejection raises; a missing normal file
--- stays nil (read's io.open failure).
-function RepoFs:_full(relativePath)
+-- Validate and canonicalize once before either backend is consulted.
+---@param relativePath string
+---@return string canonical
+function RepoFs:_canonical(relativePath)
   assert(type(relativePath) == "string", "repo fs paths are repo-relative")
   local canonical = relativePath:gsub("\\", "/")
   assert(canonical:sub(1, 1) ~= "/", "repo fs paths are repo-relative")
@@ -34,7 +31,15 @@ function RepoFs:_full(relativePath)
     components[#components + 1] = component
   end
   assert(#components > 0, "repo fs paths are repo-relative")
-  local full = self._root .. "/" .. table.concat(components, "/")
+  return table.concat(components, "/")
+end
+
+-- Confines a repo-relative path below the physical root.
+---@param relativePath string
+---@return string
+function RepoFs:_full(relativePath)
+  local canonical = self:_canonical(relativePath)
+  local full = self._root .. "/" .. canonical
   assert(full:sub(1, #self._root) == self._root, "repo fs path escapes the repo root")
   return full
 end
@@ -42,7 +47,14 @@ end
 ---@param path string
 ---@return string|nil
 function RepoFs:read(path)
-  local handle = io.open(self:_full(path), "rb")
+  local canonical = self:_canonical(path)
+  if self._sourceFs ~= nil then
+    local sourced = self._sourceFs.read(canonical)
+    if sourced ~= nil then
+      return sourced
+    end
+  end
+  local handle = io.open(self:_full(canonical), "rb")
   if not handle then
     return nil
   end

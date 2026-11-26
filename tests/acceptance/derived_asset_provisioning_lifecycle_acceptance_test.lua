@@ -31,6 +31,8 @@ local function withApp(fn)
   local originalMenuNew = MainMenuComposition.new
   local originalTitleNew = StartupTitleState.new
   local originalReady = RomImporter.isReady
+  local RomArchive = require("romdump.src.source.RomArchive")
+  local originalRecoverable = RomArchive.recoverablePath
   local originalDimensions = love.graphics.getDimensions
   local originalQuit = love.event.quit
   local originalAppBackend = ProducerFingerprint.appBackend
@@ -47,6 +49,15 @@ local function withApp(fn)
   App.drawableWidth, App.drawableHeight = 800, 600
   RomImporter.isReady = function(versionId)
     return versionId == "heartgold"
+  end
+  -- App selects through the managed-archive presence, not the readiness
+  -- seam: synthetic managed source at the archive boundary.
+  RomArchive.recoverablePath = function(sha1)
+    local info = require("romdump.src.source.GameVersion").info("heartgold")
+    if info ~= nil and sha1 == info.sha1 then
+      return "managed/synthetic-heartgold.zip"
+    end
+    return nil
   end
   love.graphics.getDimensions = function()
     return 800, 600
@@ -114,6 +125,7 @@ local function withApp(fn)
   MainMenuComposition.new = originalMenuNew
   StartupTitleState.new = originalTitleNew
   RomImporter.isReady = originalReady
+  RomArchive.recoverablePath = originalRecoverable
   love.graphics.getDimensions = originalDimensions
   love.event.quit = originalQuit
   ProducerFingerprint.appBackend = originalAppBackend

@@ -269,6 +269,10 @@ local function regionsFor(view)
     -- The held Shift offer and the wild replacement offer answer through
     -- the source Yes/No planes behind their staged questions.
     return BattleMenuRegions.forLayout("two-option")
+  elseif mode == "outcome" and view.completionQuestion == true then
+    -- The capture-nickname Yes/No question answers through the source
+    -- two-option planes while the outcome narration holds its prompt.
+    return BattleMenuRegions.forLayout("two-option")
   end
   return nil
 end
@@ -288,6 +292,8 @@ local function scopeFor(view)
     end
   elseif mode == "shift" or mode == "use-next" then
     return "two-option"
+  elseif mode == "outcome" and view.completionQuestion == true then
+    return "two-option"
   end
   return "command"
 end
@@ -298,6 +304,9 @@ end
 ---@return string input scope behind the current mode
 local function inputScopeFor(view)
   local mode = view.mode
+  if mode == "outcome" and view.completionQuestion == true then
+    return "two-option"
+  end
   if mode == "shift" or mode == "use-next" then
     return mode --[[@as string]]
   end
@@ -376,6 +385,12 @@ local function mapBattleInput(event, view, plan)
     return mapChildPointer(event, regions)
   end
   if view.mode == "narration" or view.mode == "outcome" then
+    if view.mode == "outcome" and view.completionQuestion == true and regions ~= nil then
+      -- Pointer taps answer the nickname Yes/No directly through the
+      -- two-option regions; keys keep the shared toggle-plus-confirm
+      -- edges below. Dialogue taps would only acknowledge settled text.
+      return mapPointer(event, view, regions)
+    end
     return mapDialogue(event, view)
   end
   if regions == nil then

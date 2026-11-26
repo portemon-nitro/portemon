@@ -58,6 +58,7 @@
 ---@field reference CacheFs.PackageRef immutable selected member descriptor
 ---@field owner integer? token whose physical dispatch performs the read
 ---@field members table<integer, boolean> every logical token needing these bytes
+---@field demandRequested boolean? a member required this read; stays urgent until the shared read settles
 
 -- One physical preparation worker: its own request channel plus the token it
 -- is currently running. Every worker reports on the one shared reply channel,
@@ -518,14 +519,17 @@ function AssetPreparationQueue:_freeSlot()
   return self:_startWorker()
 end
 
--- Drop an already-cancelled head entry; cancellation removes queued tokens
--- eagerly, so this only guards against stale references.
+-- Drop an already-cancelled or already-dispatched head entry; cancellation
+-- removes queued tokens eagerly and lane movement never duplicates an entry,
+-- so this only guards against stale references and a running or ready record
+-- can never be dispatched again.
 ---@param pending integer[]
 ---@return integer?
 function AssetPreparationQueue:_shiftLive(pending)
   while #pending > 0 do
     local token = table.remove(pending, 1)
-    if self._tokens[token] then
+    local record = self._tokens[token]
+    if record ~= nil and record.state == "queued" then
       return token
     end
   end
@@ -729,16 +733,21 @@ function AssetPreparationQueue:_checkWorkerHealth()
   end
 end
 
--- Insert a record into the pending list its effective priority names. Demand
--- is a property of the logical acquisition, not of the stage it is at: a token
--- promoted while its selected-source read was already running keeps that
--- urgency for the decode continuation it becomes.
+-- Insert a record into the pending list its effective priority names. Logical
+-- demand survives every stage. A source read can additionally be urgent solely
+-- because one of its members needs the bytes; that prerequisite urgency does
+-- not change the owner's unrelated decode priority.
 ---@param record AssetPreparationQueueRecord
 function AssetPreparationQueue:_enqueue(record)
   if record.demandRequested then
     record.priority = "demand"
   end
-  if record.priority == "demand" then
+  local demand = record.priority == "demand"
+  if record.stage == "source" then
+    local interest = self._sourceInterests[record.sourceKey]
+    demand = demand or (interest ~= nil and interest.demandRequested == true)
+  end
+  if demand then
     self._demand[#self._demand + 1] = record.token
   else
     self._prefetch[#self._prefetch + 1] = record.token
@@ -759,31 +768,30 @@ function AssetPreparationQueue:_removeQueued(token)
   end
 end
 
--- Raise one logical acquisition's effective urgency. The demand is sticky: it
--- is recorded on the token itself, so it survives the physical stages a
--- selected-source prerequisite goes through (read, coalescing, decode
--- continuation) and never needs re-promotion at each one. A queued record moves
--- to the demand list now; a running or awaiting record carries the flag into
--- whatever it becomes next. Promotion never dispatches on its own.
+-- Raise one logical acquisition's effective urgency. The demand stays on the
+-- consumer that requested it, even while another token owns the physical read
+-- or decode. Followers propagate demand to their shared primary; source members
+-- raise only the read prerequisite, never an unrelated owner's decode. Urgency
+-- is monotonic until the shared operation settles: cancelling the consumer that
+-- promoted it may leave a little already-required work running, never a starved
+-- survivor.
 ---@param record AssetPreparationQueueRecord?
 function AssetPreparationQueue:_demandRecord(record)
   if record == nil then
     return
   end
   record.demandRequested = true
-  -- The physical read is a prerequisite of this acquisition: when it is still
-  -- queued it must outrank speculative work for the same reason the logical
-  -- token does.
+  if record.link ~= nil then
+    self:_demandRecord(self._tokens[record.link])
+  end
   local sourceKey = record.sourceKey
   if sourceKey ~= nil then
     local interest = self._sourceInterests[sourceKey]
-    if interest ~= nil and interest.owner ~= nil and interest.owner ~= record.token then
-      local owner = self._tokens[interest.owner]
-      if owner ~= nil then
-        owner.demandRequested = true
-        if owner.state == "queued" then
-          self:_raiseQueued(owner)
-        end
+    if interest ~= nil then
+      interest.demandRequested = true
+      local owner = interest.owner ~= nil and self._tokens[interest.owner] or nil
+      if owner ~= nil and owner ~= record and owner.state == "queued" then
+        self:_raiseSourceQueued(owner)
       end
     end
   end
@@ -792,20 +800,41 @@ function AssetPreparationQueue:_demandRecord(record)
   end
 end
 
--- Move one already-queued demand record ahead of queued prefetch work.
+-- Move one queued token onto the demand lane exactly once. Lane membership is
+-- the executor's own invariant: a queued token sits in exactly one pending
+-- list, so a movement that finds no prefetch entry has already been promoted
+-- and must never append a second entry for the same physical stage.
+---@param record AssetPreparationQueueRecord
+function AssetPreparationQueue:_moveQueuedToDemand(record)
+  for index, queued in ipairs(self._prefetch) do
+    if queued == record.token then
+      table.remove(self._prefetch, index)
+      self._demand[#self._demand + 1] = record.token
+      return
+    end
+  end
+end
+
+-- Move a queued physical source read to the demand list without changing the
+-- logical priority of the decode that may follow it.
+---@param record AssetPreparationQueueRecord
+function AssetPreparationQueue:_raiseSourceQueued(record)
+  if record.stage ~= "source" then
+    return
+  end
+  self:_moveQueuedToDemand(record)
+end
+
+-- Raise one already-queued token's logical priority and its lane urgency. The
+-- lane move is the same idempotent operation the source prerequisite uses, so
+-- two independent promotion reasons still leave one pending entry.
 ---@param record AssetPreparationQueueRecord
 function AssetPreparationQueue:_raiseQueued(record)
   if record.priority == "demand" then
     return
   end
   record.priority = "demand"
-  for index, queued in ipairs(self._prefetch) do
-    if queued == record.token then
-      table.remove(self._prefetch, index)
-      break
-    end
-  end
-  self._demand[#self._demand + 1] = record.token
+  self:_moveQueuedToDemand(record)
 end
 
 -- Drop one token's interest in a selected source. The physical read is never
@@ -942,6 +971,9 @@ function AssetPreparationQueue:_absorbSource(record, response)
         if primary ~= nil and primary ~= memberToken and isUnsettled(primaryRecord) then
           member.state = "linked"
           member.link = primary
+          if member.demandRequested then
+            self:_demandRecord(primaryRecord)
+          end
         else
           self._inflight[member.key] = memberToken
           member.state = "queued"
@@ -1161,7 +1193,7 @@ function AssetPreparationQueue:request(kind, logicalPath, priority)
     record.link = primary
     self._tokens[token] = record
     if priority == "demand" then
-      self:_demandRecord(primaryRecord)
+      self:_demandRecord(record)
     end
     self:_dispatch()
     return token
@@ -1299,7 +1331,7 @@ function AssetPreparationQueue:_requestSelectedDecode(kind, file, selector, logi
     end
     self._tokens[token] = record
     if priority == "demand" then
-      self:_demandRecord(primaryRecord)
+      self:_demandRecord(record)
     end
     self:_dispatch()
     return token
@@ -1416,6 +1448,13 @@ function AssetPreparationQueue:cancel(token)
           otherRecord.link = heir
         end
       end
+      for _, otherRecord in pairs(self._tokens) do
+        if otherRecord.key == record.key and otherRecord.demandRequested then
+          heirRecord.demandRequested = true
+          heirRecord.priority = "demand"
+          break
+        end
+      end
     end
   end
 
@@ -1431,6 +1470,7 @@ function AssetPreparationQueue:cancel(token)
     record.inputLease = nil
     if heir ~= nil and self._tokens[heir] ~= nil then
       self._tokens[heir].inputLease = lease
+      self._tokens[heir].data = assert(lease.value, "a transferred input lease still pins its bytes").payload
     else
       self._decoded:returnLease(lease)
       self._decoded:trim()
@@ -1469,11 +1509,6 @@ function AssetPreparationQueue:promote(token, priority)
   assert(priority == "demand", "unknown preparation priority " .. tostring(priority))
   local record = self._tokens[token]
   assert(record, "unknown preparation token")
-  local linked = record.link
-  if linked ~= nil then
-    self:_demandRecord(self._tokens[linked])
-    return
-  end
   self:_demandRecord(record)
 end
 
@@ -1588,7 +1623,8 @@ end
 
 -- Stop accepting work, return leases for jobs the worker never received, ask
 -- it to stop and join it, then return leases pinned by physical jobs and
--- discard unclaimed replies.
+-- discard unclaimed replies. Quit uses this same ordered path and waits for
+-- termination before the decoded owner is released.
 -- Idempotent: the worker is created and joined at most once, and a queue that
 -- never dispatched never creates one. The borrowed decoded owner is never
 -- cleared here; its lifetime belongs to the selected runtime.

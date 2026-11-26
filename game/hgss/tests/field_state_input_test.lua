@@ -62,6 +62,81 @@ local joystick = {
   end,
 }
 
+function T.virtual_and_physical_gamepad_sources_remain_independent_in_real_field_input()
+  local input = FieldInput.new()
+  local state = setmetatable({
+    runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = {} },
+  }, FieldState)
+  local virtual = {
+    getID = function()
+      return -1
+    end,
+  }
+  state:gamepadpressed(joystick, "dpdown")
+  state:gamepadpressed(virtual, "dpup")
+  Assert.equal(input:snapshot().heldDirection, "north", "the most recent virtual direction wins normally")
+  state:gamepadreleased(virtual, "dpup")
+  Assert.equal(
+    input:snapshot().heldDirection,
+    "south",
+    "releasing virtual input reveals the still-held physical source"
+  )
+  state:gamepadpressed(joystick, "a")
+  state:gamepadpressed(virtual, "a")
+  state:gamepadreleased(virtual, "a")
+  Assert.isTrue(input:snapshot().actionDown, "a virtual release never releases the physical action source")
+  state:gamepadreleased(joystick, "a")
+  Assert.isFalse(input:snapshot().actionDown)
+  state:gamepadreleased(joystick, "dpdown")
+  Assert.isNil(input:snapshot().heldDirection)
+end
+
+function T.presented_battle_keeps_its_direct_touch_pointer_branch()
+  local calls, received = {}, {}
+  local state = stateWithInput(calls)
+  state.battleEnvelope = {
+    ownsInput = function()
+      return true
+    end,
+    input = function(_, events)
+      received[#received + 1] = events[1]
+    end,
+  }
+  state:touchpressed(3, 210, 70)
+  state:touchmoved(3, 214, 74)
+  state:touchreleased(3, 214, 74)
+  Assert.deepEqual(calls, {}, "battle-owned touches never fall through to field pointer or shortcuts")
+  Assert.deepEqual(received, {
+    { type = "pointer_down", pointerId = "touch:3", x = 210, y = 70 },
+    { type = "pointer_move", pointerId = "touch:3", x = 214, y = 74 },
+    { type = "pointer_up", pointerId = "touch:3", x = 214, y = 74 },
+  })
+end
+
+function T.virtual_press_rejected_by_entry_cover_is_not_replayed_after_readiness()
+  local input = FieldInput.new()
+  local covered = true
+  local state = setmetatable({
+    runtime = { input = input, actionKeys = {}, cancelKeys = {}, menuKeys = {} },
+    _entryCoverActive = function()
+      return covered
+    end,
+  }, FieldState)
+  local virtual = {
+    getID = function()
+      return -1
+    end,
+  }
+  state:gamepadpressed(virtual, "a")
+  covered = false
+  Assert.isFalse(input:snapshot().actionDown, "readiness changes do not replay a rejected virtual press")
+  state:gamepadreleased(virtual, "a")
+  Assert.isFalse(input:snapshot().actionDown)
+  state:gamepadpressed(virtual, "a")
+  Assert.isTrue(input:snapshot().actionDown, "a fresh virtual press follows the now-ready gate")
+  state:gamepadreleased(virtual, "a")
+end
+
 function T.keyboard_dpad_stick_and_pointer_events_reach_the_unified_input()
   local calls = {}
   local state = stateWithInput(calls)

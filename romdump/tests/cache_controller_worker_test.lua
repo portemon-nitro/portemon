@@ -1044,12 +1044,20 @@ end
 -- The one snapshot candidate this drive may open. The controller hydrates the
 -- recoverable archive at selection, so the fixture replaces that single owner
 -- entry point with a cut the test already built: no file is written and no
--- other suite can observe it.
+-- other suite can observe it. The drive's source registration lives in its own
+-- fake cache, so a managed ROM installed in the shared test data home is hidden
+-- here too; otherwise that physical source would bypass the registration these
+-- drives exercise.
 local function withSnapshotCandidate(hydration, fn)
   local CacheArchive = require("romdump.src.build.CacheArchive")
+  local RomArchive = require("romdump.src.source.RomArchive")
   local realRecoverable = CacheArchive.recoverableFileName
   local realOpen = CacheArchive.open
   local realRestore = CacheArchive.restoreBackup
+  local realManagedPath = RomArchive.recoverablePath
+  RomArchive.recoverablePath = function()
+    return nil
+  end
   CacheArchive.restoreBackup = function()
     return false
   end
@@ -1069,6 +1077,7 @@ local function withSnapshotCandidate(hydration, fn)
   CacheArchive.recoverableFileName = realRecoverable
   CacheArchive.open = realOpen
   CacheArchive.restoreBackup = realRestore
+  RomArchive.recoverablePath = realManagedPath
   if not ok then
     error(err, 0)
   end

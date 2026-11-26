@@ -12,6 +12,9 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local PixelScale = require("libs.ui.src.PixelScale")
+local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local DisplayContext = require("libs.ui.src.DisplayContext")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 
 local T = {}
 
@@ -286,6 +289,146 @@ function T.injected_topology_provider_publishes_one_same_size_structural_change(
   Assert.isTrue(ok, "injected topology polling must remain supported: " .. tostring(err))
   Assert.equal(runtime.resizeCalls, 1)
   Assert.deepEqual(runtime.lastResize, { 1280, 720, current })
+end
+
+local function recordingPresentationHost(events, kind)
+  local host = {}
+  function host:resize(width, height)
+    events[#events + 1] = { kind, "resize", width, height }
+  end
+  function host:setScreenTopology(topology)
+    events[#events + 1] = { kind, "topology", topology }
+  end
+  return host
+end
+
+local function realResizeRuntime(topologyProvider)
+  local originalLoad = FieldRuntime._load
+  FieldRuntime._load = function() end
+  local ok, runtimeOrError = pcall(FieldRuntime.new, { versionId = "heartgold", saveId = "save-00000001" }, {
+    presentation = false,
+    displayContext = DisplayContext.new({
+      graphics = {
+        getDimensions = function()
+          return 360, 800
+        end,
+        getDPIScale = function()
+          return 1
+        end,
+      },
+      topologyProvider = topologyProvider,
+    }),
+  })
+  FieldRuntime._load = originalLoad
+  Assert.isTrue(ok, tostring(runtimeOrError))
+  local runtime = runtimeOrError
+  runtime.viewport = FieldViewport.new(360, 800, { mode = "expanded" })
+  runtime.fieldPixelScale = FieldPixelScale.new(FieldPresentation.fieldScale)
+  local projections = {}
+  runtime.camera = {
+    setProjectionAspect = function(_, aspect)
+      projections[#projections + 1] = { "aspect", aspect }
+    end,
+    setZoom = function(_, zoom)
+      projections[#projections + 1] = { "zoom", zoom }
+    end,
+  }
+  local events = {}
+  runtime.menuHost = recordingPresentationHost(events, "menu")
+  runtime.yesNoHost = recordingPresentationHost(events, "choice")
+  runtime.martHost = {
+    refreshPresentation = function()
+      events[#events + 1] = { "mart", "refresh" }
+    end,
+    dispose = function()
+      events[#events + 1] = { "mart", "dispose" }
+    end,
+  }
+  return runtime, events, projections
+end
+
+function T.real_runtime_resize_uses_the_largest_usable_world_rectangle_across_insets_and_orientations()
+  local current = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 360, height = 800 },
+    safeRect = { x = 0, y = 0, width = 360, height = 800 },
+    occupiedRegions = { { x = 0, y = 584, width = 360, height = 216 } },
+    touch = true,
+    role = "world",
+  })
+  local runtime, events, projections = realResizeRuntime(function()
+    return current
+  end)
+  local viewport = runtime.viewport
+  runtime:resizePresentation(360, 800, current)
+  Assert.isTrue(runtime.viewport == viewport, "resize retains the real viewport owner")
+  Assert.equal(runtime.viewport.width, 360)
+  Assert.equal(runtime.viewport.height, 800)
+  Assert.deepEqual(runtime.viewport.worldViewport, { x = 0, y = 0, width = 360, height = 584 })
+  Assert.deepEqual(runtime.viewport.referenceFrame, { x = 0, y = 157, width = 360, height = 270 })
+  Assert.equal(runtime.presentationDisplay.width, 360)
+  Assert.equal(runtime.presentationDisplay.height, 800)
+  Assert.deepEqual(runtime.presentationDisplay.topology, current)
+  Assert.notNil(runtime.viewport.pixelGrid)
+  Assert.equal(#projections, 2, "camera projection follows the bounded world geometry")
+  Assert.equal(#events, 5, "each presentation host receives one geometry publication")
+  local hostEvents = {}
+  for _, event in ipairs(events) do
+    hostEvents[event[1]] = hostEvents[event[1]] or {}
+    hostEvents[event[1]][#hostEvents[event[1]] + 1] = event
+  end
+  Assert.deepEqual(hostEvents.menu, {
+    { "menu", "resize", 360, 800 },
+    { "menu", "topology", current },
+  })
+  Assert.deepEqual(hostEvents.choice, {
+    { "choice", "resize", 360, 800 },
+    { "choice", "topology", current },
+  })
+  Assert.deepEqual(hostEvents.mart, { { "mart", "refresh" } })
+
+  local before = #events
+  runtime:resizePresentation(360, 800, current)
+  Assert.equal(#events, before + 5, "an explicit repeated resize still refreshes each current host once")
+  Assert.deepEqual(runtime.viewport.worldViewport, { x = 0, y = 0, width = 360, height = 584 })
+
+  current = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 360, height = 800 },
+    safeRect = { x = 12, y = 20, width = 336, height = 780 },
+    occupiedRegions = { { x = 12, y = 544, width = 336, height = 216 } },
+    touch = true,
+    role = "world",
+  })
+  runtime:resizePresentation(360, 800, current)
+  Assert.deepEqual(runtime.viewport.worldViewport, { x = 12, y = 20, width = 336, height = 524 })
+  Assert.equal(runtime.viewport.width, 360, "safe-area changes never replace full host facts")
+  Assert.equal(runtime.viewport.height, 800)
+
+  current = ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = 800, height = 360 },
+    occupiedRegions = {
+      { x = 0, y = 0, width = 160, height = 360 },
+      { x = 640, y = 0, width = 160, height = 360 },
+    },
+    touch = true,
+    role = "world",
+  })
+  runtime:resizePresentation(800, 360, current)
+  Assert.deepEqual(runtime.viewport.worldViewport, { x = 160, y = 0, width = 480, height = 360 })
+  Assert.deepEqual(runtime.viewport.referenceFrame, { x = 160, y = 0, width = 480, height = 360 })
+  Assert.equal(runtime.viewport.width, 800)
+  Assert.equal(runtime.viewport.height, 360)
+
+  current = oneDisplay(800, 360)
+  runtime:resizePresentation(800, 360, current)
+  Assert.deepEqual(runtime.viewport.worldViewport, { x = 0, y = 0, width = 800, height = 360 })
+  Assert.deepEqual(runtime.viewport.referenceFrame, { x = 160, y = 0, width = 480, height = 360 })
+  local measured = runtime.presentationDisplay
+  local selected = ApplicationLayout.selectSurfaces(measured)
+  Assert.deepEqual(selected.primary.usableBounds, { x = 0, y = 0, width = 800, height = 360 })
+  runtime:dispose()
 end
 
 local function effectiveScaleAtHeight(height)

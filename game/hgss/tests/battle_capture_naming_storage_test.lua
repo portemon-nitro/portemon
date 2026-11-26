@@ -102,7 +102,10 @@ local function screenManifest()
   -- The capture harness binds one launch view, never the global
   -- inventory: the exact backpic and ball behind these rigs stage as
   -- launch entries.
-  local manifest = BattlePresentationManifestFixture.launchView({ "back:PKMN_TRAINER_ETHAN" }, { "ball:POKE_BALL" })
+  local manifest = BattlePresentationManifestFixture.launchView(
+    { "back:PKMN_TRAINER_ETHAN" },
+    { "ball:POKE_BALL", "ball:MASTER_BALL" }
+  )
   manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
   return manifest
 end
@@ -425,6 +428,79 @@ local function driveToNicknameQuestion(rig, budget)
       .. tostring(battle.phase)
       .. ")"
   )
+end
+
+-- The nickname question centers the caught specimen at (128,72) over
+-- black instead of leaving black battlefield + question with no mon.
+-- Both new and repeat catches enter the same scene from the hidden foe,
+-- and the centered specimen composes behind the parent's planned dock.
+function T.nickname_question_centers_caught_specimen_over_black()
+  local rig = openCaptureRig({
+    launchId = "launch-centered-specimen",
+    party = { "CHIKORITA", "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE" },
+    bag = makeBallBag(),
+  })
+  local opening = driveToDecision(rig, 600)
+  local request = assert(opening.request, "the capture battle asks its opening decision")
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local options = rig.battle:decisionOptions(request.requestId)
+  local fragment = nil
+  for _, actor in ipairs(options.actors) do
+    for _, choice in ipairs(actor.choices or {}) do
+      if choice.enabled == true and type(choice.choice) == "table" and type(choice.choice.payload) == "table" and choice.choice.payload.item == "MASTER_BALL" then
+        fragment = choice.choice
+      end
+    end
+  end
+  Assert.notNil(fragment, "the opening decision offers the stocked ball")
+  local thrown, throwErr = rig.battle:submit(SessionFixture.replyFor(request, { fragment --[[@as table<string, unknown>]] }))
+  Assert.isTrue(thrown, "the thrown ball is accepted: " .. tostring(throwErr))
+  driveToCommitted(rig, 1200)
+  driveToNicknameQuestion(rig, 1200)
+  local snapshot = rig.screen:_snapshot()
+  local animation = snapshot.sceneAnimation
+  local main = type(animation) == "table" and animation.main or nil
+  local compositor = type(main) == "table" and main.compositor or nil
+  local fade = type(compositor) == "table" and compositor.battlefieldFade or nil
+  Assert.isTrue(type(fade) == "table" and fade.amount == 16, "the nickname scene fades the battlefield to black")
+  -- Scene replacement: exactly one visible specimen owns the main
+  -- scene; the old player, donor foe, shadows, and HUD retire with
+  -- the battle main instead of lingering behind the question.
+  local visible = {}
+  for _, battler in ipairs(snapshot.battlers) do
+    if type(battler) == "table" and battler.visible == true and battler.dontDraw ~= true and battler.vanished ~= true then
+      visible[#visible + 1] = battler
+    end
+  end
+  Assert.equal(#visible, 1, "the nickname scene shows exactly one main-scene picture")
+  local specimen = nil
+  for _, battler in ipairs(snapshot.battlers) do
+    if type(battler) == "table" and battler.side ~= 1 and battler.visible == true and type(battler.portraitSelector) == "string" then
+      specimen = battler
+      break
+    end
+  end
+  Assert.notNil(specimen, "the nickname scene shows the centered caught specimen")
+  assert(specimen ~= nil, "the centered specimen exists")
+  Assert.isTrue(specimen.hudVisible == false, "the specimen carries no health box")
+  Assert.isTrue(specimen.affineMode == nil, "the specimen stands unscaled")
+  Assert.isTrue(specimen.shadowAffine == nil, "the specimen carries no battle shadow")
+  Assert.isTrue(specimen.paletteFade == nil, "the specimen carries no battle tint")
+  for _, battler in ipairs(snapshot.battlers) do
+    if type(battler) == "table" and battler ~= specimen and battler.visible == true then
+      error("the nickname scene retains a stale battle picture", 0)
+    end
+    if type(battler) == "table" and battler.side == 1 and battler.hudVisible ~= false then
+      error("the old player HUD survives into the nickname scene", 0)
+    end
+  end
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local row = BattleScene.slotRow(specimen, nil, rig.screen._manifest.battlefield.slots)
+  local sourceHeight = type(specimen.sourceHeight) == "number" and specimen.sourceHeight or 0
+  Assert.equal(row.settledX + (specimen.entryDx or 0), 128, "the specimen centers at native x=128")
+  Assert.equal(row.settledY + sourceHeight + (specimen.entryDy or 0), 72, "the specimen centers at native y=72")
+  rig.battle:dispose()
+  rig.screen:dispose()
 end
 
 -- A caught mon keeps its exact identity through the native nickname

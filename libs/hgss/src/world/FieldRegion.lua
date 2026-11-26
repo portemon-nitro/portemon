@@ -110,6 +110,7 @@ end
 ---@field private _plates table[]
 ---@field private _nextSurfaceId integer
 ---@field private _sourceSurfaceIndex table<string, table<integer, integer>>
+---@field private _plateById table<integer, table<string, unknown>>
 ---@field private _terrain TerrainSurface?
 ---@field private _region table<string, unknown>?
 
@@ -155,6 +156,7 @@ function FieldRegion.begin(centralCollision, centralTerrain, neighbors, centralK
     _plates = {},
     _nextSurfaceId = surfaceIdBase or 0,
     _sourceSurfaceIndex = {},
+    _plateById = {},
     _terrain = nil,
     _region = nil,
   }, FieldRegionTask)
@@ -169,6 +171,7 @@ function FieldRegionTask:_appendPlate(plate, cell)
   local id = self._nextSurfaceId
   self._plates[#self._plates + 1] =
     copyPlate(plate, id, cell.offsetTilesX, cell.offsetTilesY, cell.offsetTilesZ, cell.key)
+  self._plateById[id] = self._plates[#self._plates]
   -- A plate without its own source identity (or a cell without a key) has
   -- none to index: central surfaces stay local and are never looked up by
   -- source id.
@@ -194,7 +197,8 @@ function FieldRegionTask:advance(maxPlates)
   while consumed < maxPlates and self._terrain == nil do
     local cell = self._cells[self._nextCellIndex]
     if cell == nil then
-      self._terrain = TerrainSurface.new({ schema = "g4-composite-terrain-v1", plates = self._plates })
+      self._terrain =
+        TerrainSurface.fromIndexedPlates({ schema = "g4-composite-terrain-v1", plates = self._plates }, self._plateById)
       consumed = consumed + 1
       break
     end

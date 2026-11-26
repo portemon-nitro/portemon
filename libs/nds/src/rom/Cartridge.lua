@@ -7,6 +7,7 @@ local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local NitroFs = require("libs.nds.src.rom.NitroFs")
 local OverlayTable = require("libs.nds.src.rom.OverlayTable")
+local bit = require("bit")
 
 ---@class Cartridge
 ---@field private _source table<string, unknown>
@@ -20,6 +21,10 @@ local Cartridge = {}
 Cartridge.__index = Cartridge
 
 local MIN_HEADER = 0x200
+local BANNER_BLOCK_SIZE = 0x240
+local BANNER_BITMAP_OFFSET = 0x20
+local BANNER_PALETTE_OFFSET = 0x220
+local BANNER_PALETTE_SIZE = 32
 
 local function parseHeader(reader)
   local function region(off)
@@ -99,6 +104,88 @@ local function parseFat(source, fatOffset, fatSize, romSize)
     fat[fileId] = { startOffset = startOffset, endOffset = endOffset, size = endOffset - startOffset }
   end
   return fat, count
+end
+
+---@param source table<string, unknown> with size() and read(offset, length) methods
+---@param header table<string, unknown>? pre-read generic cartridge header
+---@return string? rgbaBytes
+---@return Errors.Error?
+function Cartridge.readBannerIcon(source, header)
+  assert(source and type(source.size) == "function" and type(source.read) == "function", "Cartridge source is invalid")
+  local resolvedHeader = header
+  if resolvedHeader == nil then
+    local headerOk, result = pcall(Cartridge.readHeader, source)
+    if not headerOk then
+      if Errors.is(result) then
+        return nil, result
+      end
+      error(result, 0)
+    end
+    resolvedHeader = result
+  end
+  local bannerOffset = resolvedHeader.bannerOffset
+  if bannerOffset == 0 then
+    return nil,
+      Errors.new("NDS_BANNER_MISSING", "cartridge has no static banner", {
+        bannerOffset = bannerOffset,
+      })
+  end
+  local romSize = source:size()
+  if bannerOffset < 0 or bannerOffset + BANNER_BLOCK_SIZE > romSize then
+    return nil,
+      Errors.new("NDS_BANNER_OUT_OF_RANGE", "static banner exceeds the ROM", {
+        bannerOffset = bannerOffset,
+        size = BANNER_BLOCK_SIZE,
+        romSize = romSize,
+      })
+  end
+  local block, readError = source:read(bannerOffset, BANNER_BLOCK_SIZE)
+  if block == nil then
+    return nil,
+      Errors.new("NDS_BANNER_READ_FAILED", "static banner could not be read", {
+        bannerOffset = bannerOffset,
+        cause = Errors.format(readError),
+      })
+  end
+  if #block ~= BANNER_BLOCK_SIZE then
+    return nil,
+      Errors.new("NDS_BANNER_TRUNCATED", "static banner read was incomplete", {
+        bannerOffset = bannerOffset,
+        expectedSize = BANNER_BLOCK_SIZE,
+        actualSize = #block,
+      })
+  end
+
+  local reader = BinaryReader.new(block, "banner")
+  local palette = {}
+  for index = 0, BANNER_PALETTE_SIZE / 2 - 1 do
+    local color = reader:u16le(BANNER_PALETTE_OFFSET + index * 2)
+    local red = bit.band(color, 0x1F)
+    local green = bit.band(bit.rshift(color, 5), 0x1F)
+    local blue = bit.band(bit.rshift(color, 10), 0x1F)
+    palette[index] = {
+      red = bit.lshift(red, 3) + bit.rshift(red, 2),
+      green = bit.lshift(green, 3) + bit.rshift(green, 2),
+      blue = bit.lshift(blue, 3) + bit.rshift(blue, 2),
+    }
+  end
+
+  local rgba = {}
+  for y = 0, 31 do
+    for x = 0, 31 do
+      local tile = math.floor(y / 8) * 4 + math.floor(x / 8)
+      local byteOffset = BANNER_BITMAP_OFFSET + tile * 32 + (y % 8) * 4 + math.floor((x % 8) / 2)
+      local packed = reader:u8(byteOffset)
+      local index = x % 2 == 0 and bit.band(packed, 0x0F) or bit.rshift(packed, 4)
+      if index == 0 then
+        rgba[#rgba + 1] = "\0\0\0\0"
+      else
+        local color = palette[index]
+        rgba[#rgba + 1] = string.char(color.red, color.green, color.blue, 255)
+      end
+    end
+  end
+  return table.concat(rgba)
 end
 
 ---@param source table<string, unknown> with size() and read(offset, length) methods
