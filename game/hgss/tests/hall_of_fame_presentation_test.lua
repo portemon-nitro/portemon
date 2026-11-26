@@ -218,7 +218,12 @@ function T.tests.prepared_credits_draw_paints_current_page_lines()
   local presentation = HallOfFamePresentation.new(bundle())
   local status = { section = "credits", phase = "credits", timer = 115, page = 1 }
   local sink = { text = {}, windows = {} }
-  presentation:draw(fakeResources(sink), status)
+  local drawResources = fakeResources(sink)
+  -- Images admit outside draw; a steady draw then performs no filesystem or
+  -- GPU work and still paints the admitted layers.
+  local admitted, admitFailure = presentation:admitImages(drawResources)
+  Assert.isTrue(admitted, "credit images admit before the first draw: " .. tostring(admitFailure))
+  presentation:draw(drawResources, status)
   local joined = {}
   for _, entry in ipairs(sink.text) do
     joined[#joined + 1] = tostring(entry.text)
@@ -251,8 +256,13 @@ end
 function T.tests.the_end_draw_paints_without_party()
   local presentation = HallOfFamePresentation.new(bundle())
   local sink = { text = {}, windows = {} }
-  presentation:draw(fakeResources(sink), { phase = "the_end" })
-  Assert.isTrue(#sink.text > 0, "The End paints its title surface from bank 440")
+  local drawResources = fakeResources(sink)
+  local admitted, admitFailure = presentation:admitImages(drawResources)
+  Assert.isTrue(admitted, "The End admits before the first draw: " .. tostring(admitFailure))
+  presentation:draw(drawResources, { phase = "the_end" })
+  -- The source disables text/OBJ layers over The End and prints no edition
+  -- title on top of it (the title ran at credit init).
+  Assert.equal(#sink.text, 0, "The End draws its source art, not overlaid text")
   Assert.isTrue(sink.images ~= nil and #sink.images == 1, "The End draws its published source art")
   Assert.equal(#sink.windows, 0, "The End draws its source art, not a generic window")
 end
@@ -267,6 +277,63 @@ function T.tests.prepare_rejects_a_bundle_missing_a_section()
   Assert.isFalse(ok, "a bundle missing a section never becomes ready")
   Assert.isFalse(presentation:isReady(), "a rejected bundle leaves the presentation unready")
   Assert.isTrue(tostring(err):find("showcase", 1, true) ~= nil, "the rejection names the section")
+end
+
+-- The semantic demand distinguishes pending from terminal: an explicit
+-- demand failure is terminal, a ready receipt with a missing bundle is
+-- terminal, and only an unready receipt without a failure stays pending.
+function T.tests.showcase_preparation_distinguishes_pending_from_terminal()
+  local HallOfFameScreenState = require("game.hgss.src.ending.HallOfFameScreenState")
+  local HallOfFameState = require("libs.hgss.src.save.HallOfFameState")
+  local function screen()
+    return HallOfFameScreenState.new({ app = "hallOfFame" }, {
+      hallOfFame = HallOfFameState.empty(),
+      presentation = HallOfFamePresentation.new(nil),
+    })
+  end
+  -- Pending demand + missing bundle: pending, never a failure.
+  do
+    local state = screen()
+    local ready, failure = state:preparePresentation({
+      cacheFs = {
+        loadLua = function()
+          error("missing index")
+        end,
+      },
+      requestEnding = function()
+        return nil, nil
+      end,
+    })
+    Assert.isFalse(ready == true, "a cold bundle stays pending")
+    Assert.isNil(failure, "pending carries no failure")
+  end
+  -- Explicit demand failure: terminal.
+  do
+    local state = screen()
+    local ready, failure = state:preparePresentation({
+      requestEnding = function()
+        return nil, "worker boom"
+      end,
+    })
+    Assert.isFalse(ready == true, "a failed demand never reads ready")
+    Assert.isTrue(tostring(failure):find("boom", 1, true) ~= nil, "the demand failure is attributed")
+  end
+  -- Ready receipt but missing bundle: terminal, not an endless pending.
+  do
+    local state = screen()
+    local ready, failure = state:preparePresentation({
+      cacheFs = {
+        loadLua = function()
+          error("missing index")
+        end,
+      },
+      requestEnding = function()
+        return true, nil
+      end,
+    })
+    Assert.isFalse(ready == true, "a ready receipt with no bundle never reads ready")
+    Assert.isTrue(failure ~= nil, "the published-but-missing bundle is terminal")
+  end
 end
 
 return T

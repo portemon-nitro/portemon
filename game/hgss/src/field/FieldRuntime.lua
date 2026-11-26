@@ -1985,7 +1985,10 @@ function FieldRuntime:_composeFieldServices(boot)
     if self.derivedAssets ~= nil and type(self.derivedAssets.requestEnding) == "function" then
       pcall(self.derivedAssets.requestEnding, "required")
     end
-    self:_prepareEndingPresentation(presentation)
+    -- Admission stays with the per-tick showcase preparation path, which owns
+    -- the pending/ready/failed contract. An eager admit here would ignore its
+    -- terminal outcome and could mark the presentation ready before its
+    -- required images are validated.
     return HallOfFameScreenState.new({ app = "hallOfFame" }, {
       hallOfFame = assert(self.hallOfFame, "the PC showcase needs the saved Hall of Fame history"),
       presentation = presentation,
@@ -2023,7 +2026,6 @@ function FieldRuntime:_composeFieldServices(boot)
   -- their approaches, and the trainer-script queries. Composed before the
   -- script platform so the standard trainer scene resolves it as its service.
   local TrainerEncounterCoordinator = require("game.hgss.src.field.TrainerEncounterCoordinator")
-  local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
   local function currentPlayerFacing()
     return self.player
   end
@@ -2059,43 +2061,17 @@ function FieldRuntime:_composeFieldServices(boot)
   end
   -- The source checks trainer sight from the field's own ordinary-input
   -- arbitration, before new player movement (TryGetSeenByNpcTrainers runs at
-  -- the head of the field input frame). The session owns that arbitration:
-  -- Start Menu activity, the foreground hold, and every modal the session
-  -- refuses ordinary field work for must refuse sight too. isRoamingFree is
-  -- only the narrower roaming predicate, so this gate borrows the session's
-  -- exact admission decision plus the transition/map-entry facts it does not
-  -- own and the runtime-level modal hosts the session never sees.
+  -- the head of the field input frame). The session owns that arbitration,
+  -- so sight hangs off its one admission seam instead of a parallel list.
   local function trainerFieldReady()
     local session = self.session
     if session == nil then
       return false
     end
-    if self.transition == nil or self.transition.phase ~= FieldTransition.PHASES.idle then
-      return false
+    if type(session.admitsTrainerSight) == "function" then
+      return session:admitsTrainerSight()
     end
-    local entry = session.mapEntryController
-    if entry ~= nil and entry:isActive() then
-      return false
-    end
-    if not session:isRoamingFree() then
-      return false
-    end
-    if session.applicationHost ~= nil and session.applicationHost:isActive() then
-      return false
-    end
-    if session:isForegroundHoldActive() then
-      return false
-    end
-    if self.applicationHost ~= nil and self.applicationHost:isActive() then
-      return false
-    end
-    if self.pcApplicationHost ~= nil and self.pcApplicationHost:isActive() then
-      return false
-    end
-    if self.martHost ~= nil and self.martHost:isActive() then
-      return false
-    end
-    return true
+    return false
   end
   local function currentTrainerRegion()
     local map = currentTrainerMap()
@@ -2276,51 +2252,63 @@ function FieldRuntime:_prepareEndingPresentation(presentation)
   if presentation:isReady() then
     return presentation, nil
   end
+  -- The semantic demand is the pending/terminal distinction: an explicit
+  -- demand failure is terminal, a ready receipt means a later bundle or
+  -- image problem is terminal too, and only an unready receipt without a
+  -- failure stays pending.
+  local demandReady = false
   if self.derivedAssets ~= nil and type(self.derivedAssets.requestEnding) == "function" then
-    local _, requestFailure = self.derivedAssets.requestEnding("required")
+    local ready, requestFailure = self.derivedAssets.requestEnding("required")
     if requestFailure ~= nil then
       return nil, "League ending demand failed: " .. tostring(requestFailure)
     end
+    demandReady = ready == true
   end
   local cacheFs = self.cacheFs
   if cacheFs == nil then
     return presentation, nil
   end
   local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
-  local readyOk, ready = pcall(EndingAssetCache.isReady, cacheFs)
-  if not readyOk or not ready then
-    return presentation, nil
-  end
   local loadOk, bundle = pcall(EndingAssetCache.load, cacheFs)
   if not loadOk or type(bundle) ~= "table" then
-    return nil, "League ending bundle failed: " .. tostring(bundle)
+    if demandReady then
+      return nil, "League ending bundle failed: " .. tostring(bundle)
+    end
+    return presentation, nil
   end
-  local prepareOk, prepareErr = pcall(presentation.prepare, presentation, bundle)
-  if not prepareOk then
-    return nil, "League ending bundle failed: " .. tostring(prepareErr)
+  -- Validate every published image before publishing readiness: a bundle
+  -- that loads but names a missing image is terminal, never pending, and
+  -- readiness must never be visible for a partially admitted presentation.
+  local function missingImage(path)
+    local existsOk, exists = pcall(function()
+      return cacheFs:exists(path)
+    end)
+    return not existsOk or not exists
   end
-  for _, scene in ipairs(bundle.credits.scenes) do
+  local credits = bundle.credits
+  if type(credits) ~= "table" or type(credits.scenes) ~= "table" then
+    return nil, "League ending bundle failed: credit scenes are missing"
+  end
+  for _, scene in ipairs(credits.scenes) do
     for _, layer in ipairs({ scene.lower, scene.upper }) do
       if type(layer) ~= "table" or type(layer.path) ~= "string" then
         return nil, "League ending bundle failed: a credit scene names no image"
       end
-      local existsOk, exists = pcall(function()
-        return cacheFs:exists(layer.path)
-      end)
-      if not existsOk or not exists then
+      if missingImage(layer.path) then
         return nil, "League ending bundle failed: missing credit image " .. tostring(layer.path)
       end
     end
   end
-  local theEnd = bundle.credits.theEnd
+  local theEnd = credits.theEnd
   if type(theEnd) ~= "table" or type(theEnd.path) ~= "string" then
     return nil, "League ending bundle failed: The End names no image"
   end
-  local endOk, endExists = pcall(function()
-    return cacheFs:exists(theEnd.path)
-  end)
-  if not endOk or not endExists then
+  if missingImage(theEnd.path) then
     return nil, "League ending bundle failed: missing The End image " .. tostring(theEnd.path)
+  end
+  local prepareOk, prepareErr = pcall(presentation.prepare, presentation, bundle)
+  if not prepareOk then
+    return nil, "League ending bundle failed: " .. tostring(prepareErr)
   end
   return presentation, nil
 end

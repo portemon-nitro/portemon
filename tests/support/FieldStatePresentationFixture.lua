@@ -620,6 +620,12 @@ function FieldStatePresentationFixture.iconHost()
       note("icon-page", { pageId = pageId, urgency = urgency })
       return true
     end,
+    -- The League ending bundle demand mirrors production: ready because the
+    -- suite's prepared cache stages the named bundle receipt.
+    requestEnding = function(urgency)
+      note("ending", urgency)
+      return true
+    end,
     status = function()
       return { bootstrap = "ready" }
     end,

@@ -6577,4 +6577,52 @@ function T.a_gym_mechanism_claims_the_completed_step_before_ordinary_publication
   Assert.notNil(session:takeCommittedStep(), "an unclaimed step still publishes")
 end
 
+-- Trainer sight hangs off the session's one ordinary-input admission seam:
+-- the registered Apricorn Box, Start Menu, foreground hold, absent world,
+-- and a mid-transition tick all refuse sight exactly like they refuse the
+-- player's own step.
+function T.trainer_sight_admission_mirrors_ordinary_input_gates()
+  local function idleSession()
+    return FieldSession.new(baseOptions({}))
+  end
+  Assert.isTrue(idleSession():admitsTrainerSight(), "an idle field admits trainer sight")
+  do
+    local session = idleSession()
+    session.kurtBoxHost = {
+      isBrowseActive = function()
+        return true
+      end,
+    }
+    Assert.isFalse(session:admitsTrainerSight(), "the registered Apricorn Box refuses sight")
+  end
+  do
+    local session = idleSession()
+    local host = session.applicationHost
+    host.isActive = function()
+      return true
+    end
+    Assert.isFalse(session:admitsTrainerSight(), "the Start Menu refuses sight")
+  end
+  do
+    local session = idleSession()
+    session:setForegroundHold(true)
+    Assert.isFalse(session:admitsTrainerSight(), "a foreground hold refuses sight")
+  end
+  do
+    local session = idleSession()
+    session.overworld = {
+      isPresent = function()
+        return false
+      end,
+      updateFixed = function() end,
+    }
+    Assert.isFalse(session:admitsTrainerSight(), "an absent world refuses sight")
+  end
+  do
+    local session = idleSession()
+    session.transition.phase = "out"
+    Assert.isFalse(session:admitsTrainerSight(), "a mid-transition tick refuses sight")
+  end
+end
+
 return { tests = T }

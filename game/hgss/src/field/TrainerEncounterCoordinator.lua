@@ -346,21 +346,10 @@ function TrainerEncounterCoordinator:_sightBlocked(actorId, direction, distance,
   if playerCandidate.fieldX ~= finalCandidate.fieldX or playerCandidate.fieldZ ~= finalCandidate.fieldZ then
     return true
   end
-  -- Production players always carry their committed surface identity, and the
-  -- endpoint proof requires it. Headless fakes without any surface fact keep
-  -- the legacy X/Z-only admission so unit coverage without a physical map
-  -- still exercises the ray geometry.
-  local hasPlayerSurface = playerCandidate.surfaceId ~= nil
-    or playerCandidate.cellKey ~= nil
-    or playerCandidate.sourceSurfaceId ~= nil
-  local hasFinalSurface = finalCandidate.surfaceId ~= nil
-    or finalCandidate.cellKey ~= nil
-    or finalCandidate.sourceSurfaceId ~= nil
-  if hasPlayerSurface and hasFinalSurface then
-    if not FieldActorPlacement.samePhysicalCandidate(map, finalCandidate, playerCandidate) then
-      return true
-    end
-  elseif hasPlayerSurface ~= hasFinalSurface then
+  -- The endpoint proof requires the committed physical identity: X/Z alone
+  -- never sights across a stacked floor. Fixtures carry the committed
+  -- surface identity like production players.
+  if not FieldActorPlacement.samePhysicalCandidate(map, finalCandidate, playerCandidate) then
     return true
   end
   return false
@@ -485,7 +474,6 @@ function TrainerEncounterCoordinator:tryEngage()
     surfaceId = player.surfaceId,
     cellKey = player.committedSourceCellKey,
     sourceSurfaceId = player.committedSourceSurfaceId,
-    worldY = player.worldY,
   }
   local doubles, sightBlocked = self:_sightResolvers(playerFacts)
   local plan = TrainerBattleTrigger.check({

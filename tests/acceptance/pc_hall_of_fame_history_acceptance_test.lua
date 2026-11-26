@@ -434,11 +434,13 @@ function T.tests.source_pc_hall_of_fame_entry_blocks_the_script_until_the_showca
       "the source Hall of Fame entry opens the shared showcase child"
     )
     Assert.isTrue(readable.runtime.screenFade:isOpaque(), "the source overlay opens behind its own screen fade")
-    -- Headless acceptance stops before GPU rendering, so it admits the
-    -- showcase input through an intentionally renderer-free test route: the
-    -- production child stays input-gated on its prepared bundle and icons,
-    -- while this composition forces readiness to exercise the script/close
-    -- protocol without requiring realized art.
+    -- Headless acceptance stops before GPU rendering, so this journey uses
+    -- an explicitly labeled renderer-free presentation fake for the
+    -- script/close protocol only: the real child's preparation is bypassed
+    -- to force input readiness without realized art. This fake proves the
+    -- blocking/close protocol, never admission; genuine bundle/icon
+    -- admission is proven by the preparation unit tests and the graphics
+    -- suite's pc_showcase_paints_record_pages (real cache, real icons).
     do
       local child = entry.host:activeChild()
       if child ~= nil and type(child.preparePresentation) == "function" then
@@ -451,6 +453,8 @@ function T.tests.source_pc_hall_of_fame_entry_blocks_the_script_until_the_showca
           if failure ~= nil then
             return false, failure
           end
+          -- Renderer-free fake: treat cold-but-valid preparation as ready
+          -- for protocol purposes only.
           return true, nil
         end
       end

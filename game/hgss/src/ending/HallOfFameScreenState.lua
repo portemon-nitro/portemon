@@ -123,46 +123,63 @@ function HallOfFameScreenState:preparePresentation(env)
   assert(type(env) == "table", "the showcase preparation needs its environment")
   local presentation = assert(self.presentation, "the showcase needs its presentation")
   if not presentation:isReady() then
+    local demandReady = false
     if env.requestEnding ~= nil then
-      local _, requestFailure = env.requestEnding("required")
+      local ready, requestFailure = env.requestEnding("required")
       if requestFailure ~= nil then
         return false, "Hall of Fame ending demand failed: " .. tostring(requestFailure)
       end
+      demandReady = ready == true
     end
     if env.cacheFs ~= nil then
       local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
-      local readyOk, ready = pcall(EndingAssetCache.isReady, env.cacheFs)
-      if readyOk and ready then
-        local loadOk, bundle = pcall(EndingAssetCache.load, env.cacheFs)
-        if not loadOk or type(bundle) ~= "table" then
+      local loadOk, bundle = pcall(EndingAssetCache.load, env.cacheFs)
+      if not loadOk or type(bundle) ~= "table" then
+        if demandReady then
           return false, "Hall of Fame bundle failed: " .. tostring(bundle)
+        end
+      else
+        local function missingImage(path)
+          local existsOk, exists = pcall(function()
+            return env.cacheFs:exists(path)
+          end)
+          return not existsOk or not exists
+        end
+        local imageFailure = nil
+        local credits = bundle.credits
+        if type(credits) ~= "table" or type(credits.scenes) ~= "table" then
+          imageFailure = "Hall of Fame bundle failed: credit scenes are missing"
+        else
+          for _, scene in ipairs(credits.scenes) do
+            for _, layer in ipairs({ scene.lower, scene.upper }) do
+              if type(layer) ~= "table" or type(layer.path) ~= "string" then
+                imageFailure = "Hall of Fame bundle failed: a credit scene names no image"
+                break
+              end
+              if missingImage(layer.path) then
+                imageFailure = "Hall of Fame bundle failed: missing credit image " .. tostring(layer.path)
+                break
+              end
+            end
+            if imageFailure ~= nil then
+              break
+            end
+          end
+          if imageFailure == nil then
+            local theEnd = credits.theEnd
+            if type(theEnd) ~= "table" or type(theEnd.path) ~= "string" then
+              imageFailure = "Hall of Fame bundle failed: The End names no image"
+            elseif missingImage(theEnd.path) then
+              imageFailure = "Hall of Fame bundle failed: missing The End image " .. tostring(theEnd.path)
+            end
+          end
+        end
+        if imageFailure ~= nil then
+          return false, imageFailure
         end
         local prepareOk, prepareErr = pcall(presentation.prepare, presentation, bundle)
         if not prepareOk then
           return false, "Hall of Fame bundle failed: " .. tostring(prepareErr)
-        end
-        for _, scene in ipairs(bundle.credits.scenes) do
-          for _, layer in ipairs({ scene.lower, scene.upper }) do
-            if type(layer) ~= "table" or type(layer.path) ~= "string" then
-              return false, "Hall of Fame bundle failed: a credit scene names no image"
-            end
-            local existsOk, exists = pcall(function()
-              return env.cacheFs:exists(layer.path)
-            end)
-            if not existsOk or not exists then
-              return false, "Hall of Fame bundle failed: missing credit image " .. tostring(layer.path)
-            end
-          end
-        end
-        local theEnd = bundle.credits.theEnd
-        if type(theEnd) ~= "table" or type(theEnd.path) ~= "string" then
-          return false, "Hall of Fame bundle failed: The End names no image"
-        end
-        local endOk, endExists = pcall(function()
-          return env.cacheFs:exists(theEnd.path)
-        end)
-        if not endOk or not endExists then
-          return false, "Hall of Fame bundle failed: missing The End image " .. tostring(theEnd.path)
         end
       end
     end
@@ -219,19 +236,37 @@ function HallOfFameScreenState:status()
   }
   if record ~= nil then
     for _, mon in ipairs(record.party) do
-      view.party[#view.party + 1] = { species = mon.species, level = mon.level, form = mon.form }
+      -- Keep the recorded identity (personality/OT id) so the presenter
+      -- derives gender/shininess instead of dropping the branches.
+      view.party[#view.party + 1] = {
+        species = mon.species,
+        level = mon.level,
+        form = mon.form,
+        personality = mon.personality,
+        otId = mon.otId,
+        nickname = mon.nickname,
+        otName = mon.otName,
+      }
     end
   end
   if record ~= nil and self.monIndex0 ~= nil then
     local mon = record.party[self.monIndex0 + 1]
     if mon ~= nil then
+      local moves = { "", "", "", "" }
+      if type(mon.moves) == "table" then
+        for index = 1, 4 do
+          moves[index] = mon.moves[index]
+        end
+      end
       view.mon = {
         species = mon.species,
         level = mon.level,
         form = mon.form,
+        personality = mon.personality,
+        otId = mon.otId,
         nickname = mon.nickname,
         otName = mon.otName,
-        moves = { mon.moves[1], mon.moves[2], mon.moves[3], mon.moves[4] },
+        moves = moves,
       }
     end
   end

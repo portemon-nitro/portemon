@@ -1391,8 +1391,10 @@ end
 -- the registration party, the save-status message, the credit roll and
 -- The End, from the coordinator's immutable snapshot plus the live party
 -- the congratulations phase registers. A pending bundle draws nothing; the
--- field world stays visible behind it. Never acquires resources or advances
--- clocks: all leases were admitted by preparation before the first draw.
+-- field world stays visible behind it. Draws only from admitted images and
+-- the cached text the admission warmed: static lines admit before the first
+-- draw, party species/move names cache on their first draw and never lease
+-- again, and no new image is ever uploaded mid-frame.
 ---@param runtime FieldRuntime the live field runtime owning the ending
 function FieldPresentationResources:drawEnding(runtime)
   local coordinator = runtime.gameClear

@@ -235,6 +235,8 @@ function T.credits_advance_pages_and_reach_the_end(scope)
     images = {},
     cacheFs = cacheFs,
   }
+  local admitted, admitFailure = presentation:admitImages(resources)
+  Assert.isTrue(admitted, "credit images admit outside draw: " .. tostring(admitFailure))
   local early = { phase = "credits", timer = 5 }
   presentation:draw(resources, early)
   local later = { phase = "credits", timer = 500 }
@@ -246,7 +248,7 @@ function T.credits_advance_pages_and_reach_the_end(scope)
   Assert.isNil(painted:find("bank", 1, true), "the roll paints source text, not bank identities")
   recorded.text = {}
   presentation:draw(resources, { phase = "the_end" })
-  Assert.isTrue(#recorded.text > 0, "The End paints its title surface from bank 440")
+  Assert.equal(#recorded.text, 0, "The End draws its source art with text layers disabled, not overlaid titles")
 end
 
 -- The PC showcase opens over the recorded history and paints the newest

@@ -698,6 +698,59 @@ function FieldSession:isForegroundHoldActive()
   return self.foregroundHold == true
 end
 
+-- The one session-owned ordinary-input admission for ambient sight: true only
+-- when no transition, entry, suspension, or modal owns the tick against
+-- ordinary field work. Trainer selection hangs off this boundary (not a
+-- parallel predicate) so Start Menu, foreground hold, PC/Mart/Kurt Box,
+-- script-owned modals, and an absent world refuse sight exactly like they
+-- refuse the player's own step.
+---@return boolean
+function FieldSession:admitsTrainerSight()
+  if self.transition.phase ~= FieldTransition.PHASES.idle then
+    return false
+  end
+  if self.mapEntryController ~= nil and self.mapEntryController:isActive() then
+    return false
+  end
+  if self:_gameplaySuspended() then
+    return false
+  end
+  if self.applicationHost ~= nil and self.applicationHost:isActive() then
+    return false
+  end
+  if self.kurtBoxHost ~= nil and self.kurtBoxHost:isBrowseActive() then
+    return false
+  end
+  if not self:isRoamingFree() then
+    return false
+  end
+  if self.yesNoHost ~= nil and self.yesNoHost:isModal() then
+    return false
+  end
+  if self.starterChoice ~= nil and self.starterChoice:isActive() then
+    return false
+  end
+  if self.partySelection ~= nil and self.partySelection:isActive() then
+    return false
+  end
+  if self.martHost ~= nil and self.martHost:isActive() then
+    return false
+  end
+  if self.bankHost ~= nil and self.bankHost:isActive() then
+    return false
+  end
+  if self.monNaming ~= nil and self.monNaming:isActive() then
+    return false
+  end
+  if self.pcApplications ~= nil and self.pcApplications:isActive() then
+    return false
+  end
+  if self.easyChatScriptHost ~= nil and self.easyChatScriptHost:isActive() then
+    return false
+  end
+  return true
+end
+
 -- Reports the latest completed step no higher-priority owner claimed,
 -- exactly once. Turning, bumping, interpolation, and steps consumed by
 -- a coordinate script, warp, zone change, modal, or battle launch never

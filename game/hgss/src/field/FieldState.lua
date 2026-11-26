@@ -363,12 +363,30 @@ function FieldState:update(dt)
     end
   end
   -- The League ending's registration party icons admit through the shared
-  -- mon icon provider alongside the bundle: a cold icon page holds its draw
-  -- (the presenter skips unprepared icons) instead of failing the ending.
+  -- mon icon provider alongside the bundle, and its credit/The End images
+  -- admit outside draw: a cold bundle or cold images hold their draw (the
+  -- presenter skips unadmitted art) instead of uploading mid-frame, and a
+  -- missing published image fails instead of drawing a partial roll.
+  -- Icons are best-effort for the mandatory story sequence: a cold icon
+  -- page draws tolerantly while the bundle gates the phases.
   if self.runtime.gameClear ~= nil and self.runtime.gameClear:isActive() then
     local _, leagueFailure = self:_prepareLeagueEndingIcons()
     if leagueFailure ~= nil then
       error("League ending icon preparation failed: " .. tostring(leagueFailure), 0)
+    end
+    local leaguePresentation = self.runtime.endingPresentation
+    if leaguePresentation ~= nil and leaguePresentation:isReady() and self.runtime.cacheFs ~= nil then
+      local graphics = love ~= nil and love.graphics or nil
+      if graphics ~= nil and type(graphics.newImage) == "function" then
+        local _, admitFailure = leaguePresentation:admitImages({
+          cacheFs = self.runtime.cacheFs,
+          graphics = graphics,
+          messageProvider = self.runtime.messageProvider,
+        })
+        if admitFailure ~= nil then
+          error("League ending image preparation failed: " .. tostring(admitFailure), 0)
+        end
+      end
     end
   end
   -- The active Bag leaf and the script Mart sale advance their shared Bag
@@ -587,12 +605,37 @@ function FieldState:_prepareHallOfFameShowcase()
   if derived ~= nil and type(derived.requestEnding) == "function" then
     requestEnding = derived.requestEnding
   end
-  return child:preparePresentation({
+  local ready, failure = child:preparePresentation({
     cacheFs = runtime.cacheFs,
     icons = resources.monIconProvider,
     monCatalog = runtime.monCatalog,
     requestEnding = requestEnding,
   })
+  if ready ~= true or failure ~= nil then
+    return ready, failure
+  end
+  -- Admit GPU images outside draw once the bundle is validated. Headless
+  -- compositions without a graphics namespace skip admission; draw then
+  -- skips backgrounds instead of uploading mid-frame.
+  local presentation = assert(child.presentation, "the showcase child carries its presentation")
+  if type(presentation.admitImages) == "function" and runtime.cacheFs ~= nil then
+    local graphics = love ~= nil and love.graphics or nil
+    if graphics ~= nil and type(graphics.newImage) == "function" then
+      local admitResources = {
+        cacheFs = runtime.cacheFs,
+        graphics = graphics,
+        messageProvider = runtime.messageProvider,
+      }
+      local admitted, admitFailure = presentation:admitImages(admitResources)
+      if admitFailure ~= nil then
+        return false, admitFailure
+      end
+      if not admitted then
+        return false, nil
+      end
+    end
+  end
+  return true, nil
 end
 
 -- Admits the League ending's registration party icons through the shared mon

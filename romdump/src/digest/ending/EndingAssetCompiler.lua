@@ -486,6 +486,13 @@ function Compiler.dependencies()
     { kind = "message-bank", key = tostring(Compiler.REGISTRATION_MESSAGE_BANK) },
     { kind = "message-bank", key = tostring(Compiler.SHOWCASE_MESSAGE_BANK) },
     { kind = "message-bank", key = tostring(Compiler.CREDITS_MESSAGE_BANK) },
+    -- Drawn alongside the bundle's own banks: the save-status window
+    -- (bank 40) and the localized species/move names the showcase paints
+    -- (banks 237 and 750). An explicit dependency keeps draw-time lookups
+    -- provisioned instead of falling back at draw time.
+    { kind = "message-bank", key = "40" },
+    { kind = "message-bank", key = "237" },
+    { kind = "message-bank", key = "750" },
   }
 end
 
