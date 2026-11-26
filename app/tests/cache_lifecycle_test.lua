@@ -100,6 +100,21 @@ local function record(saveId, overrides)
   return value
 end
 
+local function droppedRom(name)
+  return {
+    getFilename = function()
+      return name
+    end,
+    open = function()
+      return true
+    end,
+    read = function()
+      return "not a real rom"
+    end,
+    close = function() end,
+  }
+end
+
 local function countingStore(backend)
   local calls = { cacheReads = {} }
   local reader = backend.read
@@ -265,6 +280,8 @@ local function withAppStubs(fn)
   local HgssGame = require("game.hgss.src.HgssGame")
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local RomImporter = require("romdump.src.source.RomImporter")
+  local RomArchive = require("romdump.src.source.RomArchive")
+  local originalManagedPath = RomArchive.recoverablePath
   local Store = require("libs.hgss.src.save.GameSaveStore")
   local original = {
     state = App.state,
@@ -282,6 +299,7 @@ local function withAppStubs(fn)
     safeRect = App._safeRect,
     launcherRenderer = App.launcherRenderer,
     launcherAudio = App.launcherAudio,
+    managedPath = originalManagedPath,
     gameNew = HgssGame.new,
     menuNew = MainMenuComposition.new,
     isReady = RomImporter.isReady,
@@ -292,7 +310,7 @@ local function withAppStubs(fn)
   local LauncherLoadingPresentation = require("app.src.launcher.LauncherLoadingPresentation")
   local originalLoadingNew = LauncherLoadingPresentation.new
   -- The boot wait owns one neutral presentation before source admission.
-  LauncherLoadingPresentation.new = function(_)
+  LauncherLoadingPresentation.new = function(options)
     local presentation = {}
     function presentation:update() end
     function presentation:resize() end
@@ -300,6 +318,12 @@ local function withAppStubs(fn)
       if status ~= nil and status.error ~= nil then
         love.graphics.print(status.error)
       end
+      if status ~= nil and status.receipt ~= nil then
+        self.paintedReceiptToken = options and options.attemptId or nil
+      end
+    end
+    function presentation:paintedReceipt()
+      return self.paintedReceiptToken
     end
     function presentation:dispose() end
     return presentation
@@ -469,10 +493,53 @@ local function withAppStubs(fn)
   App.epoch = 0
   App.saveDir = "test-save-dir"
   App.selectedVersionId = nil
-  App.drawableWidth, App.drawableHeight, App.pixelRatio = nil, nil, nil
-  App._safeRect = nil
-  App.launcherRenderer = { dispose = function() end }
-  App.launcherAudio = { play = function() end, update = function() end, dispose = function() end }
+  App.drawableWidth, App.drawableHeight, App.pixelRatio = 640, 480, 1
+  App._safeRect = { x = 0, y = 0, width = 640, height = 480 }
+  App._displayContext = App._launcherDisplayContext()
+  App._bootIntro = nil
+  App._importAttempt = nil
+  App._bootSwallowedInputs = {}
+  App._realTouches = {}
+  App._foreground = true
+  App._touchGamepadSuspended = false
+  App._forceDisplayPublication = false
+  App._iconRepairAttempted = {}
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local info = require("romdump.src.source.GameVersion").info(versionId)
+    if info ~= nil then
+      App._iconRepairAttempted[info.sha1] = true
+    end
+  end
+  RomArchive.recoverablePath = function(sha1)
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil and info.sha1 == sha1 then
+        return "managed/" .. sha1 .. ".zip"
+      end
+    end
+    return nil
+  end
+  App.launcherRenderer = {
+    gameIcons = {},
+    refreshGameIcon = function()
+      return false
+    end,
+    dropGameIcon = function() end,
+    draw = function(_, view)
+      if view.receipt ~= nil then
+        return view.import and view.import.attemptId or nil
+      end
+    end,
+    drawDual = function(_, view)
+      if view.receipt ~= nil then
+        return view.import and view.import.attemptId or nil
+      end
+    end,
+    drawButton = function() end,
+    dispose = function() end,
+  }
+  App.launcherAudio =
+    { play = function() end, fadeBoot = function() end, update = function() end, dispose = function() end }
   RomImporter.isReady = function(_)
     return true
   end
@@ -525,6 +592,7 @@ local function withAppStubs(fn)
   rawset(Store, "new", original.storeNew)
   love.graphics.getDimensions = original.dimensions
   love.window.getSafeArea = original.safeArea
+  RomArchive.recoverablePath = original.managedPath
   App.state = original.state
   App.importer = original.importer
   App.provisioner = original.provisioner
@@ -595,9 +663,16 @@ function T.replacement_rom_waits_for_source_quiescence_before_raw_mutation()
           return true
         end,
         update = function() end,
+        status = function(self)
+          return { state = self.state, canCancel = true }
+        end,
         filedropped = function()
           importerCalls.filedropped = importerCalls.filedropped + 1
         end,
+        queueDroppedFile = function()
+          importerCalls.filedropped = importerCalls.filedropped + 1
+        end,
+        cancelQueued = function() end,
       }
     end)
     local disposals = 0
@@ -609,9 +684,10 @@ function T.replacement_rom_waits_for_source_quiescence_before_raw_mutation()
     }
     local updatesBefore = context.updates
     local ok, err = pcall(function()
-      App.filedropped({ name = "replacement.zip" })
+      App.filedropped(droppedRom("replacement.zip"))
       Assert.isNil(App.importer, "raw replacement waits for source closure instead of mutating the dump")
       Assert.notNil(App.state, "quiescence waits through a visible preparation state")
+      App.draw()
       Assert.equal(disposals, 1, "the drop retires selected interest before the barrier")
       Assert.equal(context.quiesces, 1, "the drop stops admission before waiting")
       Assert.isNil(App.provisioner, "retired interest detaches while the barrier drains")
@@ -619,7 +695,7 @@ function T.replacement_rom_waits_for_source_quiescence_before_raw_mutation()
       App.update(1 / 60)
       Assert.isTrue(context.updates > updatesBefore, "input and progress keep pumping while source readers drain")
       Assert.isNil(App.importer, "pumping never starts the importer before closure")
-      App.filedropped({ name = "second.zip" })
+      App.filedropped(droppedRom("second.zip"))
       Assert.equal(App.state, waiting, "a repeated drop while waiting never replaces the pending file")
       Assert.equal(context.quiesces, 1, "a repeated drop issues no second barrier")
       assert(context.barriers[1] ~= nil, "the drop holds one quiescence barrier")
@@ -1189,16 +1265,19 @@ end
 ---@param rounds integer
 local function drainBarrier(App, harness, rounds)
   for _ = 1, rounds do
-    if #harness.importers > 0 then
+    if #harness.importers > 0 and (harness.importers[1].filedroppedCalls or 0) > 0 then
       return
     end
     failEveryRunningWorker(controllerPool(harness), harness)
     ackCloseContexts(harness)
+    if App.state ~= nil and type(App.state.draw) == "function" then
+      App.draw()
+    end
     pumpApp(App, harness, 1)
   end
 end
 
----@param host table borrowed selected session host
+---@param host table borrowed selected source host
 ---@return integer first map identity the source supports
 local function supportedFieldMapId(host)
   for mapId = 0, 1200 do
@@ -1222,12 +1301,68 @@ local function liveVersion()
   return nil
 end
 
+local ownedLiveManagedSources = {}
+
+-- Direct App selection requires a managed source, not merely a cache snapshot
+-- or legacy binding. Reuse the runner's archive when present; otherwise publish
+-- one from the validated user-owned source and remove only that fixture-owned
+-- archive after the suite.
+---@param versionId string
+---@return boolean? published
+---@return unknown? failure
+local function ensureLiveManagedSource(versionId)
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local RomArchive = require("romdump.src.source.RomArchive")
+  local info = GameVersion.info(versionId)
+  if info == nil or type(info.sha1) ~= "string" then
+    return nil, "unknown live version"
+  end
+  if RomArchive.recoverablePath(info.sha1) ~= nil then
+    return true
+  end
+  local romFs, source = require("tests.rom.support.RomSourcePath").openReader(versionId)
+  if romFs == nil then
+    return nil, source
+  end
+  local bytes = source:read(0, source:size())
+  romFs:close()
+  source:release()
+  if bytes == nil then
+    return nil, "live source could not be read"
+  end
+  local byteData = love.data.newByteData(bytes)
+  local prepared, prepareError = RomArchive.prepare(info, byteData, GameVersion)
+  byteData:release()
+  if prepared == nil then
+    return nil, prepareError
+  end
+  local published, publishError = RomArchive.publish(prepared)
+  if not published then
+    return nil, publishError
+  end
+  ownedLiveManagedSources[prepared.canonical] = true
+  return true
+end
+
+local function cleanupLiveManagedSources()
+  for path in pairs(ownedLiveManagedSources) do
+    love.filesystem.remove(path)
+    love.filesystem.remove(path .. ".new")
+    love.filesystem.remove(path .. ".bak")
+  end
+  ownedLiveManagedSources = {}
+end
+
 ---@param context table runner context for capability skips
 ---@param fn fun(App: table, harness: table, versionId: string)
 local function withLiveApp(context, fn)
   local versionId = liveVersion()
   if versionId == nil then
     context:skip("no ready user-owned HGSS dump")
+  end
+  local managed, managedFailure = ensureLiveManagedSource(versionId)
+  if managed == nil then
+    context:skip("no reopenable managed HGSS source: " .. tostring(managedFailure))
   end
   local RomImporter = require("romdump.src.source.RomImporter")
   local App = require("app.src.App")
@@ -1269,7 +1404,22 @@ local function withLiveApp(context, fn)
   App.saveDir = "test-save-dir"
   App.drawableWidth, App.drawableHeight = 640, 480
   App.pixelRatio = 1
-  App._safeRect = nil
+  App._safeRect = { x = 0, y = 0, width = 640, height = 480 }
+  App._displayContext = App._launcherDisplayContext()
+  App._bootIntro = nil
+  App._importAttempt = nil
+  App._bootSwallowedInputs = {}
+  App._realTouches = {}
+  App._foreground = true
+  App._touchGamepadSuspended = false
+  App._forceDisplayPublication = false
+  App._iconRepairAttempted = {}
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local info = require("romdump.src.source.GameVersion").info(versionId)
+    if info ~= nil then
+      App._iconRepairAttempted[info.sha1] = true
+    end
+  end
   realLove.window.getSafeArea = function()
     return 0, 0, 640, 480
   end
@@ -1357,12 +1507,23 @@ local function withLiveApp(context, fn)
     function importer:isBusy()
       return false
     end
+    function importer:status()
+      return { state = self.state, canCancel = self.state ~= "complete" and self.state ~= "error" }
+    end
     function importer:update()
       self.updates = self.updates + 1
     end
     function importer:filedropped(_)
       self.filedroppedCalls = self.filedroppedCalls + 1
     end
+    function importer:queueDroppedFile(_)
+      self.filedroppedCalls = self.filedroppedCalls + 1
+      self.state = "reading"
+    end
+    function importer:queuePath(_)
+      self.state = "reading"
+    end
+    function importer:cancelQueued() end
     harness.importers[#harness.importers + 1] = importer
     return importer
   end
@@ -1448,7 +1609,7 @@ function T.drop_during_pending_work_retires_interest_before_source_closure(conte
     Assert.isTrue(before.counts.running > 0, "the selection must have physical work in flight")
     local dispatchedBeforeDrop = #harness.threadHost.dispatched
     Assert.isTrue(dispatchedBeforeDrop > 0, "pending work must have reached worker input")
-    App.filedropped({})
+    App.filedropped(droppedRom("replacement.nds"))
     Assert.isNil(App.importer, "raw replacement must wait for source closure instead of mutating the dump")
     Assert.notNil(App.state, "the drop waits through a visible preparation state")
     Assert.equal(
@@ -1489,7 +1650,7 @@ function T.cancelled_selection_still_guards_raw_import_behind_source_closure(con
     Assert.equal(controllerPool(harness), pool, "cancellation preserves the process-owned pool")
     Assert.isTrue(pool:diagnostics().counts.running > 0, "cancelled physical work stays charged to the pool")
     Assert.equal(getmetatable(App.state).__index, GameSelectState, "cancellation returns to the version selector")
-    App.filedropped({})
+    App.filedropped(droppedRom("replacement.nds"))
     Assert.isNil(App.importer, "a selector drop waits for the source barrier with old readers outstanding")
     pumpApp(App, harness, 2)
     Assert.isNil(App.importer, "pumping never starts the importer before source closure")
@@ -1731,17 +1892,29 @@ function T.dropped_file_before_any_worker_starts_a_fresh_import()
           return false
         end,
         update = function() end,
+        status = function(self)
+          return { state = self.state, canCancel = self.state ~= "complete" and self.state ~= "error" }
+        end,
         filedropped = function()
           calls.filedropped = calls.filedropped + 1
         end,
+        queueDroppedFile = function(self)
+          calls.filedropped = calls.filedropped + 1
+          self.state = "reading"
+        end,
+        cancelQueued = function() end,
       }
     end)
     local ok, err = pcall(function()
       App.service = nil
       Assert.isNil(App.service, "no worker exists before the first selection")
-      App.filedropped({ name = "first.nds" })
+      App.filedropped(droppedRom("first.nds"))
       Assert.equal(calls.constructed, 1, "a drop with no service starts an import immediately")
-      Assert.equal(calls.filedropped, 1, "the dropped file forwards to the fresh importer")
+      Assert.equal(calls.filedropped, 0, "the dropped file waits for its receipt before queue admission")
+      App.draw()
+      Assert.isTrue(App._importAttempt.painted, "the receipt frame acknowledges the fresh drop")
+      App.update(1 / 60)
+      Assert.equal(calls.filedropped, 1, "the dropped file forwards to the fresh importer after paint")
       Assert.equal(getmetatable(App.state).__index, ImportState, "the drop enters through game selection")
     end)
     rawset(RomImporter, "new", originalNew)
@@ -1784,7 +1957,7 @@ function T.failed_source_closure_blocks_raw_mutation_and_stays_cancellable()
       prints[#prints + 1] = tostring(text)
     end
     local ok, err = pcall(function()
-      App.filedropped({ name = "replacement.zip" })
+      App.filedropped(droppedRom("replacement.zip"))
       assert(App.pendingQuiesce ~= nil, "the drop waits behind a quiescence barrier")
       local barrier = App.pendingQuiesce.barrier
       App.update(1 / 60)
@@ -1843,10 +2016,13 @@ function T.selection_waits_behind_source_closure_then_selects_once()
   withAppStubs(function(App, context)
     App._selectVersion(VERSION)
     local epochBefore = assert(App.epoch, "selection must mint an epoch")
-    App.filedropped({ name = "dropped.zip" })
+    App.filedropped(droppedRom("dropped.zip"))
     Assert.isNil(App.importer, "the drop waits for source closure instead of importing")
     local firstWait = assert(App.state, "the drop waits visibly")
     Assert.isNil(App.provisioner, "the drop retires selected interest before the barrier")
+    App._cancelImport()
+    Assert.isNil(App._importAttempt, "cancelling the drop releases attempt ownership but retains the barrier")
+    Assert.notNil(App.pendingQuiesce, "the process barrier survives view cancellation")
     -- A selection behind the outstanding barrier installs a second wait on
     -- the same barrier instead of selecting: no provisioner, no epoch, no
     -- second barrier.
@@ -1900,8 +2076,10 @@ function T.only_the_live_pending_selection_fires_and_quit_joins_once()
   withAppStubs(function(App, context)
     App._selectVersion(VERSION)
     local epochBefore = assert(App.epoch, "selection must mint an epoch")
-    App.filedropped({ name = "dropped.zip" })
+    App.filedropped(droppedRom("dropped.zip"))
     assert(App.state, "the drop waits visibly")
+    App._cancelImport()
+    Assert.isNil(App._importAttempt, "the canceled drop no longer owns an attempt")
     local firstOk, firstErr = pcall(App._selectVersion, VERSION)
     Assert.isTrue(firstOk, "the first pending selection must wait instead of raising: " .. tostring(firstErr))
     local firstWait = assert(App.state, "the first pending selection waits visibly")
@@ -1927,8 +2105,9 @@ function T.only_the_live_pending_selection_fires_and_quit_joins_once()
     local survivor = assert(App.provisioner, "the survivor attaches a provisioner")
     survivor:gameHost().requestMilestone("bootstrap", "required")
     App.update(1 / 60)
-    App.filedropped({ name = "late.zip" })
+    App.filedropped(droppedRom("late.zip"))
     local lateWait = assert(App.state, "the late drop waits visibly")
+    App._cancelImport()
     local lateOk, lateErr = pcall(App._selectVersion, VERSION)
     Assert.isTrue(lateOk, "the late pending selection must wait instead of raising: " .. tostring(lateErr))
     local latePending = assert(App.state, "the late pending selection waits visibly")
@@ -2051,6 +2230,8 @@ local function withBootGateApp(options, fn)
   local HgssGame = require("game.hgss.src.HgssGame")
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local RomImporter = require("romdump.src.source.RomImporter")
+  local RomArchive = require("romdump.src.source.RomArchive")
+  local originalManagedPath = RomArchive.recoverablePath
   local LauncherLoadingPresentation = require("app.src.launcher.LauncherLoadingPresentation")
   local CacheService = require("app.src.CacheService")
   local graphics = love.graphics
@@ -2070,6 +2251,7 @@ local function withBootGateApp(options, fn)
     safeRect = App._safeRect,
     launcherRenderer = App.launcherRenderer,
     launcherAudio = App.launcherAudio,
+    managedPath = originalManagedPath,
     gameNew = HgssGame.new,
     preparationNew = HgssGame.newFirstPlayCachePreparation,
     menuNew = MainMenuComposition.new,
@@ -2118,8 +2300,51 @@ local function withBootGateApp(options, fn)
   App.drawableWidth, App.drawableHeight = 640, 480
   App.pixelRatio = 1
   App._safeRect = { x = 0, y = 0, width = 640, height = 480 }
-  App.launcherRenderer = { dispose = function() end }
-  App.launcherAudio = { play = function() end, update = function() end, dispose = function() end }
+  App._displayContext = App._launcherDisplayContext()
+  App._bootIntro = nil
+  App._importAttempt = nil
+  App._bootSwallowedInputs = {}
+  App._realTouches = {}
+  App._foreground = true
+  App._touchGamepadSuspended = false
+  App._forceDisplayPublication = false
+  App._iconRepairAttempted = {}
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local info = require("romdump.src.source.GameVersion").info(versionId)
+    if info ~= nil then
+      App._iconRepairAttempted[info.sha1] = true
+    end
+  end
+  RomArchive.recoverablePath = function(sha1)
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if readySet[versionId] and info ~= nil and info.sha1 == sha1 then
+        return "managed/" .. sha1 .. ".zip"
+      end
+    end
+    return nil
+  end
+  App.launcherRenderer = {
+    gameIcons = {},
+    refreshGameIcon = function()
+      return false
+    end,
+    dropGameIcon = function() end,
+    draw = function(_, view)
+      if view.receipt ~= nil then
+        return view.import and view.import.attemptId or nil
+      end
+    end,
+    drawDual = function(_, view)
+      if view.receipt ~= nil then
+        return view.import and view.import.attemptId or nil
+      end
+    end,
+    drawButton = function() end,
+    dispose = function() end,
+  }
+  App.launcherAudio =
+    { play = function() end, fadeBoot = function() end, update = function() end, dispose = function() end }
   RomImporter.isReady = function(versionId)
     return readySet[versionId] == true
   end
@@ -2249,6 +2474,7 @@ local function withBootGateApp(options, fn)
   MainMenuComposition.new = original.menuNew
   LauncherLoadingPresentation.new = original.loadingNew
   RomImporter.isReady = original.isReady
+  RomArchive.recoverablePath = original.managedPath
   graphics.getDimensions = original.getDimensions
   graphics.getDPIScale = original.getDPIScale
   graphics.getWidth = original.getWidth
@@ -2414,7 +2640,7 @@ function T.incomplete_cache_returns_to_selection_and_a_ready_epoch_reaches_menu(
       pumpBootGate(App, 2)
       Assert.equal(type(App.state.view), "function", "source failure returns to game selection")
       Assert.equal(
-        App.state:view().failure.message,
+        App.state:view().import.error.message,
         "the original file is missing",
         "selection preserves the actionable source cause"
       )
@@ -2424,6 +2650,8 @@ function T.incomplete_cache_returns_to_selection_and_a_ready_epoch_reaches_menu(
       Assert.equal(context.preparations, 0)
       Assert.deepEqual(context.firstPlayPublished, {})
       Assert.isNil(App.importer, "source failure starts no import by itself")
+      App.state:keypressed("escape")
+      Assert.equal(App.state:view().mode, "selection", "the source error can be dismissed before reselection")
 
       App._selectVersion(VERSION)
       local second = assert(App.epoch, "reselection borrows a fresh epoch")
@@ -2642,4 +2870,4 @@ function T.selected_consumers_share_the_installed_view_and_first_play_is_an_inst
   end)
 end
 
-return { tests = T }
+return { tests = T, afterAll = cleanupLiveManagedSources }

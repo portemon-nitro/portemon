@@ -85,11 +85,20 @@ local function fresh()
   App._selectedEntryLocation = nil
   App._libraryMetadata = nil
   App._bootPending = false
+  App._bootIntro = nil
+  App._finishBootIntro(false)
+  App._releaseIconRecovery()
+  App._releaseLauncherResources()
+  App._importAttempt = nil
   App._bootSwallowedInputs = {}
-  App.drawableWidth = nil
-  App.drawableHeight = nil
-  App.pixelRatio = nil
-  App._safeRect = nil
+  App._realTouches = {}
+  App._foreground = true
+  App._displayContext = nil
+  App._iconRepairAttempted = {}
+  local width, height = love.graphics.getDimensions()
+  App.drawableWidth, App.drawableHeight, App.pixelRatio = width, height, love.graphics.getDPIScale()
+  App._safeRect = { x = 0, y = 0, width = width, height = height }
+  App._displayContext = App._launcherDisplayContext()
   App._touchGamepadSuspended = false
   App._suspendedTouchIds = {}
   if App._touchGamepad ~= nil then
@@ -127,6 +136,8 @@ local function withAppHarness(opts, ready, fn)
   local originalIsRegistered = RomImporter.isRegistered
   local CacheArchive = require("romdump.src.build.CacheArchive")
   local originalRecoverable = CacheArchive.recoverableFileName
+  local RomArchive = require("romdump.src.source.RomArchive")
+  local originalManagedPath = RomArchive.recoverablePath
   local originalNew = HgssGame.new
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local originalMenuNew = MainMenuComposition.new
@@ -310,6 +321,22 @@ local function withAppHarness(opts, ready, fn)
   })
   App.service = service
   RomImporter.isReady = ready
+  RomArchive.recoverablePath = function(sha1)
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil and info.sha1 == sha1 and ready(versionId) then
+        return "managed/" .. sha1 .. ".zip"
+      end
+    end
+    return nil
+  end
+  App._iconRepairAttempted = {}
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local info = require("romdump.src.source.GameVersion").info(versionId)
+    if info ~= nil then
+      App._iconRepairAttempted[info.sha1] = true
+    end
+  end
   -- Candidate registration is scripted per test: the shared save root may
   -- carry a real snapshot, which must not widen the harness's shelf.
   CacheArchive.recoverableFileName = function(versionId)
@@ -477,6 +504,10 @@ local function withAppHarness(opts, ready, fn)
   graphics.getDPIScale = function()
     return result.pixelRatio or 1
   end
+  App.drawableWidth, App.drawableHeight = result.hostWidth or 800, result.hostHeight or 600
+  App.pixelRatio = result.pixelRatio or 1
+  App._safeRect = { x = 0, y = 0, width = App.drawableWidth, height = App.drawableHeight }
+  App._displayContext = App._launcherDisplayContext()
   love.system.getOS = function()
     return result.osName or originalGetOS()
   end
@@ -499,6 +530,7 @@ local function withAppHarness(opts, ready, fn)
   RomImporter.isReady = originalIsReady
   RomImporter.isRegistered = originalIsRegistered
   CacheArchive.recoverableFileName = originalRecoverable
+  RomArchive.recoverablePath = originalManagedPath
   HgssGame.new = originalNew
   HgssOpeningMovie.new = originalMovieNew
   StartupAssetCache.loadOpeningScene = originalLoadOpeningScene
@@ -644,13 +676,29 @@ local function importerStub(state, busy)
     state = state,
     busy = busy or false,
     filedroppedCalls = 0,
+    queuedDroppedCalls = 0,
   }
   function importer:isBusy()
     return self.busy
   end
+  function importer:status()
+    return {
+      state = self.state,
+      canCancel = self.state ~= RomImporter.STATES.COMPLETE and self.state ~= RomImporter.STATES.ERROR,
+    }
+  end
   function importer:filedropped()
     self.filedroppedCalls = self.filedroppedCalls + 1
   end
+  function importer:queueDroppedFile()
+    self.queuedDroppedCalls = self.queuedDroppedCalls + 1
+    self.state = RomImporter.STATES.READING
+  end
+  function importer:queuePath()
+    self.state = RomImporter.STATES.READING
+  end
+  function importer:update() end
+  function importer:cancelQueued() end
   return importer
 end
 
@@ -880,7 +928,9 @@ function T.android_safe_area_only_change_cancels_once_before_one_resize()
     )
     Assert.deepEqual(events, {
       { "gamepadreleased", -1, "dpup" },
+      { "focus", false },
       { "resize", 360, 800 },
+      { "focus", true },
     }, "same-size inset changes cancel before exactly one structural resize")
     clearEvents(events)
     App.touchpressed(2, 68, 672)
@@ -936,7 +986,7 @@ function T.android_nonpresentable_interval_releases_without_a_zero_resize_and_re
     App.update(1 / 60)
     Assert.deepEqual(
       events,
-      { { "gamepadreleased", -1, "dpup" } },
+      { { "gamepadreleased", -1, "dpup" }, { "focus", false } },
       "a nonpresentable host releases holds without resizing to zero"
     )
     clearEvents(events)
@@ -946,12 +996,16 @@ function T.android_nonpresentable_interval_releases_without_a_zero_resize_and_re
     clearEvents(events)
     result.hostWidth, result.hostHeight = 360, 800
     App.update(1 / 60)
-    Assert.deepEqual(events, { { "resize", 360, 800 } }, "positive dimensions resume geometry publication once")
+    Assert.deepEqual(
+      events,
+      { { "focus", false }, { "resize", 360, 800 }, { "focus", true } },
+      "positive dimensions resume geometry publication once"
+    )
     App.touchmoved(2, 280, 720)
     App.touchreleased(2, 280, 720)
     Assert.deepEqual(
       events,
-      { { "resize", 360, 800 } },
+      { { "focus", false }, { "resize", 360, 800 }, { "focus", true } },
       "the suspended touch tail stays consumed after geometry resumes"
     )
     clearEvents(events)
@@ -1105,10 +1159,11 @@ function T.starting_an_import_disposes_the_active_field_state()
   local field = countingState()
   App.setState(field)
   App.saveDir = nil
-  App._startImport()
+  App._beginImportPath("fixture.nds")
   Assert.equal(field.disposed, 1)
   Assert.equal(getmetatable(App.state).__index, GameSelectState)
   Assert.notNil(App.importer)
+  Assert.notNil(App._importAttempt)
 end
 
 -- LÖVE keeps the draw color across frames: a state that last drew with a
@@ -1189,8 +1244,8 @@ function T.ratio_only_display_change_invalidates_once_before_update()
     App.update(1 / 60)
     graphics.getDimensions = originalGetDimensions
     graphics.getDPIScale = originalGetDPIScale
-    Assert.equal(reads, 2, "each update samples dimensions once")
-    Assert.equal(dpiReads, 2, "each update samples DPI once")
+    Assert.equal(reads, 4, "each coherent update samples dimensions before and after the native query")
+    Assert.equal(dpiReads, 4, "each coherent update samples DPI before and after the native query")
     Assert.deepEqual(events, {
       { "resize", 800, 600 },
       { "update" },
@@ -1230,11 +1285,11 @@ function T.display_sync_reads_once_and_draw_and_explicit_resize_do_not_duplicate
     }
 
     App.update(1 / 60)
-    Assert.equal(dimensionReads, 1)
-    Assert.equal(dpiReads, 1)
+    Assert.equal(dimensionReads, 2)
+    Assert.equal(dpiReads, 2)
     App.draw()
-    Assert.equal(dimensionReads, 1, "draw does not sample dimensions")
-    Assert.equal(dpiReads, 1, "draw does not sample DPI")
+    Assert.equal(dimensionReads, 2, "a presentable draw does not resample native dimensions")
+    Assert.equal(dpiReads, 2, "a presentable draw does not resample DPI")
 
     pixelRatio = 2
     App.resize(width, height)
@@ -1243,9 +1298,9 @@ function T.display_sync_reads_once_and_draw_and_explicit_resize_do_not_duplicate
     graphics.getDimensions = originalGetDimensions
     graphics.getDPIScale = originalGetDPIScale
 
-    Assert.equal(dpiReadsAfterResize, 2, "explicit resize refreshes the retained DPI")
-    Assert.equal(dimensionReads, 2, "each sync samples dimensions once")
-    Assert.equal(dpiReads, 3, "each sync samples DPI once")
+    Assert.equal(dpiReadsAfterResize, 4, "explicit resize takes one coherent two-read native sample")
+    Assert.equal(dimensionReads, 6, "update and resize each take one coherent native sample")
+    Assert.equal(dpiReads, 6, "each coherent sample reads DPI twice")
     Assert.deepEqual(events, {
       { "resize", width, height },
       { "update" },
@@ -1272,7 +1327,7 @@ function T.drop_after_a_finished_import_starts_a_fresh_session()
     Assert.isFalse(App.importer == stale, "a finished import session must not be reused")
     Assert.notNil(App.importer)
     Assert.equal(getmetatable(App.state).__index, GameSelectState)
-    Assert.equal(App.state.importer, App.importer)
+    Assert.notNil(App.state:view().import, "the fresh session owns a visible import attempt")
   end
 end
 
@@ -1339,9 +1394,11 @@ function T.non_editor_lua_drop_keeps_the_existing_rom_import_route()
           return "ordinary.lua"
         end,
       })
-      Assert.equal(importer.filedroppedCalls, 1, "a non-editor Lua drop follows ROM import routing")
+      App.draw()
+      App.update(1 / 60)
+      Assert.equal(importer.queuedDroppedCalls, 1, "a non-editor Lua drop follows queued ROM import routing")
       Assert.equal(getmetatable(App.state).__index, GameSelectState, "game selection owns the import variant")
-      Assert.equal(App.state.importer, importer)
+      Assert.equal(App.importer, importer)
     end)
     RomImporter.new = originalImporterNew
     if not ok then
@@ -1407,7 +1464,10 @@ function T.boot_existing_with_no_ready_version_shows_empty_selection()
       App._bootExisting()
       Assert.isNil(App.importer, "an empty library starts no importer until the player asks")
       Assert.equal(getmetatable(App.state).__index, GameSelectState)
-      Assert.deepEqual(App.state:view().games, {}, "first boot is the empty game library")
+      Assert.deepEqual(App.state:view().games, {
+        { versionId = "heartgold", label = "HeartGold", installed = false },
+        { versionId = "soulsilver", label = "SoulSilver", installed = false },
+      }, "first boot always exposes both missing editions")
     end)
   end)
 end
@@ -1803,6 +1863,19 @@ function T.development_startup_passes_frozen_checkout_selectors_without_scanning
       withAppHarness({ dev = true }, function(id)
         return id == "heartgold"
       end, function(result)
+        App.launcherRenderer = {
+          gameIcons = {},
+          refreshGameIcon = function()
+            return false
+          end,
+          dropGameIcon = function() end,
+          draw = function() end,
+          drawDual = function() end,
+          drawButton = function() end,
+          dispose = function() end,
+        }
+        App.launcherAudio =
+          { play = function() end, fadeBoot = function() end, update = function() end, dispose = function() end }
         -- Only heartgold is installed and current; the sibling stays out.
         App._selectVersion("heartgold")
         -- The boot gate answers first: readiness continues into the menu.
@@ -2131,9 +2204,10 @@ function T.a_broken_package_selection_publishes_no_runtime()
       App.update(0.016)
       Assert.isNil(App.provisioner, "a broken composition retires its selected epoch")
       Assert.equal(type(App.state.view), "function", "recovery returns to game selection")
+      local view = App.state:view()
       Assert.isTrue(
-        tostring(App.state:view().failure):find("another game", 1, true) ~= nil,
-        "the selection modal preserves the typed package cause"
+        tostring(view.import.error.message or view.import.error.code):find("another game", 1, true) ~= nil,
+        "the selection error view preserves the typed package cause"
       )
       Assert.equal(#result.menus, 0, "a broken selection never reaches the menu")
       Assert.isNil(result.overlayPackages, "the broken attempt never composed an overlay")
@@ -2141,6 +2215,8 @@ function T.a_broken_package_selection_publishes_no_runtime()
       Assert.equal(result.loaders[1].disposals, 1, "recovery releases that loader exactly once")
 
       ModPackages.open = originalOpen
+      App.state:keypressed("escape")
+      Assert.equal(App.state:view().mode, "selection", "the failed edition can be dismissed before reselection")
       App._selectVersion("heartgold")
       App.update(0.016)
       finishStartupTitle(result)
@@ -2223,6 +2299,7 @@ function T.unknown_generation_never_fabricates_first_play()
       local entryNames, entryUrgencies = requestedMilestones(requests)
       Assert.deepEqual(entryNames, {}, "optional entry preparation waits for actual movie entry")
       result.startupTitleReady = true
+      App.update(0.016)
       App.update(0.016)
       local movieEntryNames, movieEntryUrgencies = requestedMilestones(requests)
       Assert.deepEqual(
@@ -2311,26 +2388,41 @@ function T.loader_presentations_report_loader_throughput_and_the_menu_does_not()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    App._bootExisting()
-    App.update(0.016)
-    local first = assert(result.executionPolicies and result.executionPolicies[1], "the boot wait reports its policy")
-    Assert.equal(first.epoch, App.epoch, "the policy belongs to the selected epoch")
-    Assert.isTrue(first.loading, "the boot wait reports loader throughput")
-    local runtime = assert(App._assetRuntime, "the selection owns its CPU runtime")
-    Assert.equal(
-      runtime.preparationQueue:workerSlotBudget(),
-      2,
-      "the loader presentation raises the runtime preparation executor to two slots"
-    )
-    finishStartupTitle(result)
-    local last = assert(result.executionPolicies[#result.executionPolicies], "the journey reports a final policy")
-    Assert.isFalse(last.loading, "the title and menu never report loader throughput")
-    Assert.equal(
-      runtime.preparationQueue:workerSlotBudget(),
-      1,
-      "the menu returns the preparation executor to its single interactive slot"
-    )
-    Assert.equal(App.state, result.menus[1], "the ordinary interactive policy follows the installed menu")
+    local backend = FakeCache.new()
+    local originalGetInfo = backend.getInfo
+    function backend:getInfo(path)
+      local info = originalGetInfo(self, path)
+      if info ~= nil and info.type == "file" and path:match("^saves/games/") then
+        info.modtime = 1700000000
+      end
+      return info
+    end
+    withPublishedSaves(backend, function()
+      local Store = require("libs.hgss.src.save.GameSaveStore")
+      local store = Store.new(require("libs.storage.src.SaveFs").global())
+      local saveId = store:reserve()
+      store:publishFirst(publishedSave(saveId, "heartgold"))
+      App._bootExisting()
+      App.update(0.016)
+      local first = assert(result.executionPolicies and result.executionPolicies[1], "the boot wait reports its policy")
+      Assert.equal(first.epoch, App.epoch, "the policy belongs to the selected epoch")
+      Assert.isTrue(first.loading, "the boot wait reports loader throughput")
+      local runtime = assert(App._assetRuntime, "the selection owns its CPU runtime")
+      Assert.equal(
+        runtime.preparationQueue:workerSlotBudget(),
+        2,
+        "the loader presentation raises the runtime preparation executor to two slots"
+      )
+      finishStartupTitle(result)
+      local last = assert(result.executionPolicies[#result.executionPolicies], "the journey reports a final policy")
+      Assert.isFalse(last.loading, "the title and menu never report loader throughput")
+      Assert.equal(
+        runtime.preparationQueue:workerSlotBudget(),
+        1,
+        "the menu returns the preparation executor to its single interactive slot"
+      )
+      Assert.equal(App.state, result.menus[1], "the ordinary interactive policy follows the installed menu")
+    end)
   end)
 end
 
@@ -2503,13 +2595,19 @@ function T.current_cache_without_source_selects_without_rom_activity()
         result.snapshotVersions = { heartgold = true }
         App._bootExisting()
         Assert.isNil(App.importer, "a library candidate starts no import")
-        Assert.equal(App.state:view().focusedId, "heartgold", "the recoverable cache remains selectable")
-        Assert.isNil(App.provisioner, "selection owns no source epoch until Play")
-        App._selectVersion("heartgold")
-        App.update(0.016)
-        assertStagedStartupMenu(result)
-        Assert.equal(result.warmups, 0, "optional warmup waits for movie entry")
-        Assert.equal(#result.launches, 0, "selection installs the menu without starting retail")
+        Assert.equal(#App.state:view().games, 2, "cache-only availability still exposes both edition controls")
+        Assert.isFalse(App.state:view().games[1].installed, "a derived cache is not a managed source")
+        Assert.isFalse(App.state:view().games[2].installed, "the missing sibling remains actionable")
+        Assert.equal(App.state:view().focusedId, "heartgold")
+        Assert.isNil(App.provisioner, "selection owns no source epoch until an installed cartridge is activated")
+        App.state:keypressed("return")
+        Assert.equal(
+          App.state:view().mode,
+          "choose",
+          "a cache-only edition opens targeted import instead of source admission"
+        )
+        Assert.equal(App.state:view().import.expectedVersionId, "heartgold")
+        Assert.isNil(App.provisioner)
       end)
     end)
   end)
@@ -2551,11 +2649,12 @@ function T.queued_import_failure_returns_to_an_actionable_error_modal()
       App.update(1 / 60)
       Assert.equal(type(App.state.view), "function", "a rejected queue keeps the library usable")
       Assert.equal(
-        App.state:view().failure.message,
+        App.state:view().import.error.message,
         "background import could not start",
-        "the typed queue failure reaches the shared error modal"
+        "the typed queue failure reaches the shared error view"
       )
-      Assert.isNil(App._pendingImport, "a rejected queue is not retried silently")
+      Assert.isNil(App.importer, "a rejected queue is not retried silently")
+      Assert.equal(App._importAttempt.mode, "error", "the failed attempt remains visible until dismissed")
     end)
     RomImporter.new = originalNew
     if not ok then
@@ -2634,7 +2733,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
       fresh()
       App.service = nil
       App.pendingQuiesce = nil
-      App._importReceipt = nil
+      App._importAttempt = nil
       local shellRoot = assert(io.popen("mktemp -d"))
       local tmpDir = ((shellRoot:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", ""))
       assert(shellRoot:close(), "mktemp -d did not exit successfully")
@@ -2659,6 +2758,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
           "the first painted frame names the receipt, got: " .. copy
         )
         Assert.isTrue(copy:find(".nds", 1, true) ~= nil, "the painted receipt keeps the file kind, got: " .. copy)
+        Assert.isTrue(App._importAttempt.painted, "the real receipt draw acknowledges the current attempt")
         for _, premature in ipairs({ "verified", "complete" }) do
           Assert.isTrue(
             copy:lower():find(premature, 1, true) == nil,
@@ -2669,7 +2769,8 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
         Assert.equal(#calls, 0, "the render thread never reads the picked ROM")
         Assert.isTrue(
           App.importer ~= nil and App.importer.state ~= RomImporter.STATES.IDLE,
-          "the painted pick starts its import only after the first draw"
+          "the painted pick starts its import only after the first draw; state="
+            .. tostring(App.importer and App.importer.state)
         )
         receiptImporter = App.importer
         local session = receiptImporter ~= nil and receiptImporter._queued or nil
@@ -2702,7 +2803,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
       fresh()
       App.service = nil
       App.pendingQuiesce = nil
-      App._importReceipt = nil
+      App._importAttempt = nil
       calls = {}
       App.filedropped({
         getFilename = function()
@@ -2727,6 +2828,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
         copy:find("soulsilver.nds", 1, true) ~= nil,
         "the painted receipt names the dropped file, got: " .. copy
       )
+      Assert.isTrue(App._importAttempt.painted, "the real drop receipt draw acknowledges the current attempt")
       App.update(0.016)
       Assert.equal(#calls, 0, "the render thread never reads the dropped file")
       Assert.isTrue(
@@ -2899,12 +3001,19 @@ function T.failed_asset_runtime_teardown_keeps_the_owner_for_retry()
   end
 end
 
+local function attachImportAttempt(importer)
+  local attempt = App._newImportAttempt(nil)
+  attempt.mode, attempt.started = "importing", true
+  App._importAttempt = attempt
+  App.importer = importer
+end
+
 function T.successful_import_returns_to_focused_selection_without_starting_a_game()
   withAppHarness({ dev = false }, function(versionId)
     return versionId == "heartgold"
   end, function(result)
     local importer = completedSyntheticImporter("heartgold")
-    App.importer = importer
+    attachImportAttempt(importer)
     App._onImported("heartgold", importer)
     Assert.isNil(importer:takeVerifiedSource(), "the library route consumes the real one-shot verified source")
     Assert.isNil(App.importer, "the completed importer is disposed after its handoff is released")
@@ -2928,7 +3037,9 @@ function T.stale_import_callback_cannot_consume_a_newer_complete_importer()
     staleCallback = options.onComplete
     return originalNew(options)
   end
-  App._startImport()
+  local attempt = App._newImportAttempt(nil)
+  App._importAttempt = attempt
+  App._ensureAttemptImporter(attempt)
   App.importer = current
   local state = countingState()
   App.setState(state)
@@ -2978,8 +3089,12 @@ function T.typed_runtime_failure_keeps_the_loader_owned_until_selection_recovery
       Assert.equal(type(App.state.view), "function", "selection owns the recovery surface")
       Assert.equal(loader.disposals, 1, "the wait releases its loader exactly once on recovery")
       Assert.isTrue(
-        tostring(App.state:view().failure):find("another game", 1, true) ~= nil,
-        "the original typed cause reaches the actionable modal"
+        tostring(App.state:view().import.error.message or App.state:view().import.error.code):find(
+          "another game",
+          1,
+          true
+        ) ~= nil,
+        "the original typed cause reaches the actionable error view"
       )
     end, debug.traceback)
     result.generatedView.withPackages = nil
@@ -3061,11 +3176,22 @@ local function withNativePickerImportHost(fixture, fn)
     return fixture.host:importer(fixture.cart, options and options.onComplete)
   end
   App.launcherRenderer = {
+    gameIcons = {},
+    refreshGameIcon = function()
+      return false
+    end,
+    dropGameIcon = function() end,
     draw = function(_, view)
       host.lastView = view
+      if view.receipt ~= nil then
+        return view.import and view.import.attemptId or nil
+      end
     end,
     drawDual = function(_, view)
       host.lastView = view
+      if view.receipt ~= nil then
+        return view.import and view.import.attemptId or nil
+      end
     end,
     drawButton = function() end,
     dispose = function() end,
@@ -3078,9 +3204,15 @@ local function withNativePickerImportHost(fixture, fn)
   }
   App.service = nil
   App.pendingQuiesce = nil
-  App._pendingImport = nil
-  App._importReceipt = nil
-  App._showGameSelection(nil, nil, {})
+  App._importAttempt = nil
+  App._iconRepairAttempted = {}
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local info = require("romdump.src.source.GameVersion").info(versionId)
+    if info ~= nil then
+      App._iconRepairAttempted[info.sha1] = true
+    end
+  end
+  App._showGameSelection(nil)
   local ok, err = xpcall(function()
     fn(host)
   end, debug.traceback)
@@ -3101,9 +3233,14 @@ end
 local function touchCancel(state)
   local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
   local view = assert(state:view(), "touch Cancel needs the published selection view")
-  local cancel = assert(view.layout.cancelRect, "touch Cancel needs resolved geometry")
-  local placement = assert(view.presentation.panes[1].placement, "touch Cancel needs the input placement")
-  local x, y = LayoutGeometry.logicalToHost(placement, cancel.x + cancel.width / 2, cancel.y + cancel.height / 2)
+  local targetId = view.layout.graph.targets.cancel ~= nil and "cancel" or "back"
+  local target = assert(view.layout.graph.targets[targetId], "touch Cancel needs a current operation target")
+  local placement = assert(view.presentation.panes[1].placement, "touch Cancel needs resolved geometry")
+  local x, y = LayoutGeometry.logicalToHost(
+    placement,
+    target.rect.x + target.rect.width / 2,
+    target.rect.y + target.rect.height / 2
+  )
   App.touchpressed("cancel-finger", x, y)
   App.touchreleased("cancel-finger", x, y)
 end
@@ -3116,10 +3253,12 @@ function T.native_picker_receipt_precedes_real_queued_temporary_import_and_cance
     fixture.host.holdValidation = true
     withNativePickerImportHost(fixture, function(host)
       host.requestId = requestId
-      App._requestGameImport()
-      Assert.equal(host.opens, 1, "Add game opens one asynchronous picker")
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(host.opens, 1, "Choose ROM opens one asynchronous picker")
       Assert.isNil(App.importer, "pending native copy creates no importer reader")
-      Assert.equal(App.state:view().status, "Adding game…", "the library shows the borrowed native-operation strip")
+      Assert.equal(App.state:view().import.mode, "picker")
+      Assert.notNil(App.state:view().import.statusText, "the operation shows native picker progress")
       App.update(1 / 60)
       Assert.isNil(App.importer, "native copy still pending performs no queued source work")
 
@@ -3133,19 +3272,24 @@ function T.native_picker_receipt_precedes_real_queued_temporary_import_and_cance
       Assert.notNil(App.importer, "a matching completed copy enters the ordinary import card")
       Assert.isNil(App.importer._queued, "the receipt is latched before any worker starts")
       Assert.notNil(love.filesystem.getInfo(stage), "the unopened stage remains App-owned before queue acceptance")
-      Assert.isNil(
-        App.state:view().status:find("Adding game", 1, true),
-        "native pending clears before importer receipt"
-      )
+      Assert.equal(App.state:view().import.mode, "receipt", "native pending clears before importer receipt")
 
       App.draw()
-      Assert.equal(host.lastView.status, "File received My game.NDS", "the first frame names the received file")
+      Assert.equal(host.lastView.import.receipt, "My game.NDS", "the first frame names the received file")
       Assert.isNil(App.importer._queued, "drawing the receipt alone starts no source work")
       Assert.notNil(love.filesystem.getInfo(stage), "the receipt frame does not consume the stage")
       App.update(1 / 60)
       Assert.notNil(App.importer._queued, "the painted receipt hands the stage to the real queued importer")
-      Assert.equal(App._pendingImport.kind, "temporary", "temporary input uses the importer ownership-transfer queue")
-      Assert.equal(App._pendingImport.requestId, requestId, "the queued request keeps its native correlation token")
+      Assert.equal(
+        App._importAttempt.descriptor.kind,
+        "temporary",
+        "temporary input uses the importer ownership-transfer queue"
+      )
+      Assert.equal(
+        App._importAttempt.descriptor.requestId,
+        requestId,
+        "the queued request keeps its native correlation token"
+      )
       Assert.notNil(love.filesystem.getInfo(stage), "accepted input persists while the importer worker owns it")
 
       local session = fixture.host:validationGate(App.importer)
@@ -3171,22 +3315,25 @@ function T.native_picker_cancel_busy_retry_and_stale_completion_never_navigate()
     local stage = fixture:writePickerTemporary(requestId)
     withNativePickerImportHost(fixture, function(host)
       host.requestId = requestId
-      App._requestGameImport()
-      Assert.equal(App.state:view().status, "Adding game…", "the pending native request owns the library strip")
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(App.state:view().import.mode, "picker", "the pending native request owns the operation view")
       local pending = App.state
       touchCancel(pending)
       Assert.equal(host.opens, 1, "cancelling the App request does not reopen the chooser")
-      Assert.isTrue(pending._disposed, "cancellation retires the pending library state")
-      Assert.isNil(App.state:view().status, "cancellation restores ordinary selection")
+      Assert.isTrue(pending._disposed, "cancellation retires the pending operation state")
+      Assert.equal(App.state:view().mode, "selection", "cancellation restores ordinary selection")
 
       host.openBusy = true
-      App._requestGameImport()
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
       Assert.equal(host.opens, 2, "an immediate retry reaches the native busy boundary once")
-      local failure = App.state:view().failure
-      Assert.notNil(failure, "a busy reattempt uses the recoverable picker error modal")
+      local failure = App.state:view().import.error
+      Assert.notNil(failure, "a busy reattempt uses the recoverable picker error view")
       Assert.isTrue(tostring(failure.message):find("still finishing", 1, true) ~= nil)
       Assert.isNil(App.importer, "a busy reattempt creates no second importer")
       App.state:keypressed("escape")
+      Assert.equal(App.state:view().mode, "selection", "Back dismisses the picker error")
 
       local running = countingState()
       App.setState(running)
@@ -3212,8 +3359,9 @@ function T.native_picker_enqueue_rejection_keeps_unaccepted_stage_with_app()
     local stage = fixture:writePickerTemporary(requestId)
     withNativePickerImportHost(fixture, function(host)
       host.requestId = requestId
-      App._requestGameImport()
-      Assert.equal(App.state:view().status, "Adding game…", "the pending native request owns the library strip")
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(App.state:view().import.mode, "picker", "the pending native request owns the operation view")
       host:complete({
         requestId = requestId,
         kind = "path",
@@ -3224,12 +3372,16 @@ function T.native_picker_enqueue_rejection_keeps_unaccepted_stage_with_app()
       App.draw()
       Assert.isTrue(love.filesystem.remove(stage), "simulate loss of the completed native stage before admission")
       App.update(1 / 60)
-      Assert.equal(#fixture.host.threads, 0, "typed pre-admission rejection starts no worker")
-      Assert.isNil(App._pendingImport, "a rejected temporary enqueue is not retried")
       Assert.equal(
-        App.state:view().failure.code,
+        #fixture.host.threads,
+        0,
+        "typed pre-admission rejection starts no worker; got " .. #fixture.host.threads
+      )
+      Assert.isNil(App._importAttempt.descriptor, "a rejected temporary enqueue is not retried")
+      Assert.equal(
+        App.state:view().import.error.code,
         "ROM_OPEN_FAILED",
-        "the typed queue rejection reaches the shared modal"
+        "the typed queue rejection reaches the shared error view"
       )
       Assert.isNil(love.filesystem.getInfo(fixture.canonical), "rejection publishes no managed ROM")
       Assert.isTrue(fixture:originalExists(), "rejection never reaches the user original")
@@ -3244,8 +3396,9 @@ function T.native_picker_worker_start_failure_leaves_accepted_stage_with_importe
     local stage = fixture:writePickerTemporary(requestId)
     withNativePickerImportHost(fixture, function(host)
       host.requestId = requestId
-      App._requestGameImport()
-      Assert.equal(App.state:view().status, "Adding game…", "the pending native request owns the library strip")
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(App.state:view().import.mode, "picker", "the pending native request owns the operation view")
       host:complete({
         requestId = requestId,
         kind = "path",
@@ -3273,29 +3426,111 @@ function T.native_picker_worker_start_failure_leaves_accepted_stage_with_importe
       Assert.equal(App.importer.state, RomImporter.STATES.ERROR, "accepted startup failure belongs to importer status")
       Assert.equal(removals, 1, "only the importer removes its accepted stage after true ownership transfer")
       Assert.isNil(love.filesystem.getInfo(stage), "the importer completes accepted-stage cleanup")
-      Assert.isNil(App._pendingImport, "an immediate importer failure does not re-arm App admission")
+      Assert.isNil(App._importAttempt.descriptor, "an immediate importer failure does not re-arm App admission")
+      Assert.equal(App._importAttempt.mode, "error", "the terminal failure remains visible")
+      local errorState = App.state
+      App.update(1 / 60)
+      Assert.equal(App.state, errorState, "later polling does not reconstruct the terminal error view")
       Assert.isNil(love.filesystem.getInfo(fixture.canonical), "startup failure publishes no managed ROM")
     end)
   end)
 end
 
-function T.native_picker_copy_error_uses_the_recoverable_modal_without_import()
+function T.retry_after_a_queued_worker_failure_starts_a_fresh_attempt_and_worker()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local firstRequestId = "623e4567-e89b-12d3-a456-426614174000"
+    local secondRequestId = "723e4567-e89b-12d3-a456-426614174000"
+    local firstStage = fixture:writePickerTemporary(firstRequestId)
+    local secondStage = fixture:writePickerTemporary(secondRequestId)
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = firstRequestId
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      host:complete({
+        requestId = firstRequestId,
+        kind = "path",
+        relativePath = firstStage,
+        displayName = "failed.nds",
+      })
+      App.update(1 / 60)
+      App.draw()
+      fixture.host.failNextStart = true
+      App.update(1 / 60)
+      local failedAttempt = App._importAttempt
+      local failedImporter = App.importer
+      Assert.notNil(failedAttempt, "the failed queue keeps its terminal attempt visible")
+      Assert.equal(failedAttempt.mode, "error", "the failed worker leaves a terminal attempt")
+      Assert.equal(failedImporter.state, RomImporter.STATES.ERROR, "the committed importer owns the failure")
+      Assert.equal(#fixture.host.threads, 0, "a worker that never started occupies no physical slot")
+
+      App.state:keypressed("down", "down", false)
+      App.state:keypressed("return", "return", false)
+      App.update(1 / 60)
+      Assert.equal(App.state:view().import.mode, "choose", "the retry stays in choose after a frame")
+      Assert.isFalse(
+        App._importAttempt.attemptId == failedAttempt.attemptId,
+        "the fresh attempt identity survives that frame"
+      )
+      Assert.equal(App.state:view().import.mode, "choose", "Retry returns to the file chooser")
+      Assert.notNil(App._importAttempt, "Retry owns an attempt")
+      Assert.isFalse(App._importAttempt == failedAttempt, "Retry never revives the terminal attempt")
+      Assert.isFalse(App._importAttempt.attemptId == failedAttempt.attemptId, "Retry issues a new attempt identity")
+      Assert.equal(App._importAttempt.expectedVersionId, "soulsilver", "the retry keeps its targeted edition")
+      Assert.equal(failedAttempt.mode, "error", "the retired attempt stays terminal")
+      Assert.isNil(App.state:view().import.error, "the retry clears the visible failure")
+
+      host.requestId = secondRequestId
+      App._requestNativePicker()
+      Assert.equal(host.opens, 2, "the retry opens the chooser exactly once")
+      host:complete({
+        requestId = secondRequestId,
+        kind = "path",
+        relativePath = secondStage,
+        displayName = "retried.nds",
+      })
+      App.update(1 / 60)
+      Assert.equal(App.state:view().import.mode, "receipt", "the chosen file enters the ordinary receipt")
+      local retriedAttempt = App._importAttempt
+      Assert.isFalse(retriedAttempt == failedAttempt, "the receipt belongs to the fresh attempt")
+      Assert.notNil(App.importer, "the receipt owns a new importer")
+      Assert.isFalse(App.importer == failedImporter, "the terminal importer is not reused for the retry")
+      Assert.isNil(App.importer._queued, "no worker starts before the receipt is painted")
+      App.draw()
+      Assert.isTrue(App._importAttempt.painted, "the real receipt draw acknowledges the retried attempt")
+      Assert.equal(
+        host.lastView.import.attemptId,
+        retriedAttempt.attemptId,
+        "the drawn receipt names the fresh attempt"
+      )
+      App.update(1 / 60)
+      Assert.equal(#fixture.host.threads, 1, "the acknowledged receipt starts exactly one queued worker")
+      Assert.notNil(App.importer._queued, "the fresh importer owns the queued session")
+      Assert.equal(App._importAttempt.mode, "importing", "the fresh attempt owns the running import")
+      App.update(1 / 60)
+      Assert.equal(#fixture.host.threads, 1, "later updates do not start a second worker")
+      Assert.equal(failedAttempt.mode, "error", "the old attempt remains terminal after the retry starts")
+    end)
+  end)
+end
+
+function T.native_picker_copy_error_uses_the_recoverable_error_view_without_import()
   local Fixture = require("tests.support.ManagedRomFixture")
   Fixture.with(function(fixture)
     local requestId = "523e4567-e89b-12d3-a456-426614174000"
     withNativePickerImportHost(fixture, function(host)
       host.requestId = requestId
-      App._requestGameImport()
-      Assert.equal(App.state:view().status, "Adding game…", "the pending native request owns the library strip")
-      local focusedId = App.state:view().focusedId
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(App.state:view().import.mode, "picker", "the pending native request owns the operation view")
       host:complete({ requestId = requestId, kind = "error", message = "the document could not be copied" })
       App.update(1 / 60)
       local view = App.state:view()
       Assert.isNil(App.importer, "a native copy failure creates no importer")
-      Assert.equal(view.failure.code, "ROM_PICKER_FAILED", "copy errors use the typed picker failure path")
-      Assert.isTrue(tostring(view.failure.message):find("could not be copied", 1, true) ~= nil)
-      Assert.equal(view.focusedId, focusedId, "a recoverable copy error preserves library focus")
-      Assert.isNil(view.status, "native pending clears when the error modal takes over")
+      Assert.equal(view.import.error.code, "ROM_PICKER_FAILED", "copy errors use the typed picker failure path")
+      Assert.isTrue(tostring(view.import.error.message):find("could not be copied", 1, true) ~= nil)
+      Assert.equal(view.focusedId, "soulsilver", "a recoverable copy error preserves its targeted edition")
+      Assert.isNil(view.import.statusText, "native pending clears when the error view takes over")
       Assert.isNil(love.filesystem.getInfo(fixture.canonical), "copy failure publishes no managed ROM")
     end)
   end)

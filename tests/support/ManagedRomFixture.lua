@@ -112,6 +112,7 @@ local function newHost(options)
     importers = {},
     trace = {},
     holdValidation = options.holdValidation == true,
+    holdCommit = options.holdCommit == true,
     failNextStart = false,
     prelude = nil,
     control = assert(love.thread.newChannel()),
@@ -124,9 +125,30 @@ local function newHost(options)
   end
   love.thread.newThread = function(code)
     local controlForThread = false
-    if host.prelude ~= nil then
+    if host.prelude ~= nil or host.holdCommit then
       controlForThread = true
-      local prelude = host.prelude
+      local prelude = host.prelude or ""
+      if host.holdCommit then
+        prelude = prelude
+          .. [[
+local control = select(4, ...)
+local rawInbox = inbox
+inbox = {
+  push = function(_, packet) return rawInbox:push(packet) end,
+  pop = function() return rawInbox:pop() end,
+  demand = function()
+    local packet = rawInbox:demand()
+    if type(packet) == "table" and packet.op == "commit" then
+      outbox:push({ kind = "test-trace", event = "commit-held" })
+      while control:pop() == nil do
+        love.timer.sleep(0.001)
+      end
+    end
+    return packet
+  end,
+}
+]]
+      end
       host.prelude = nil
       local replaced, count = code:gsub("Worker%.run%(inbox, outbox%)", function()
         return prelude .. "\nWorker.run(inbox, outbox)"
@@ -221,6 +243,26 @@ local function newHost(options)
     end, "the worker validation gate")
     Assert.notNil(session.outbox.held, "the controlled channel must hold the validated packet")
     return session
+  end
+
+  function host:commitGate(importer)
+    host.currentImporter = importer
+    local session = assert(importer._queued, "the real worker must own a live session")
+    self:waitFor(function()
+      importer:update()
+      for _, event in ipairs(host.trace) do
+        if event.event == "commit-held" then
+          return true
+        end
+      end
+      return false
+    end, "the worker commit gate")
+    Assert.isTrue(importer._commitSent, "sending commit is the publication linearization point")
+    return session
+  end
+
+  function host:releaseCommit()
+    host.control:push(true)
   end
 
   function host:finish(importer, expectedState)

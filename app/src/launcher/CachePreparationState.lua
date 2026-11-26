@@ -53,10 +53,17 @@ function CachePreparationState.new(options)
     loading = LauncherLoadingPresentation.new({
       renderer = options.renderer,
       versionId = options.versionId,
+      gameLabel = options.pendingImportLabel or options.versionId or "Game",
       label = options.kind == "quiescence" and "Preparing import" or options.label or options.versionId or "Game",
       width = width,
       height = height,
       safeRect = options.safeRect,
+      pixelRatio = options.pixelRatio,
+      displayContext = options.displayContext,
+      selectionInterrupt = options.kind == "boot-source",
+      receipt = options.pendingImportName,
+      attemptId = options.importAttemptId,
+      canCancel = options.kind == "quiescence",
       onCancel = options.onCancel,
     })
   end
@@ -66,12 +73,14 @@ function CachePreparationState.new(options)
     service = options.service,
     barrier = options.barrier,
     pendingImportName = options.pendingImportName,
+    pendingImportLabel = options.pendingImportLabel,
     versionId = options.versionId,
     isCurrent = options.isCurrent,
     onReady = options.onReady,
     onCancel = options.onCancel,
     onFailure = options.onFailure,
     loading = loading,
+    importViewProvider = options.importViewProvider,
     sourceStatus = nil,
     sourceDetail = nil,
     error = nil,
@@ -81,6 +90,8 @@ function CachePreparationState.new(options)
     released = false,
     dead = false,
     _receiptPainted = nil,
+    safeRect = options.safeRect,
+    pixelRatio = options.pixelRatio,
   }, CachePreparationState)
 end
 
@@ -113,6 +124,14 @@ function CachePreparationState:isPreparingAssets()
   return not self.dead and not self.fired and self.error == nil
 end
 
+function CachePreparationState:isAwaitingOpening()
+  return not self.dead
+    and not self.terminal
+    and not self.fired
+    and self.kind == "boot-source"
+    and self.isCurrent(self.epoch)
+end
+
 function CachePreparationState:update(dt)
   if self.fired or self.dead or self.terminal then
     return
@@ -142,7 +161,7 @@ function CachePreparationState:update(dt)
       error(status, 0)
     elseif status == "ready" then
       self:_fire()
-    elseif status == "failed" then
+    elseif status == "failed" or status == nil then
       self:_fail("cache source closure failed")
     end
   end
@@ -158,14 +177,20 @@ function CachePreparationState:draw()
   else
     self.loading:draw({
       label = "Waiting for source readers to drain…",
-      receipt = type(self.pendingImportName) == "string"
-          and self.pendingImportName ~= ""
-          and ("File received " .. self.pendingImportName)
-        or nil,
+      receipt = self.pendingImportName,
       error = self.error,
     })
-    self._receiptPainted = self.pendingImportName
+    local receipt = self.loading.paintedReceipt
+    self._receiptPainted = receipt ~= nil and receipt(self.loading) or nil
   end
+end
+
+function CachePreparationState:view()
+  if self.kind ~= "quiescence" or self.importViewProvider == nil then
+    error("cache preparation publishes a view only for its borrowed import attempt", 2)
+  end
+  local import = assert(self.importViewProvider(), "quiescence borrows the current import view")
+  return { mode = import.mode, import = import }
 end
 
 function CachePreparationState:paintedReceipt()
@@ -180,9 +205,9 @@ function CachePreparationState:takeLoading()
   return loading
 end
 
-function CachePreparationState:resize(width, height, safeRect)
+function CachePreparationState:resize(width, height, safeRect, pixelRatio)
   if self.loading ~= nil then
-    self.loading:resize(width, height, safeRect)
+    self.loading:resize(width, height, safeRect, pixelRatio)
   end
 end
 
@@ -193,7 +218,7 @@ function CachePreparationState:_observeLoadingCancel()
 end
 
 function CachePreparationState:keypressed(key)
-  if self.dead then
+  if self.dead or self.kind == "boot-source" then
     return
   end
   if self.loading ~= nil and type(self.loading.keypressed) == "function" then
@@ -206,7 +231,12 @@ function CachePreparationState:keypressed(key)
 end
 
 function CachePreparationState:gamepadpressed(_, button)
-  if not self.dead and self.loading ~= nil and type(self.loading.gamepadpressed) == "function" then
+  if
+    not self.dead
+    and self.kind == "quiescence"
+    and self.loading ~= nil
+    and type(self.loading.gamepadpressed) == "function"
+  then
     self.loading:gamepadpressed(nil, button)
     self:_observeLoadingCancel()
   elseif not self.dead and button == "b" then

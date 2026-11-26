@@ -7,6 +7,46 @@ local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
+-- Direct selection needs an actual managed source. Reuse the runner's archive
+-- when present; otherwise publish from the validated user-owned source and
+-- return the fixture-owned path for deterministic cleanup.
+---@param versionId string
+---@return boolean? published
+---@return string? ownedPath
+---@return unknown? failure
+local function ensureManagedSource(versionId)
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local RomArchive = require("romdump.src.source.RomArchive")
+  local info = GameVersion.info(versionId)
+  if info == nil or type(info.sha1) ~= "string" then
+    return nil, nil, "unknown managed version"
+  end
+  if RomArchive.recoverablePath(info.sha1) ~= nil then
+    return true, nil, nil
+  end
+  local romFs, source = require("tests.rom.support.RomSourcePath").openReader(versionId)
+  if romFs == nil then
+    return nil, nil, source
+  end
+  local bytes = source:read(0, source:size())
+  romFs:close()
+  source:release()
+  if bytes == nil then
+    return nil, nil, "managed source could not be read"
+  end
+  local byteData = love.data.newByteData(bytes)
+  local prepared, prepareError = RomArchive.prepare(info, byteData, GameVersion)
+  byteData:release()
+  if prepared == nil then
+    return nil, nil, prepareError
+  end
+  local published, publishError = RomArchive.publish(prepared)
+  if not published then
+    return nil, nil, publishError
+  end
+  return true, prepared.canonical, nil
+end
+
 local function newChannelHost()
   local function newChannel()
     local queue = {}
@@ -146,6 +186,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
   local LoadingModule = require("app.src.launcher.LauncherLoadingPresentation")
   local HgssGame = require("game.hgss.src.HgssGame")
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local RomArchive = require("romdump.src.source.RomArchive")
   local saved = {
     state = App.state,
     importer = App.importer,
@@ -164,6 +205,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     loadingNew = LoadingModule.new,
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
     random = love.math.random,
+    managedPath = RomArchive.recoverablePath,
   }
   local demands = {}
   local epochs = 0
@@ -274,6 +316,7 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     LoadingModule.new = saved.loadingNew
     HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
     love.math.random = saved.random
+    RomArchive.recoverablePath = saved.managedPath
   end
   local ok, err = xpcall(function()
     StartupAssetCache.loadWalker = function()
@@ -308,6 +351,32 @@ function T.no_published_manifest_falls_back_to_one_random_pair()
     App._bootBlockedVersionId = nil
     App._startupWarmup = nil
     App.opts = { dev = false }
+    App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
+    App._safeRect = { x = 0, y = 0, width = 800, height = 600 }
+    App._displayContext = App._launcherDisplayContext()
+    App._bootIntro = nil
+    App._importAttempt = nil
+    App._bootSwallowedInputs = {}
+    App._realTouches = {}
+    App._foreground = true
+    App._touchGamepadSuspended = false
+    App._forceDisplayPublication = false
+    App._iconRepairAttempted = {}
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil then
+        App._iconRepairAttempted[info.sha1] = true
+      end
+    end
+    RomArchive.recoverablePath = function(sha1)
+      for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+        local info = require("romdump.src.source.GameVersion").info(versionId)
+        if info ~= nil and info.sha1 == sha1 then
+          return "managed/" .. sha1 .. ".zip"
+        end
+      end
+      return nil
+    end
     App._selectVersion("soulsilver")
     for _ = 1, 5 do
       App.update(0.016)
@@ -356,6 +425,7 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
   local randomCalls = 0
   local randomValues = { 7, 25 }
   local scanCalls = 0
+  local ownedManagedPath = nil
   local service = {}
   function service:select(_)
     epochs = epochs + 1
@@ -455,6 +525,11 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     LoadingModule.new = saved.loadingNew
     HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
     love.math.random = saved.random
+    if ownedManagedPath ~= nil then
+      love.filesystem.remove(ownedManagedPath)
+      love.filesystem.remove(ownedManagedPath .. ".new")
+      love.filesystem.remove(ownedManagedPath .. ".bak")
+    end
   end
   local ok, err = xpcall(function()
     StartupAssetCache.loadWalker = function(_, _)
@@ -491,6 +566,27 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
     App._bootBlockedVersionId = nil
     App._startupWarmup = nil
     App.opts = { dev = false }
+    App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
+    App._safeRect = { x = 0, y = 0, width = 800, height = 600 }
+    App._displayContext = App._launcherDisplayContext()
+    App._bootIntro = nil
+    App._importAttempt = nil
+    App._bootSwallowedInputs = {}
+    App._realTouches = {}
+    App._suspendedTouchIds = {}
+    App._foreground = true
+    App._touchGamepadSuspended = false
+    App._forceDisplayPublication = false
+    App._iconRepairAttempted = {}
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil then
+        App._iconRepairAttempted[info.sha1] = true
+      end
+    end
+    local managed, managedPath, managedFailure = ensureManagedSource("heartgold")
+    Assert.isTrue(managed == true, "direct selection requires a managed source: " .. tostring(managedFailure))
+    ownedManagedPath = managedPath
     App._selectVersion("heartgold")
     Assert.equal(App.pairIndex, 7, "the first epoch keeps its drawn pair")
     for _ = 1, 5 do

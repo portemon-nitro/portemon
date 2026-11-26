@@ -7,7 +7,7 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@class StartupTitleLoading
 ---@field update fun(self: StartupTitleLoading, dt: number)
 ---@field draw fun(self: StartupTitleLoading, status: table<string, unknown>?)
----@field resize fun(self: StartupTitleLoading, width: number, height: number, safeRect: { x: number, y: number, width: number, height: number }?)
+---@field resize fun(self: StartupTitleLoading, width: number, height: number, safeRect: { x: number, y: number, width: number, height: number }?, pixelRatio: number)
 ---@field dispose fun(self: StartupTitleLoading)
 ---@field keypressed fun(self: StartupTitleLoading, key: string, scancode: string?, isrepeat: boolean?)?
 ---@field gamepadpressed fun(self: StartupTitleLoading, joystick: unknown, button: string)?
@@ -75,6 +75,10 @@ local SourceTick = require("libs.hgss.src.field.SourceTick")
 ---@field disposed boolean
 ---@field width number
 ---@field height number
+---@field safeRect { x: number, y: number, width: number, height: number }?
+---@field pixelRatio number
+---@field admitOpening (fun(): boolean)?
+---@field openingAdmissionPending boolean
 local StartupTitleState = {}
 StartupTitleState.__index = StartupTitleState
 
@@ -122,11 +126,14 @@ local OPENING_SCENE_COUNT = 5
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onTitleReady (fun())?
 ---@field beginWarmup (fun())? fires the save-agnostic near/sweep prefetch once at title entry
+---@field admitOpening (fun(): boolean)? initial foreground movie admission only
 ---@field audio table<string, function>? borrowed App-owned callbacks
 ---@field splRandomState table<string, integer>? borrowed boot stream record shared by one boot
 ---@field loading StartupTitleLoading one transferred neutral loading presentation
 ---@field width number
 ---@field height number
+---@field safeRect { x: number, y: number, width: number, height: number }?
+---@field pixelRatio number?
 
 ---@param options StartupTitleState.Options
 ---@return StartupTitleState
@@ -160,6 +167,9 @@ function StartupTitleState.new(options)
   if options.beginWarmup ~= nil then
     assert(type(options.beginWarmup) == "function", "startup title begins its warmup through a function")
   end
+  if options.admitOpening ~= nil then
+    assert(type(options.admitOpening) == "function", "opening admission is a function")
+  end
   assert(type(options.width) == "number" and type(options.height) == "number")
   assert(
     options.splRandomState == nil or type(options.splRandomState) == "table",
@@ -185,6 +195,8 @@ function StartupTitleState.new(options)
     isCurrent = options.isCurrent,
     onTitleReady = options.onTitleReady,
     beginWarmup = options.beginWarmup,
+    admitOpening = options.admitOpening,
+    openingAdmissionPending = options.admitOpening ~= nil,
     audio = options.audio,
     splRandomState = options.splRandomState,
     phase = "loading",
@@ -230,6 +242,8 @@ function StartupTitleState.new(options)
     disposed = false,
     width = options.width,
     height = options.height,
+    safeRect = options.safeRect,
+    pixelRatio = options.pixelRatio or 1,
   }, StartupTitleState)
   return self
 end
@@ -394,6 +408,15 @@ end
 function StartupTitleState:_maybeEnterMovie()
   if self.phase ~= "loading" or self.movie == nil or not self:_live() then
     return
+  end
+  if not self.audioReady then
+    return
+  end
+  if self.openingAdmissionPending then
+    if self.admitOpening == nil or not self.admitOpening() then
+      return
+    end
+    self.openingAdmissionPending = false
   end
   if not self:_confirmSoundtrackStart() then
     return
@@ -856,10 +879,27 @@ function StartupTitleState:_tick()
   end
 end
 
+-- The first movie admission owns the boot overlay. A soundtrack failure
+-- before the first frame therefore exposes its loader diagnostic immediately;
+-- later title and attract entries have cleared that admission and own no
+-- boot overlay.
+---@return boolean
+function StartupTitleState:hasInitialAudioFailure()
+  return self:_live()
+    and self.openingAdmissionPending
+    and self.audioError ~= nil
+    and not self.movieCompleted
+    and self.phase ~= "movie"
+end
+
 -- This state is a genuine asset-preparation presentation while its loader owns
 -- the screen: the selected epoch may compile at loader throughput. A failure
 -- diagnostic, the movie, the title and the menu never claim it.
 ---@return boolean
+function StartupTitleState:isAwaitingOpening()
+  return self:_live() and self.openingAdmissionPending and self.phase == "loading"
+end
+
 function StartupTitleState:isPreparingAssets()
   return not self.disposed and self.phase == "loading"
 end
@@ -870,8 +910,10 @@ function StartupTitleState:update(dt)
     return
   end
   assert(type(dt) == "number" and dt >= 0, "startup title delta must be non-negative")
+  local stagedMovie = self.movie
   self:_startRequests()
   self:_pollAssets()
+  local movieStagedNow = stagedMovie == nil and self.movie ~= nil
   if self.phase == "loading" or self.phase == "error" then
     self.loading:update(dt)
   end
@@ -879,7 +921,9 @@ function StartupTitleState:update(dt)
   -- a hitch never skips it and later phases never extend it.
   if self.phase == "loading" then
     self.loaderVisibleTime = self.loaderVisibleTime + math.min(dt, DWELL_DT_CAP)
-    self:_maybeEnterMovie()
+    if not movieStagedNow then
+      self:_maybeEnterMovie()
+    end
   end
   self.accumulator = self.accumulator + math.min(dt, MAX_CATCHUP_TICKS * SourceTick.DT)
   while self.accumulator >= SourceTick.DT and not self.disposed do
@@ -899,7 +943,7 @@ function StartupTitleState:_status()
       detail = "Press Esc to return",
     }
   end
-  if self.audioError ~= nil and self.movie ~= nil and not self.movieCompleted then
+  if self:hasInitialAudioFailure() or (self.audioError ~= nil and self.movie ~= nil and not self.movieCompleted) then
     return {
       label = "Movie unavailable",
       error = tostring(self.audioError),
@@ -987,10 +1031,12 @@ function StartupTitleState:draw()
   graphics.setColor(1, 1, 1, 1)
 end
 
-function StartupTitleState:resize(width, height, safeRect)
+function StartupTitleState:resize(width, height, safeRect, pixelRatio)
   assert(width > 0 and height > 0, "startup title dimensions must be positive")
   self.width, self.height = width, height
-  self.loading:resize(width, height, safeRect)
+  self.safeRect = safeRect
+  self.pixelRatio = pixelRatio or self.pixelRatio
+  self.loading:resize(width, height, safeRect, self.pixelRatio)
   if self.movie ~= nil then
     self.movie:resize(width, height)
   end

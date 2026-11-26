@@ -1,80 +1,172 @@
--- Source-control waits for the app shell: verified boot admission and exact
--- source-reader quiescence. Only boot admission owns a transferable loader.
+-- Source-control waits own one transferable loader. Ordinary pre-movie input is
+-- routed by App; quiescence remains a real operation with its own cancellation.
 
 local Assert = require("tests.support.Assert")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 
 local T = {}
 
-local function fakeLoading()
-  local loading = { updates = 0, draws = 0, disposals = 0 }
-  function loading:update(dt)
-    self.updates = self.updates + 1
-    self.lastDt = dt
-  end
-  function loading:resize(width, height)
-    self.width, self.height = width, height
-  end
-  function loading:draw(status)
-    self.draws = self.draws + 1
-    self.status = status
-  end
-  function loading:dispose()
-    self.disposals = self.disposals + 1
-  end
-  return loading
-end
-
-local function onTransfer(script, options)
-  script.fired = 0
-  script.cancelled = 0
-  options.isCurrent = options.isCurrent or function()
-    return true
-  end
-  options.onReady = function()
-    script.fired = script.fired + 1
-  end
-  options.onCancel = function()
-    script.cancelled = script.cancelled + 1
-  end
-  return options
-end
-
-local function bootWait(script, overrides)
+local function bootService(script)
+  script.calls = 0
+  script.requests = {}
   local service = {}
-  function service:bootSourceStatus(epoch)
-    script.calls = (script.calls or 0) + 1
-    script.seenEpoch = epoch
-    if script.failure ~= nil then
-      return "failed", script.failure
+  function service:bootSourceStatus(_)
+    script.calls = script.calls + 1
+    if script.bootFailure ~= nil then
+      return "failed", script.bootFailure
     end
-    if script.ready then
+    if script.bootReady then
       return "ready"
     end
     if script.pending then
       return "pending"
     end
-    return "source-required", script.detail
+    return "source-required", script.sourceDetail
   end
-  local options = onTransfer(script, {
+  function service:request(_, selector)
+    script.requests[#script.requests + 1] = selector
+  end
+  return service
+end
+
+local function fakeLoading()
+  local presentation = { draws = 0, updates = 0, disposals = 0, resizes = {} }
+  function presentation:update(dt)
+    self.updates = self.updates + 1
+    self.lastDt = dt
+  end
+  function presentation:resize(...)
+    self.resizes[#self.resizes + 1] = { ... }
+  end
+  function presentation:draw(status)
+    self.draws = self.draws + 1
+    self.status = status
+  end
+  function presentation:dispose()
+    self.disposals = self.disposals + 1
+  end
+  return presentation
+end
+
+local function bootWait(script, loading, overrides)
+  local options = {
     kind = "boot-source",
     epoch = 7,
-    service = service,
+    service = bootService(script),
     versionId = "heartgold",
     label = "HeartGold",
-    loading = fakeLoading(),
+    loading = loading,
+    isCurrent = function()
+      return true
+    end,
+    onReady = function()
+      script.fired = (script.fired or 0) + 1
+    end,
     onFailure = function(detail)
       script.failures = script.failures or {}
       script.failures[#script.failures + 1] = detail
     end,
-  })
+    onCancel = function()
+      script.cancelled = (script.cancelled or 0) + 1
+    end,
+  }
   for key, value in pairs(overrides or {}) do
     options[key] = value
   end
   return CachePreparationState.new(options)
 end
 
-local function fakeRenderer()
+function T.only_live_initial_boot_source_wait_reports_pre_opening()
+  local script = { pending = true }
+  local loading = fakeLoading()
+  local state = bootWait(script, loading)
+  Assert.equal(type(state.isAwaitingOpening), "function")
+  Assert.isTrue(state:isAwaitingOpening())
+  state:update(1 / 60)
+  Assert.isTrue(state:isAwaitingOpening())
+  state:resize(385, 287, { x = 18, y = 24, width = 349, height = 239 }, 3)
+  Assert.deepEqual(loading.resizes[1], { 385, 287, { x = 18, y = 24, width = 349, height = 239 }, 3 })
+  state:dispose()
+  Assert.isFalse(state:isAwaitingOpening())
+
+  local readyScript = { bootReady = true }
+  local readyLoading = fakeLoading()
+  local ready = bootWait(readyScript, readyLoading)
+  ready:update(1 / 60)
+  Assert.equal(readyScript.fired, 1)
+  Assert.isFalse(ready:isAwaitingOpening(), "source readiness ends the pre-opening wait")
+  Assert.isTrue(ready:takeLoading() == readyLoading)
+  ready:dispose()
+  Assert.equal(readyLoading.disposals, 0, "the receiving startup owner keeps the transferred loader")
+  readyLoading:dispose()
+
+  local retiredScript = { pending = true }
+  local retired = bootWait(retiredScript, fakeLoading(), {
+    isCurrent = function()
+      return false
+    end,
+  })
+  Assert.isFalse(retired:isAwaitingOpening())
+  retired:update(1 / 60)
+  Assert.equal(retiredScript.calls, 0)
+  retired:dispose()
+end
+
+function T.neutral_loader_paints_without_polling_or_adding_decorative_demand()
+  local script = { pending = true }
+  local loading = fakeLoading()
+  local state = bootWait(script, loading)
+  state:draw()
+  Assert.equal(loading.draws, 1)
+  Assert.equal(script.calls, 0, "draw never polls the source gate")
+  state:update(1 / 60)
+  Assert.equal(loading.updates, 1)
+  Assert.deepEqual(script.requests, {})
+  Assert.isNil(loading.status, "pending work exposes no internal provisioning copy")
+  state:dispose()
+  Assert.equal(loading.disposals, 1)
+end
+
+function T.ordinary_pre_opening_input_is_not_a_leaf_cancel_action()
+  local script = { pending = true }
+  local state = bootWait(script, fakeLoading())
+  state:keypressed("escape")
+  state:keypressed("return")
+  state:gamepadpressed({}, "a")
+  Assert.equal(script.cancelled or 0, 0, "App owns the shared manual-selection route")
+  Assert.isTrue(state:isAwaitingOpening())
+  state:dispose()
+end
+
+function T.blocked_or_failed_source_returns_one_copied_failure_without_transfer()
+  for _, status in ipairs({ "source-required", "failed" }) do
+    local detail =
+      { code = "ROM_SOURCE_REQUIRED", message = "managed source needs repair", context = { path = "managed" } }
+    local script = { sourceDetail = detail, bootFailure = detail }
+    local loading = fakeLoading()
+    local state = bootWait(script, loading)
+    state:update(1 / 60)
+    detail.message = "mutated"
+    detail.context.path = "mutated"
+    state:update(1 / 60)
+    Assert.equal(script.fired or 0, 0)
+    Assert.equal(#script.failures, 1)
+    Assert.equal(script.failures[1].message, "managed source needs repair")
+    Assert.equal(script.failures[1].context.path, "managed")
+    Assert.isFalse(state:isAwaitingOpening(), "terminal failure is no longer an interruptible pre-opening wait")
+    state:dispose()
+    Assert.equal(loading.disposals, 1)
+  end
+end
+
+function T.quiescence_is_an_operation_and_keeps_its_exact_barrier_identity()
+  local script = { calls = 0, status = "pending", cancelled = 0 }
+  local service = {}
+  function service:barrierStatus(epoch, barrier)
+    script.calls = script.calls + 1
+    script.epoch, script.barrier = epoch, barrier
+    return script.status
+  end
   local font = {}
   function font:getWidth(text)
     return #tostring(text) * 6
@@ -82,217 +174,37 @@ local function fakeRenderer()
   function font:getHeight()
     return 12
   end
-  return {
-    fonts = { body = font, bold = font },
-    drawButton = function() end,
-    drawLoadingSquares = function() end,
-  }
-end
-
-local function quiescenceWait(script, overrides)
-  local service = {}
-  function service:barrierStatus(epoch, barrier)
-    script.calls = (script.calls or 0) + 1
-    script.seenEpoch, script.seenBarrier = epoch, barrier
-    return script.status or "pending"
-  end
-  local options = onTransfer(script, {
+  local renderer =
+    { fonts = { body = font, bold = font }, drawButton = function() end, drawLoadingSquares = function() end }
+  local state = CachePreparationState.new({
     kind = "quiescence",
     epoch = 7,
-    service = service,
     barrier = 3,
-    renderer = fakeRenderer(),
+    service = service,
+    renderer = renderer,
     width = 390,
     height = 844,
-  })
-  for key, value in pairs(overrides or {}) do
-    options[key] = value
-  end
-  return CachePreparationState.new(options)
-end
-
-function T.boot_source_wait_transfers_exactly_once_on_readiness()
-  local script = { ready = true }
-  local state = bootWait(script)
-  local loading = state.loading
-  state:resize(360, 640)
-  Assert.equal(loading.width, 360)
-  Assert.equal(loading.height, 640)
-  state:update(0.016)
-  Assert.equal(script.fired, 1)
-  Assert.isTrue(state:takeLoading() == loading)
-  state:update(0.016)
-  Assert.equal(script.fired, 1, "the transfer fires exactly once")
-  state:dispose()
-  Assert.equal(loading.disposals, 0, "the old wait never disposes transferred loading")
-  loading:dispose()
-end
-
-function T.boot_source_wait_stays_pending_without_a_decorative_demand()
-  local script = { pending = true }
-  local state = bootWait(script)
-  state:update(0.016)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0)
-  Assert.equal(state.sourceStatus, nil)
-  Assert.equal(state.loading.updates, 2, "neutral animation continues while required work remains")
-  state:dispose()
-end
-
-function T.boot_source_failure_returns_one_typed_detail_without_transfer()
-  local detail = { code = "ROM_SOURCE_REQUIRED", message = "source needs repair", context = { source = "managed" } }
-  local script = { detail = detail }
-  local state = bootWait(script)
-  state:update(0.016)
-  detail.context.source = "mutated"
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0)
-  Assert.equal(#script.failures, 1)
-  Assert.equal(script.failures[1].code, detail.code)
-  Assert.equal(script.failures[1].context.source, "managed")
-  local loading = state.loading
-  Assert.notNil(loading, "the wait retains its loader until the App recovery route retires it")
-  state:dispose()
-  Assert.equal(loading.disposals, 1)
-end
-
-function T.boot_source_cancel_never_publishes_a_stale_transfer()
-  local script = {}
-  local state = bootWait(script)
-  local loading = state.loading
-  state:update(0.016)
-  state:keypressed("escape")
-  state:keypressed("escape")
-  Assert.equal(script.cancelled, 1)
-  Assert.equal(loading.disposals, 1)
-  script.ready = true
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0)
-  state:dispose()
-  Assert.equal(loading.disposals, 1)
-end
-
-function T.stale_wait_never_polls_or_transfers()
-  local script = { ready = true }
-  local state = bootWait(script, {
     isCurrent = function()
-      return false
+      return true
+    end,
+    onReady = function()
+      script.ready = true
+    end,
+    onCancel = function()
+      script.cancelled = script.cancelled + 1
     end,
   })
-  state:update(0.016)
-  Assert.equal(script.calls or 0, 0)
-  Assert.equal(script.fired or 0, 0)
-  state:dispose()
-end
-
-function T.quiescence_wait_holds_until_the_exact_barrier_acknowledges()
-  local script = {}
-  local state = quiescenceWait(script)
-  state:update(0.016)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0)
-  Assert.equal(script.seenEpoch, 7)
-  Assert.equal(script.seenBarrier, 3)
-  script.status = "ready"
-  state:update(0.016)
-  Assert.equal(script.fired, 1)
-  state:update(0.016)
-  Assert.equal(script.fired, 1)
-end
-
-function T.quiescence_touch_cancel_uses_the_shared_loading_action()
-  local script = {}
-  local safe = { x = 0, y = 0, width = 390, height = 844 }
-  local state = quiescenceWait(script, { safeRect = safe })
-  local x, y = safe.x + safe.width - 10 - 56, safe.y + safe.height - 10 - 22
-  state:touchpressed("finger", x, y)
-  state:touchreleased("finger", x, y)
-  Assert.equal(script.cancelled, 1, "a touch-only user can abandon a queued import while source readers drain")
-  state:dispose()
-end
-
-function T.quiescence_failure_latches_without_transfer()
-  local script = { status = "failed" }
-  local state = quiescenceWait(script)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0)
-  Assert.notNil(state.error)
-  script.status = "ready"
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0)
-end
-
-function T.quiescence_cancel_returns_without_transfer()
-  local script = {}
-  local state = quiescenceWait(script)
-  state:update(0.016)
+  Assert.isFalse(state:isAwaitingOpening())
+  state:update(1 / 60)
+  Assert.equal(script.epoch, 7)
+  Assert.equal(script.barrier, 3)
+  Assert.isNil(script.ready)
   state:keypressed("escape")
-  Assert.equal(script.cancelled, 1)
+  Assert.equal(script.cancelled, 1, "a real operation retains its admissible Cancel route")
   script.status = "ready"
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0)
+  state:update(1 / 60)
+  Assert.isNil(script.ready, "canceled view cannot transfer a late barrier acknowledgement")
   state:dispose()
-end
-
-function T.stale_quiescence_wait_never_polls_or_transfers()
-  local script = { status = "ready" }
-  local state = quiescenceWait(script, {
-    isCurrent = function()
-      return false
-    end,
-  })
-  state:update(0.016)
-  Assert.equal(script.calls or 0, 0)
-  Assert.equal(script.fired or 0, 0)
-end
-
-function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
-  local script = {}
-  local state = quiescenceWait(script, { pendingImportName = "heartgold.nds" })
-  Assert.isNil(state:paintedReceipt(), "latching a filename is not proof that it rendered")
-  local copy = {}
-  local original = love.graphics.print
-  local originalSetFont = love.graphics.setFont
-  love.graphics.print = function(text)
-    copy[#copy + 1] = tostring(text)
-  end
-  love.graphics.setFont = function() end
-  local ok, err = pcall(state.draw, state)
-  love.graphics.print = original
-  love.graphics.setFont = originalSetFont
-  assert(ok, err)
-  Assert.equal(state:paintedReceipt(), "heartgold.nds")
-  Assert.isTrue(table.concat(copy, "\n"):find("File received heartgold.nds", 1, true) ~= nil)
-  state:dispose()
-end
-
-function T.retired_wait_kinds_are_rejected_at_construction()
-  Assert.throws(function()
-    CachePreparationState.new({
-      kind = "bootstrap",
-      epoch = 7,
-      service = {},
-      isCurrent = function()
-        return true
-      end,
-      onReady = function() end,
-      onCancel = function() end,
-    })
-  end, "bootstrap preparation is not a launcher wait")
-  Assert.throws(function()
-    CachePreparationState.new({
-      kind = "boot-source",
-      epoch = 7,
-      service = {},
-      versionId = "heartgold",
-      loading = fakeLoading(),
-      isCurrent = function()
-        return true
-      end,
-      onReady = function() end,
-      onCancel = function() end,
-    })
-  end, "the product boot path requires its failure route")
 end
 
 return { tests = T }

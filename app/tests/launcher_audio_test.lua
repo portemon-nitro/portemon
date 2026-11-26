@@ -1,6 +1,6 @@
--- Launcher cue host behavior. Filesystem and audio device boundaries are
--- deterministic; the owner still has to request the five amended OGG paths,
--- bound simultaneous voices, fade the boot cue and release every source once.
+-- Launcher cue ownership at the native audio boundary. The fake mirrors the
+-- LÖVE FileData/SoundData/Source overloads and records physical-output intent
+-- without opening a device.
 
 local Assert = require("tests.support.Assert")
 
@@ -16,23 +16,28 @@ local function withAudioHost(options, fn)
   options = options or {}
   local originalAudio = love.audio
   local originalSound = love.sound
-  local originalNewSoundData = originalSound and originalSound.newSoundData
   local audio = originalAudio or {}
-  love.audio = audio
   local sound = originalSound or {}
-  love.sound = sound
+  rawset(love, "audio", audio)
+  rawset(love, "sound", sound)
+  local originalModule = package.loaded["app.src.launcher.LauncherAudio"]
+  package.loaded["app.src.launcher.LauncherAudio"] = nil
+  local originalAssets = package.loaded["app.src.launcher.LauncherAssets"]
+  local originalNewSource = audio.newSource
+  local originalNewSoundData = sound.newSoundData
+  local sources, files, decoded, sourceCalls = {}, {}, {}, {}
   sound.newSoundData = function(data)
-    if data:getFilename() == options.invalidPath then
+    local path = data:getFilename()
+    if path == options.invalidPath then
       error("synthetic audio decode failure", 0)
     end
-    return { release = function() end }
+    local value = { kind = "sound-data", path = path, releases = 0 }
+    function value:release()
+      self.releases = self.releases + 1
+    end
+    decoded[#decoded + 1] = value
+    return value
   end
-  local originalModule = package.loaded["app.src.launcher.LauncherAudio"]
-  local originalNewSource = audio.newSource
-  local originalAssets = package.loaded["app.src.launcher.LauncherAssets"]
-  local sources = {}
-  local files = {}
-  package.loaded["app.src.launcher.LauncherAudio"] = nil
   package.loaded["app.src.launcher.LauncherAssets"] = {
     read = function(path)
       if path == options.missingPath then
@@ -40,40 +45,43 @@ local function withAudioHost(options, fn)
       end
       for _, cue in ipairs(CUES) do
         if path == expectedPath(cue) then
-          local raw = love.filesystem.newFileData("OGG-HOST-FIXTURE", path)
-          local fileData = { path = path, releases = 0, raw = raw }
-          function fileData:getFilename()
+          local value = { kind = "file-data", path = path, releases = 0 }
+          function value:getFilename()
             return self.path
           end
-          function fileData:getSize()
-            return self.raw:getSize()
+          function value:getSize()
+            return 16
           end
-          function fileData:getString()
-            return self.raw:getString()
+          function value:getString()
+            return "OGG-HOST-FIXTURE"
           end
-          function fileData:release()
+          function value:release()
             self.releases = self.releases + 1
-            self.raw:release()
           end
-          files[#files + 1] = fileData
-          return fileData
+          files[#files + 1] = value
+          return value
         end
       end
       return nil
     end,
   }
-  audio.newSource = function(data)
-    local path = data:getFilename()
+  audio.newSource = function(...)
+    local argc = select("#", ...)
+    local data, sourceType = ...
+    sourceCalls[#sourceCalls + 1] = { argc = argc, data = data, sourceType = sourceType }
+    local path = data.kind == "sound-data" and data.path or data:getFilename()
     if path == options.failPath then
       error("synthetic audio device failure", 0)
     end
     local source = {
       data = data,
+      inputKind = data.kind,
       path = path,
       playing = false,
       plays = 0,
       stops = 0,
       releases = 0,
+      playingAtRelease = nil,
       volume = 1,
     }
     function source:play()
@@ -100,8 +108,9 @@ local function withAudioHost(options, fn)
       return self.volume
     end
     function source:release()
-      self.releases = self.releases + 1
+      self.playingAtRelease = self.playing
       self.playing = false
+      self.releases = self.releases + 1
     end
     sources[#sources + 1] = source
     return source
@@ -110,172 +119,192 @@ local function withAudioHost(options, fn)
     audio.newSource = nil
   end
   if options.soundMissing then
-    love.sound = nil
+    rawset(love, "sound", nil)
   end
-  local ok, err = xpcall(function()
-    fn(sources, files)
+  local ok, failure = xpcall(function()
+    fn({ sources = sources, files = files, decoded = decoded, sourceCalls = sourceCalls })
   end, debug.traceback)
   audio.newSource = originalNewSource
-  if originalSound ~= nil then
-    originalSound.newSoundData = originalNewSoundData
-  end
-  love.sound = originalSound
-  love.audio = originalAudio
+  sound.newSoundData = originalNewSoundData
+  rawset(love, "audio", originalAudio)
+  rawset(love, "sound", originalSound)
   package.loaded["app.src.launcher.LauncherAudio"] = originalModule
   package.loaded["app.src.launcher.LauncherAssets"] = originalAssets
   if not ok then
-    error(err, 0)
+    error(failure, 0)
   end
 end
 
-function T.requests_all_five_ogg_cues_and_releases_each_source_once()
-  withAudioHost({}, function(sources, files)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local launcher = LauncherAudio.new()
-    Assert.equal(#sources, 5, "the launcher acquires one source for each required cue")
+function T.each_cue_decodes_once_and_creates_one_static_source_from_decoded_data()
+  withAudioHost({}, function(host)
+    Assert.equal(type(love.sound), "table", "the recording host installs a sound boundary")
+    Assert.equal(type(love.sound.newSoundData), "function")
+    local launcher = require("app.src.launcher.LauncherAudio").new()
+    Assert.equal(#host.files, 5)
+    Assert.equal(#host.decoded, 5, "each OGG is decoded exactly once")
+    Assert.equal(#host.sources, 5)
     for index, cue in ipairs(CUES) do
-      Assert.equal(sources[index].data:getFilename(), expectedPath(cue), "the cue uses its OGG runtime path")
-      Assert.equal(files[index].releases, 1, "each FileData releases immediately after its Source is constructed")
+      Assert.equal(host.decoded[index].path, expectedPath(cue))
+      Assert.equal(host.sourceCalls[index].argc, 1, "the SoundData overload has no source-type argument")
+      Assert.equal(host.sourceCalls[index].sourceType, nil)
+      Assert.isTrue(host.sources[index].data == host.decoded[index], "Source borrows the decoded SoundData")
+      Assert.equal(host.sources[index].inputKind, "sound-data")
+      Assert.equal(host.files[index].releases, 1, "compressed FileData releases after Source construction")
+      Assert.equal(host.decoded[index].releases, 1, "decoded SoundData releases after Source construction")
     end
-    launcher:play("boot")
-    launcher:play("focus")
-    launcher:play("confirm")
-    launcher:play("back")
-    launcher:play("error")
-    for _, source in ipairs(sources) do
-      Assert.equal(source.plays, 1, "each semantic cue starts its own source")
+    for _, cue in ipairs(CUES) do
+      launcher:play(cue)
+    end
+    for _, source in ipairs(host.sources) do
+      Assert.equal(source.plays, 1)
     end
     launcher:dispose()
     launcher:dispose()
-    for _, source in ipairs(sources) do
-      Assert.equal(source.releases, 1, "disposal releases every acquired source exactly once")
+    for _, source in ipairs(host.sources) do
+      Assert.equal(source.releases, 1)
+      Assert.isFalse(source.playingAtRelease, "active output stops before Source release")
     end
   end)
 end
 
-function T.short_cues_are_bounded_and_boot_fades_for_eighty_milliseconds()
-  withAudioHost({}, function(sources)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local launcher = LauncherAudio.new()
+function T.short_cues_are_bounded_and_boot_fade_is_deterministic()
+  withAudioHost({}, function(host)
+    local launcher = require("app.src.launcher.LauncherAudio").new()
     for _ = 1, 20 do
       launcher:play("focus")
     end
     local playing = 0
-    for _, source in ipairs(sources) do
+    for _, source in ipairs(host.sources) do
       if source:isPlaying() then
         playing = playing + 1
       end
     end
-    Assert.isTrue(playing <= 4, "short cue voices never exceed the four-voice bound")
+    Assert.isTrue(playing <= 4)
 
-    local boot = sources[1]
+    local boot = host.sources[1]
     launcher:play("boot")
-    local playsBeforeFade = boot.plays
     launcher:fadeBoot(0.08)
-    Assert.equal(boot.plays, playsBeforeFade, "input fade never restarts the boot cue")
     launcher:update(0.04)
-    Assert.isTrue(boot.volume < 1, "the boot cue fades instead of cutting immediately")
+    Assert.isTrue(boot.volume < 1)
     launcher:update(0.04)
-    Assert.isFalse(boot:isPlaying(), "the boot cue is silent at the end of the 80 ms fade")
+    Assert.isFalse(boot:isPlaying())
+
+    launcher:play("boot")
+    local plays = boot.plays
+    launcher:fadeBoot(0)
+    Assert.isFalse(boot:isPlaying(), "zero fade stops the boot tail immediately")
+    Assert.equal(boot.plays, plays, "fade never restarts the cue")
+    Assert.isNil(launcher.bootFade, "zero fade leaves no pending timer")
+    launcher:play("boot")
+    launcher:update(1)
+    Assert.isTrue(boot:isPlaying(), "a stale completed fade cannot stop a restarted cue")
     launcher:dispose()
   end)
 end
 
-function T.missing_required_ogg_is_an_asset_error_not_a_silent_substitute()
-  withAudioHost({ missingPath = expectedPath("confirm") }, function(sources, files)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local ok, failure = pcall(LauncherAudio.new)
-    Assert.isFalse(ok, "a missing required cue cannot be hidden by a silent or synthetic substitute")
-    Assert.isTrue(tostring(failure):find("confirm.ogg", 1, true) ~= nil, "the asset error names the missing cue")
-    Assert.equal(#files, 2, "asset reads stop at the missing cue")
-    for _, fileData in ipairs(files) do
-      Assert.equal(fileData.releases, 1, "a missing later asset releases every earlier FileData")
-    end
-    for _, source in ipairs(sources) do
-      Assert.equal(source.releases, 1, "a missing later asset releases every earlier Source")
-    end
-  end)
+function T.missing_and_corrupt_required_cues_release_all_prior_intermediates()
+  for _, case in ipairs({
+    { options = { missingPath = expectedPath("confirm") }, label = "missing" },
+    { options = { invalidPath = expectedPath("confirm") }, label = "corrupt" },
+  }) do
+    withAudioHost(case.options, function(host)
+      local ok, failure = pcall(require("app.src.launcher.LauncherAudio").new)
+      Assert.isFalse(ok, "a " .. case.label .. " required cue is an asset error")
+      Assert.isTrue(tostring(failure):find("confirm.ogg", 1, true) ~= nil)
+      for _, fileData in ipairs(host.files) do
+        Assert.equal(fileData.releases, 1)
+      end
+      for _, value in ipairs(host.decoded) do
+        Assert.equal(value.releases, 1)
+      end
+      for _, source in ipairs(host.sources) do
+        Assert.equal(source.releases, 1)
+      end
+    end)
+  end
 end
 
-function T.corrupt_required_ogg_is_an_asset_error_not_an_unavailable_device()
-  withAudioHost({ invalidPath = expectedPath("confirm") }, function(sources, files)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local ok, failure = pcall(LauncherAudio.new)
-    Assert.isFalse(ok, "a required cue that cannot decode is an asset failure")
-    Assert.isTrue(tostring(failure):find("confirm.ogg", 1, true) ~= nil, "the asset error names the corrupt cue")
-    Assert.equal(#sources, 2, "corrupt decoding stops before acquiring a Source for that cue")
-    Assert.equal(#files, 3, "the corrupt cue's FileData was acquired for validation")
-    for _, source in ipairs(sources) do
-      Assert.equal(source.releases, 1, "partial construction releases prior Sources")
+function T.device_failure_releases_prior_sources_but_still_validates_every_asset()
+  withAudioHost({ failPath = expectedPath("confirm") }, function(host)
+    local launcher = require("app.src.launcher.LauncherAudio").new()
+    Assert.isTrue(launcher.unavailable)
+    Assert.equal(#host.files, 5, "silent validation continues through later cues")
+    Assert.equal(#host.decoded, 5, "silent validation still decodes every required OGG")
+    Assert.equal(#host.sources, 2, "only Sources completed before the device failure were acquired")
+    for _, source in ipairs(host.sources) do
+      Assert.equal(source.releases, 1)
     end
-    for _, fileData in ipairs(files) do
-      Assert.equal(fileData.releases, 1, "partial construction releases every FileData")
+    for _, fileData in ipairs(host.files) do
+      Assert.equal(fileData.releases, 1)
     end
-  end)
-end
-
-function T.audio_device_failure_never_prevents_silent_launcher_use()
-  withAudioHost({ failPath = expectedPath("boot") }, function(sources, files)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local ok, launcher = pcall(LauncherAudio.new)
-    Assert.isTrue(ok, "an unavailable audio device does not make the launcher unusable: " .. tostring(launcher))
-    Assert.isTrue(launcher.unavailable, "device failure publishes the explicit silent owner")
-    Assert.deepEqual(sources, {}, "a failed first Source is not retained")
-    Assert.equal(#files, 1, "source construction stops at the first device failure")
-    Assert.equal(files[1].releases, 1, "the failed Source's FileData still releases")
-    launcher:play("confirm")
+    for _, value in ipairs(host.decoded) do
+      Assert.equal(value.releases, 1)
+    end
+    launcher:play("boot")
     launcher:update(1 / 60)
     launcher:dispose()
   end)
+
+  for _, options in ipairs({
+    { failPath = expectedPath("boot"), missingPath = expectedPath("error") },
+    { failPath = expectedPath("boot"), invalidPath = expectedPath("back") },
+  }) do
+    withAudioHost(options, function(host)
+      local ok, failure = pcall(require("app.src.launcher.LauncherAudio").new)
+      Assert.isFalse(ok, "device silence cannot hide a later missing or corrupt required asset")
+      Assert.isTrue(tostring(failure):find(".ogg", 1, true) ~= nil)
+      for _, fileData in ipairs(host.files) do
+        Assert.equal(fileData.releases, 1)
+      end
+      for _, value in ipairs(host.decoded) do
+        Assert.equal(value.releases, 1)
+      end
+      for _, source in ipairs(host.sources) do
+        Assert.equal(source.releases, 1)
+      end
+    end)
+  end
 end
 
-function T.partial_audio_construction_releases_prior_sources_and_every_file_data()
-  withAudioHost({ failPath = expectedPath("confirm") }, function(sources, files)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local launcher = LauncherAudio.new()
-    Assert.isTrue(launcher.unavailable, "a partial device failure falls back to silent launcher audio")
-    Assert.equal(#sources, 2, "only Sources completed before the failure were acquired")
-    Assert.equal(#files, 3, "the failing cue's FileData was acquired before Source construction")
-    for _, source in ipairs(sources) do
-      Assert.equal(source.releases, 1, "partial construction releases each prior Source exactly once")
+function T.unavailable_modules_keep_asset_validation_and_release_contracts()
+  withAudioHost({ audioMissing = true }, function(host)
+    local launcher = require("app.src.launcher.LauncherAudio").new()
+    Assert.isTrue(launcher.unavailable)
+    Assert.equal(#host.files, 5)
+    Assert.equal(#host.decoded, 5)
+    Assert.equal(#host.sources, 0)
+    for _, fileData in ipairs(host.files) do
+      Assert.equal(fileData.releases, 1)
     end
-    for _, fileData in ipairs(files) do
-      Assert.equal(fileData.releases, 1, "partial construction releases every acquired FileData exactly once")
-    end
-    launcher:dispose()
-    for _, source in ipairs(sources) do
-      Assert.equal(source.releases, 1, "silent-owner disposal cannot release prior Sources twice")
-    end
-  end)
-end
-
-function T.missing_audio_device_releases_all_five_acquired_file_data()
-  withAudioHost({ audioMissing = true }, function(sources, files)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local launcher = LauncherAudio.new()
-    Assert.isTrue(launcher.unavailable, "a host without Source construction remains explicitly silent")
-    Assert.deepEqual(sources, {})
-    Assert.equal(#files, 5, "asset validation still requests every required cue")
-    for _, fileData in ipairs(files) do
-      Assert.equal(fileData.releases, 1, "silent audio releases each FileData without constructing a Source")
+    for _, value in ipairs(host.decoded) do
+      Assert.equal(value.releases, 1)
     end
     launcher:dispose()
   end)
 
-  withAudioHost({ audioMissing = true, invalidPath = expectedPath("boot") }, function(_, files)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local ok, failure = pcall(LauncherAudio.new)
-    Assert.isFalse(ok, "silent hosts still reject corrupt required assets")
-    Assert.isTrue(tostring(failure):find("boot.ogg", 1, true) ~= nil)
-    Assert.equal(files[1].releases, 1, "the corrupt FileData releases on the silent path")
+  withAudioHost({ soundMissing = true }, function(host)
+    local launcher = require("app.src.launcher.LauncherAudio").new()
+    Assert.isFalse(launcher.unavailable, "native static FileData Sources remain supported without a decoder")
+    Assert.equal(#host.decoded, 0)
+    Assert.equal(#host.sources, 5)
+    for _, call in ipairs(host.sourceCalls) do
+      Assert.equal(call.argc, 2)
+      Assert.equal(call.sourceType, "static")
+      Assert.equal(call.data.kind, "file-data")
+    end
+    for _, fileData in ipairs(host.files) do
+      Assert.equal(fileData.releases, 1)
+    end
+    launcher:dispose()
   end)
 
-  withAudioHost({ audioMissing = true, soundMissing = true }, function(_, files)
-    local LauncherAudio = require("app.src.launcher.LauncherAudio")
-    local launcher = LauncherAudio.new()
-    Assert.isTrue(launcher.unavailable, "a host without audio decoding remains explicitly silent")
-    Assert.equal(#files, 5, "asset presence is still checked without a decoder")
-    for _, fileData in ipairs(files) do
+  withAudioHost({ audioMissing = true, soundMissing = true }, function(host)
+    local launcher = require("app.src.launcher.LauncherAudio").new()
+    Assert.isTrue(launcher.unavailable)
+    Assert.equal(#host.files, 5)
+    Assert.equal(#host.decoded, 0)
+    Assert.equal(#host.sources, 0)
+    for _, fileData in ipairs(host.files) do
       Assert.equal(fileData.releases, 1)
     end
     launcher:dispose()

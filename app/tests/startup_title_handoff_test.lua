@@ -188,6 +188,18 @@ local function withStartup(fn)
     drawableWidth = App.drawableWidth,
     drawableHeight = App.drawableHeight,
     pixelRatio = App.pixelRatio,
+    safeRect = App._safeRect,
+    bootSwallowed = App._bootSwallowedInputs,
+    realTouches = App._realTouches,
+    suspendedTouches = App._suspendedTouchIds,
+    foreground = App._foreground,
+    importAttempt = App._importAttempt,
+    bootIntro = App._bootIntro,
+    displayContext = App._displayContext,
+    iconRepairAttempted = App._iconRepairAttempted,
+    touchSuspended = App._touchGamepadSuspended,
+    forceDisplayPublication = App._forceDisplayPublication,
+    managedPath = require("romdump.src.source.RomArchive").recoverablePath,
     loadingNew = LauncherLoadingPresentation.new,
     menuNew = MainMenuComposition.new,
     graphicsDimensions = love.graphics.getDimensions,
@@ -328,6 +340,26 @@ local function withStartup(fn)
   App.selectedVersionId = nil
   App.opts = { dev = false }
   App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
+  App._safeRect = { x = 0, y = 0, width = 800, height = 600 }
+  App._bootSwallowedInputs = {}
+  App._realTouches = {}
+  App._suspendedTouchIds = {}
+  App._foreground = true
+  App._importAttempt = nil
+  App._bootIntro = nil
+  App._displayContext = nil
+  App._iconRepairAttempted = {}
+  App._touchGamepadSuspended = false
+  App._forceDisplayPublication = false
+  require("romdump.src.source.RomArchive").recoverablePath = function(sha1)
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil and info.sha1 == sha1 then
+        return "managed/" .. sha1 .. ".zip"
+      end
+    end
+    return nil
+  end
   StartupAudioSession.new = function()
     return {
       beginOpening = function()
@@ -464,6 +496,17 @@ local function withStartup(fn)
   App.drawableWidth = saved.drawableWidth
   App.drawableHeight = saved.drawableHeight
   App.pixelRatio = saved.pixelRatio
+  App._safeRect = saved.safeRect
+  App._bootSwallowedInputs = saved.bootSwallowed
+  App._realTouches = saved.realTouches
+  App._suspendedTouchIds = saved.suspendedTouches
+  App._foreground = saved.foreground
+  App._importAttempt = saved.importAttempt
+  App._bootIntro = saved.bootIntro
+  App._displayContext = saved.displayContext
+  App._iconRepairAttempted = saved.iconRepairAttempted
+  App._touchGamepadSuspended = saved.touchSuspended
+  App._forceDisplayPublication = saved.forceDisplayPublication
   LauncherLoadingPresentation.new = saved.loadingNew
   MainMenuComposition.new = saved.menuNew
   love.graphics.getDimensions = saved.graphicsDimensions
@@ -471,6 +514,7 @@ local function withStartup(fn)
   love.graphics.setColor = saved.graphicsSetColor
   love.graphics.rectangle = saved.graphicsRectangle
   require("romdump.src.source.RomImporter").isReady = saved.romIsReady
+  require("romdump.src.source.RomArchive").recoverablePath = saved.managedPath
   titleSceneModule.new = saved.titleSceneNew
   titleSceneModule.begin = saved.titleSceneBegin
   movieModule.new = saved.movieNew
@@ -1242,7 +1286,7 @@ end
 
 -- An already renderable opening starts on the next eligible update once all
 -- five scenes and the soundtrack are ready; import origin adds no dwell.
-function T.tests.renderable_movie_starts_without_an_import_dwell()
+function T.tests.renderable_movie_waits_for_opening_admission_then_starts_without_dwell()
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
   local CacheFs = require("libs.storage.src.CacheFs")
   local MovieModule = require("libs.hgss.src.presentation.HgssOpeningMovie")
@@ -1280,8 +1324,10 @@ function T.tests.renderable_movie_starts_without_an_import_dwell()
     return host
   end
   local function fakeMovie()
-    local movie = { draws = 0 }
-    function movie:updateFixed() end
+    local movie = { draws = 0, ticks = 0 }
+    function movie:updateFixed()
+      self.ticks = self.ticks + 1
+    end
     function movie:draw()
       self.draws = self.draws + 1
     end
@@ -1301,7 +1347,7 @@ function T.tests.renderable_movie_starts_without_an_import_dwell()
     function movie:dispose() end
     return movie
   end
-  local function build()
+  local function build(admitOpening)
     local staged = fakeMovie()
     CacheFs.forVersion = function(_)
       return {}
@@ -1330,8 +1376,13 @@ function T.tests.renderable_movie_starts_without_an_import_dwell()
       width = 800,
       height = 600,
       loading = fakeLoading(),
+      admitOpening = admitOpening,
+      beginWarmup = function()
+        staged.warmups = (staged.warmups or 0) + 1
+      end,
       audio = {
         openingReady = function()
+          staged.sounds = (staged.sounds or 0) + 1
           return true
         end,
       },
@@ -1356,6 +1407,27 @@ function T.tests.renderable_movie_starts_without_an_import_dwell()
     state:draw()
     Assert.isTrue(staged.draws >= 1, "the entered movie paints its first frame")
     state:dispose()
+
+    local admitted = false
+    local gated, gatedMovie = build(function()
+      return admitted
+    end)
+    Assert.equal(type(gated.isAwaitingOpening), "function", "startup publishes its pre-opening query")
+    Assert.isTrue(gated:isAwaitingOpening())
+    gated:update(SourceTick.DT)
+    Assert.notNil(gated.movie, "the complete opening stages while admission is closed")
+    gated:update(SourceTick.DT)
+    Assert.equal(gated.phase, "loading", "closed foreground admission keeps the neutral loader visible")
+    Assert.equal(gatedMovie.ticks, 0, "no hidden movie tick advances")
+    Assert.equal(gatedMovie.sounds or 0, 0, "no hidden retail soundtrack starts")
+    Assert.equal(gatedMovie.warmups or 0, 0, "warmup waits for actual entry")
+    admitted = true
+    gated:update(SourceTick.DT)
+    Assert.equal(gated.phase, "movie")
+    Assert.equal(gatedMovie.sounds, 1, "admission acknowledges the soundtrack once")
+    Assert.equal(gatedMovie.warmups, 1, "actual entry fires warmup once")
+    Assert.isFalse(gated:isAwaitingOpening())
+    gated:dispose()
   end, debug.traceback)
   restore()
   if not ok then
@@ -1901,7 +1973,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     appService = App.service,
     appImporter = App.importer,
     appWarmup = App._startupWarmup,
-    appPending = App._pendingImport,
     appProvisioner = App.provisioner,
   }
   local restoreTitle = stubTitleAssets()
@@ -2203,7 +2274,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
     App.service = nil
     App.importer = nil
     App._startupWarmup = nil
-    App._pendingImport = nil
     App.provisioner = nil
     App.update(SourceTick.DT)
     Assert.notNil(appState.audioError, "the active movie adopts the routed failure")
@@ -2231,7 +2301,6 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
   App.service = saved.appService
   App.importer = saved.appImporter
   App._startupWarmup = saved.appWarmup
-  App._pendingImport = saved.appPending
   App.provisioner = saved.appProvisioner
   if not ok then
     error(err, 0)

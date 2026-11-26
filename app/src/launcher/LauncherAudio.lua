@@ -28,31 +28,26 @@ local function silent()
   return setmetatable({ sources = {}, voices = {}, disposed = false, unavailable = true }, LauncherAudio)
 end
 
+local function releaseSources(self)
+  local sources = self.sources
+  self.sources = {}
+  for _, cue in ipairs(CUES) do
+    local source = sources[cue]
+    if source ~= nil then
+      if type(source.isPlaying) == "function" and source:isPlaying() then
+        source:stop()
+      end
+      source:release()
+    end
+  end
+end
+
 ---@return LauncherAudio
 function LauncherAudio.new()
   local canDecode = type(love.sound) == "table" and type(love.sound.newSoundData) == "function"
   local audio = love.audio
-  if type(audio) ~= "table" or type(audio.newSource) ~= "function" then
-    for _, cue in ipairs(CUES) do
-      local path = pathFor(cue)
-      local fileData = LauncherAssets.read(path)
-      if fileData == nil then
-        error("required launcher audio asset is missing: " .. path, 0)
-      end
-      local decodedOk, decoded = true, nil
-      if canDecode then
-        decodedOk, decoded = pcall(love.sound.newSoundData, fileData)
-      end
-      fileData:release()
-      if not decodedOk then
-        error("required launcher audio asset is invalid: " .. path .. ": " .. tostring(decoded), 0)
-      end
-      if decoded ~= nil then
-        decoded:release()
-      end
-    end
-    return silent()
-  end
+  local canPlay = type(audio) == "table" and type(audio.newSource) == "function"
+  local outputAvailable = canPlay
   local self = silent()
   for _, cue in ipairs(CUES) do
     local path = pathFor(cue)
@@ -65,27 +60,36 @@ function LauncherAudio.new()
       self:dispose()
       error("required launcher audio asset is missing: " .. path, 0)
     end
-    local decodedOk, decoded = true, nil
+    local decoded
     if canDecode then
-      decodedOk, decoded = pcall(love.sound.newSoundData, fileData)
+      local decodedOk, value = pcall(love.sound.newSoundData, fileData)
+      if not decodedOk then
+        fileData:release()
+        self:dispose()
+        error("required launcher audio asset is invalid: " .. path .. ": " .. tostring(value), 0)
+      end
+      decoded = value
     end
-    if not decodedOk then
-      fileData:release()
-      self:dispose()
-      error("required launcher audio asset is invalid: " .. path .. ": " .. tostring(decoded), 0)
+    if outputAvailable then
+      local sourceOk, source
+      if decoded ~= nil then
+        sourceOk, source = pcall(audio.newSource, decoded)
+      else
+        sourceOk, source = pcall(audio.newSource, fileData, "static")
+      end
+      if sourceOk then
+        self.sources[cue] = source
+      else
+        releaseSources(self)
+        outputAvailable = false
+      end
     end
+    fileData:release()
     if decoded ~= nil then
       decoded:release()
     end
-    local ok, source = pcall(audio.newSource, fileData, "static")
-    fileData:release()
-    if not ok then
-      self:dispose()
-      return silent()
-    end
-    self.sources[cue] = source
   end
-  self.unavailable = false
+  self.unavailable = not outputAvailable
   return self
 end
 
@@ -120,10 +124,15 @@ end
 
 ---@param seconds number
 function LauncherAudio:fadeBoot(seconds)
+  assert(type(seconds) == "number" and seconds >= 0, "boot fade duration must be non-negative")
   if self.disposed or self.unavailable then
     return
   end
-  assert(type(seconds) == "number" and seconds >= 0, "boot fade duration must be non-negative")
+  if seconds == 0 then
+    self.bootFade = nil
+    self:_stop("boot")
+    return
+  end
   local source = self.sources.boot
   if source == nil or not source:isPlaying() then
     return
@@ -154,13 +163,7 @@ function LauncherAudio:dispose()
   self.disposed = true
   self.bootFade = nil
   self.voices = {}
-  local sources = self.sources
-  self.sources = {}
-  for _, cue in ipairs(CUES) do
-    if sources[cue] ~= nil then
-      sources[cue]:release()
-    end
-  end
+  releaseSources(self)
 end
 
 return LauncherAudio

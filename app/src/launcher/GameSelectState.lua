@@ -1,62 +1,41 @@
--- Interactive app-owned game library and import state.
+-- Interactive app-owned cartridge selector and targeted import views.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BuildInfo = require("app.src.BuildInfo")
 local DisplayContext = require("libs.ui.src.DisplayContext")
-local Errors = require("libs.errors.src.Errors")
 local FocusGraph = require("libs.ui.src.FocusGraph")
 local LauncherLayout = require("app.src.launcher.LauncherLayout")
-local NativeDisplay = require("libs.ui.src.NativeDisplay")
-local PixelScale = require("libs.ui.src.PixelScale")
-local RomImporter = require("romdump.src.source.RomImporter")
+local LocalClock = require("game.src.LocalClock")
 
 local GameSelectState = {}
 GameSelectState.__index = GameSelectState
-
----@class GameSelectImportStatus
----@field state string
----@field canCancel boolean?
----@field progress number?
----@field error unknown?
----@field errorCode string?
----@field versionId string?
----@field displayName string?
----@field sourceName string?
 
 local function copyRect(rect)
   return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
 end
 
 local function renderLauncher(_, view, plan)
-  view.renderer:draw(view, plan)
+  local token = view.renderer:draw(view, plan)
+  if token ~= nil then
+    view.paintedReceiptToken = token
+  end
 end
 
 local function renderDualLauncher(_, view, plan)
-  view.renderer:drawDual(view, plan)
-end
-
-local function logicalSurface(bounds, ratio)
-  local physicalWidth, physicalHeight = bounds.width * ratio, bounds.height * ratio
-  local density = (physicalWidth < NativeDisplay.WIDTH or physicalHeight < NativeDisplay.HEIGHT) and 1
-    or math.max(1, math.min(3, math.floor(math.min(physicalWidth / 320, physicalHeight / 240))))
-  return PixelScale.cover(bounds, density, ratio)
+  local token = view.renderer:drawDual(view, plan)
+  if token ~= nil then
+    view.paintedReceiptToken = token
+  end
 end
 
 local function resolveLauncher(context, view)
-  local primary = assert(context.primary)
-  local usable = assert(primary.usableBounds)
-  local ratio = context.measurement.pixelRatio or 1
-  local covered = logicalSurface(usable, ratio)
-  local width, height = covered.logicalViewport.width, covered.logicalViewport.height
-  local layout = LauncherLayout.compute(view, width, height)
-  local backgrounds = { copyRect(usable) }
-  if context.secondary and context.secondary.usableBounds then
-    backgrounds[#backgrounds + 1] = copyRect(context.secondary.usableBounds)
-  end
+  local usable = assert(context.primary and context.primary.usableBounds, "selection needs its safe surface")
+  local surface = LauncherLayout.surface(usable, context.measurement.pixelRatio)
+  local layout = LauncherLayout.compute(view, surface.logicalViewport.width, surface.logicalViewport.height)
   return {
-    panes = { { id = "content", placement = covered.placement, interactive = true } },
+    panes = { { id = "content", placement = surface.placement, interactive = true } },
     frames = {},
-    content = { layout = layout, width = width, height = height, hostBackgrounds = backgrounds },
+    content = { layout = layout, width = surface.logicalViewport.width, height = surface.logicalViewport.height },
     inputKey = "game-select",
     render = renderLauncher,
     mapInput = view.mapInput,
@@ -64,30 +43,27 @@ local function resolveLauncher(context, view)
 end
 
 local function resolveDualLauncher(context, view)
-  local primary = assert(context.primary)
-  local secondary = assert(context.secondary)
-  local primaryBounds = assert(primary.usableBounds)
-  local secondaryBounds = assert(secondary.usableBounds)
-  local ratio = context.measurement.pixelRatio or 1
-  local primarySurface = logicalSurface(primaryBounds, ratio)
-  local secondarySurface = logicalSurface(secondaryBounds, ratio)
-  local summaryLayout =
-    LauncherLayout.compute(view, primarySurface.logicalViewport.width, primarySurface.logicalViewport.height)
+  local primary = assert(context.primary and context.primary.usableBounds)
+  local secondary = assert(context.secondary and context.secondary.usableBounds)
+  local ratio = context.measurement.pixelRatio
+  local statusSurface = LauncherLayout.surface(primary, ratio)
+  local contentSurface = LauncherLayout.surface(secondary, ratio)
+  local statusLayout =
+    LauncherLayout.compute(view, statusSurface.logicalViewport.width, statusSurface.logicalViewport.height)
   local layout =
-    LauncherLayout.compute(view, secondarySurface.logicalViewport.width, secondarySurface.logicalViewport.height)
+    LauncherLayout.compute(view, contentSurface.logicalViewport.width, contentSurface.logicalViewport.height)
   return {
     panes = {
-      { id = "summary", placement = primarySurface.placement, interactive = false },
-      { id = "content", placement = secondarySurface.placement, interactive = true },
+      { id = "status", placement = statusSurface.placement, interactive = false },
+      { id = "content", placement = contentSurface.placement, interactive = true },
     },
     frames = {},
     content = {
       layout = layout,
-      summaryLayout = summaryLayout,
-      summaryPaneId = "summary",
-      width = secondarySurface.logicalViewport.width,
-      height = secondarySurface.logicalViewport.height,
-      hostBackgrounds = { copyRect(primaryBounds), copyRect(secondaryBounds) },
+      statusLayout = statusLayout,
+      statusPaneId = "status",
+      width = contentSurface.logicalViewport.width,
+      height = contentSurface.logicalViewport.height,
     },
     inputKey = "game-select",
     render = renderDualLauncher,
@@ -104,260 +80,217 @@ local function defaults()
   }
 end
 
-local function sanitizeName(name)
-  if type(name) ~= "string" or name == "" then
+local function copyImport(view)
+  if view == nil then
     return nil
   end
-  local clean = name:gsub("[%c]", "?")
-  if #clean > 48 then
-    clean = clean:sub(1, 47) .. "…"
+  local copy = {}
+  for key, value in pairs(view) do
+    copy[key] = value
   end
-  return clean ~= "" and clean or nil
-end
-
-local function failureText(failure)
-  if Errors.is(failure) then
-    return failure.message or failure.code or "Game unavailable"
+  if type(view.error) == "table" and type(view.error.context) == "table" then
+    local context = {}
+    for key, value in pairs(view.error.context) do
+      context[key] = value
+    end
+    copy.error = { code = view.error.code, message = view.error.message, context = context }
   end
-  return tostring(failure or "Game unavailable")
+  return copy
 end
 
 function GameSelectState.new(options)
-  assert(type(options) == "table" and type(options.games) == "table", "game selection requires its catalog")
+  assert(type(options) == "table" and type(options.games) == "table", "game selection requires its edition catalog")
+  assert(#options.games == 2, "game selection publishes exactly two editions")
   assert(
     type(options.renderer) == "table" and type(options.audio) == "table",
     "game selection borrows process resources"
   )
   assert(
-    type(options.onPlay) == "function" and type(options.onPick) == "function",
-    "game selection requires product callbacks"
+    type(options.onAction) == "function" and type(options.getImportView) == "function",
+    "game selection requires semantic product callbacks"
   )
-  assert(
-    type(options.onCancelImport) == "function"
-      and type(options.onDismissError) == "function"
-      and type(options.onQuit) == "function"
-  )
-  local focusedId = options.initialGameId
-  local valid = false
-  for _, game in ipairs(options.games) do
-    if game.gameId == focusedId then
-      valid = true
-      break
-    end
+  local games = {}
+  for index, game in ipairs(options.games) do
+    assert(type(game.versionId) == "string" and game.versionId ~= "" and type(game.label) == "string")
+    assert(type(game.installed) == "boolean", "edition installation is a managed source fact")
+    games[index] = {
+      versionId = game.versionId,
+      label = game.label,
+      installed = game.installed,
+      iconSha1 = game.installed and game.iconSha1 or nil,
+    }
   end
+  local focusedId = options.initialGameId
+  local valid = games[1].versionId == focusedId or games[2].versionId == focusedId
   if not valid then
-    focusedId = options.games[1] and options.games[1].gameId or "add-game"
+    focusedId = games[1].installed and games[1].versionId
+      or games[2].installed and games[2].versionId
+      or games[1].versionId
   end
   local self = setmetatable({
-    games = options.games,
+    games = games,
     renderer = options.renderer,
     audio = options.audio,
-    importer = options.importer,
-    failure = options.failure,
-    pickerAvailable = options.pickerAvailable == true,
-    onPick = options.onPick,
-    onPlay = options.onPlay,
-    onCancelImport = options.onCancelImport,
-    onDismissError = options.onDismissError,
-    onQuit = options.onQuit,
+    onAction = options.onAction,
+    getImportView = options.getImportView,
+    clock = options.clock or LocalClock.system(),
     focusedId = focusedId,
-    selectedGameId = focusedId ~= "add-game" and focusedId or nil,
-    focusNode = focusedId ~= "add-game" and ("game:" .. focusedId) or "add-game",
-    scrollOffset = 0,
-    _revealFocused = true,
+    focusId = focusedId,
     width = options.width or love.graphics.getDimensions(),
-    height = options.height or love.graphics.getHeight(),
-    _received = nil,
-    _painted = nil,
-    _pickerPending = false,
-    _pickerFocusedId = nil,
+    height = options.height or select(2, love.graphics.getDimensions()),
+    safeRect = copyRect(options.safeRect or {
+      x = 0,
+      y = 0,
+      width = options.width or love.graphics.getWidth(),
+      height = options.height or love.graphics.getHeight(),
+    }),
+    pixelRatio = options.pixelRatio or 1,
+    _displayContext = options.displayContext,
     _gestures = {},
+    _geometry = 0,
+    _painted = nil,
+    _minuteKey = nil,
+    _dateText = "",
+    _timeText = "",
     _disposed = false,
-    _displayContext = options.displayContext or DisplayContext.new({}),
   }, GameSelectState)
   self.height = options.height or select(2, love.graphics.getDimensions())
   self._mapInput = function(event, view, plan)
     return self:_mapEvent(event, view, plan)
   end
   self._session = ApplicationPresentation.new(defaults())
+  self:_updateClock()
   self:_resolve()
   return self
 end
 
----@return GameSelectImportStatus?
-function GameSelectState:_status()
-  if self.importer == nil or type(self.importer.status) ~= "function" then
-    return nil
+function GameSelectState:_updateClock()
+  local now = self.clock:nowLocal()
+  local key = string.format("%04d-%02d-%02d-%02d-%02d", now.year, now.month, now.day, now.hour, now.minute)
+  if key == self._minuteKey then
+    return
   end
-  local status = assert(self.importer:status(), "the borrowed importer must expose its status")
-  assert(type(status) == "table", "the borrowed importer must return a status record")
-  return status --[[@as GameSelectImportStatus]]
-end
-
----@param status GameSelectImportStatus?
----@return boolean
-function GameSelectState:_busy(status)
-  return status ~= nil
-    and (
-      status.state == RomImporter.STATES.READING
-      or status.state == RomImporter.STATES.VERIFYING
-      or status.state == RomImporter.STATES.REGISTERING
-      or status.canCancel == true
-    )
-end
-
-function GameSelectState:_canCancel(status)
-  status = status or self:_status()
-  return self._pickerPending or (status ~= nil and status.canCancel == true)
+  self._minuteKey = key
+  self._dateText = string.format("%02d/%02d/%04d", now.day, now.month, now.year)
+  self._timeText = string.format("%02d:%02d", now.hour, now.minute)
 end
 
 function GameSelectState:_snapshot()
-  local status = self:_status()
-  local failure = self.failure
-  if failure == nil and status ~= nil and status.state == RomImporter.STATES.ERROR then
-    failure = status.error
+  local games = {}
+  for index, game in ipairs(self.games) do
+    games[index] = {
+      versionId = game.versionId,
+      label = game.label,
+      installed = game.installed,
+      iconSha1 = game.iconSha1,
+    }
   end
-  local statusText = nil
-  if self._pickerPending then
-    statusText = "Adding game…"
-  elseif self._received ~= nil then
-    statusText = "File received " .. self._received
-  elseif status ~= nil and self:_busy(status) then
-    statusText = status.state == RomImporter.STATES.READING and "Checking ROM" or "Verifying ROM"
-  elseif status ~= nil and status.state == RomImporter.STATES.COMPLETE then
-    statusText = "Import complete"
-  end
-  local focusNode = self.focusNode
-  if failure ~= nil and focusNode ~= "back" and focusNode ~= "pick" then
-    focusNode = "back"
-  end
+  local import = copyImport(self.getImportView())
+  local mode = import ~= nil and import.mode or "selection"
   return {
     kind = "game-select",
-    games = self.games,
-    focusedId = self._pickerPending and self._pickerFocusedId or self.selectedGameId or self.focusedId,
-    action = (
-      focusNode == "add-game"
-      or focusNode == "play"
-      or focusNode == "cancel"
-      or focusNode == "back"
-      or focusNode == "pick"
-    )
-        and focusNode
-      or nil,
-    scrollOffset = self.scrollOffset,
-    revealFocused = self._revealFocused,
-    status = statusText,
-    modal = failure ~= nil and { kind = "error" } or nil,
-    failure = failure,
-    failureText = failure ~= nil and failureText(failure) or nil,
+    games = games,
+    focusedId = mode == "selection" and self.focusedId
+      or (mode == "error" and import and import.expectedVersionId or nil),
+    action = mode ~= "selection" and self.focusId or nil,
+    mode = mode,
+    import = import,
+    receipt = import ~= nil and import.receipt or nil,
     version = BuildInfo.version,
+    dateText = self._dateText,
+    timeText = self._timeText,
+    fonts = self.renderer.fonts,
     renderer = self.renderer,
     mapInput = self._mapInput,
-    canCancel = self:_canCancel(status),
-    busy = status ~= nil and self:_busy(status) or false,
-    progress = status ~= nil and status.progress or nil,
-    pickerPending = self._pickerPending,
   }
+end
+
+function GameSelectState:_context()
+  if self._displayContext ~= nil then
+    return self._displayContext
+  end
+  local width, height, safeRect, ratio = self.width, self.height, self.safeRect, self.pixelRatio
+  return DisplayContext.new({
+    graphics = {
+      getDimensions = function()
+        return width, height
+      end,
+      getDPIScale = function()
+        return ratio
+      end,
+    },
+    topologyProvider = function()
+      return {
+        surfaces = {
+          {
+            id = "main",
+            role = "world",
+            rect = { x = 0, y = 0, width = width, height = height },
+            safeRect = safeRect,
+            touch = true,
+          },
+        },
+      }
+    end,
+  })
 end
 
 function GameSelectState:_resolve()
   local view = self:_snapshot()
-  local plan = self._session:resolve(self._displayContext:measure(self.width, self.height), view)
-  self.scrollOffset = plan.content.layout.scroll.offset
-  self._revealFocused = false
+  local plan = self._session:resolve(self:_context():measure(self.width, self.height), view)
+  view.layout = plan.content.layout
+  view.presentation = plan
   return view, plan
 end
 
 function GameSelectState:view()
-  local view, plan = self:_resolve()
-  view.layout = plan.content.layout
-  view.scroll = { offset = self.scrollOffset }
-  view.presentation = plan
+  local view = self:_resolve()
   return view
 end
 
-function GameSelectState:_nodeForGame(gameId)
-  return "game:" .. gameId
+function GameSelectState:_reconcile(view)
+  local graph = view.layout.graph
+  if next(graph.targets) == nil then
+    self.focusId = nil
+    return
+  end
+  local fallback = view.mode == "selection" and self.focusedId or nil
+  self.focusId = FocusGraph.reconcile(graph.graph, self.focusId, graph.fallbacks)
+  if view.mode == "selection" and graph.targets[self.focusId] ~= nil then
+    self.focusedId = self.focusId
+  elseif fallback ~= nil and graph.targets[fallback] ~= nil then
+    self.focusId = fallback
+  end
 end
 
 function GameSelectState:_move(direction)
-  self._revealFocused = true
   local view = self:view()
-  local graph = view.layout.graph
-  self.focusNode = FocusGraph.reconcile(graph.graph, self.focusNode, graph.fallbacks)
-  self.focusNode = FocusGraph.move(graph.graph, self.focusNode, direction)
-  local target = graph.targets[self.focusNode]
-  if target.kind == "game" and not self._pickerPending then
-    self.focusedId = target.gameId
-    self.selectedGameId = target.gameId
+  self:_reconcile(view)
+  if self.focusId == nil then
+    return
   end
-  if target.kind == "game" or view.modal ~= nil or self.focusNode == "cancel" then
+  local nextId = FocusGraph.move(view.layout.graph.graph, self.focusId, direction)
+  if nextId ~= self.focusId then
+    self.focusId = nextId
+    if view.mode == "selection" then
+      self.focusedId = nextId
+    end
     self.audio:play("focus")
   end
 end
 
-function GameSelectState:_game(gameId)
-  for _, game in ipairs(self.games) do
-    if game.gameId == gameId then
-      return game
-    end
-  end
-  return nil
-end
-
-function GameSelectState:_cancelImport()
-  if self:_canCancel() then
-    self.audio:play("back")
-    self.onCancelImport()
-  end
-end
-
-function GameSelectState:_activateNode(node, playFocused)
-  if self:_snapshot().modal ~= nil then
-    if node == "back" then
-      self:_dismissError()
-    elseif node == "pick" then
-      self.audio:play("confirm")
-      self.onPick()
-    end
+function GameSelectState:_activate(targetId)
+  local view = self:view()
+  local target = view.layout.graph.targets[targetId]
+  if target == nil then
     return
   end
-  if node == "cancel" then
-    self:_cancelImport()
-    return
+  self.focusId = targetId
+  if view.mode == "selection" then
+    self.focusedId = targetId
   end
-  if self._pickerPending then
-    return
-  end
-  if node == "add-game" then
-    if not self:_busy(self:_status()) and self.pickerAvailable then
-      self.audio:play("confirm")
-      self.onPick()
-    end
-  elseif node == "play" then
-    local game = self:_game(self.selectedGameId)
-    if game ~= nil and game.ready == true then
-      self.audio:play("confirm")
-      self.onPlay(game.versionId)
-    end
-  elseif node:sub(1, 5) == "game:" then
-    local gameId = node:sub(6)
-    local game = self:_game(gameId)
-    if game ~= nil then
-      self.focusedId, self.selectedGameId, self.focusNode = gameId, gameId, node
-      if playFocused and game.ready == true then
-        self.audio:play("confirm")
-        self.onPlay(game.versionId)
-      else
-        self.audio:play("focus")
-      end
-    end
-  end
-end
-
-function GameSelectState:_dismissError()
-  self.audio:play("back")
-  self.onDismissError(self.selectedGameId or self.focusedId)
+  self.audio:play("confirm")
+  self.onAction(targetId)
 end
 
 function GameSelectState:keypressed(key, _, isrepeat)
@@ -365,25 +298,20 @@ function GameSelectState:keypressed(key, _, isrepeat)
     return
   end
   local view = self:view()
-  if view.modal ~= nil then
-    if key == "escape" or key == "backspace" then
-      self:_dismissError()
-    elseif key == "return" or key == "kpenter" or key == "space" then
-      self.focusNode = assert(view.action, "the modal publishes a focused action")
-      self:_activateNode(self.focusNode)
-    end
-    return
-  end
+  self:_reconcile(view)
   if key == "up" or key == "down" or key == "left" or key == "right" then
     self:_move(key)
   elseif key == "return" or key == "kpenter" or key == "space" then
-    self:_activateNode(self.focusNode, true)
-  elseif key == "escape" then
-    if self:_canCancel() then
-      self:_cancelImport()
-    else
+    if self.focusId ~= nil then
+      self:_activate(self.focusId)
+    end
+  elseif key == "escape" or key == "backspace" then
+    if view.mode == "selection" then
       self.audio:play("back")
-      self.onQuit()
+      self.onAction("quit")
+    else
+      local targetId = view.layout.graph.targets.cancel ~= nil and "cancel" or "back"
+      self:_activate(targetId)
     end
   end
 end
@@ -403,55 +331,65 @@ function GameSelectState:gamepadpressed(_, button)
 end
 
 function GameSelectState:_mapEvent(event, view, plan)
-  local hit = LauncherLayout.hitTest(plan.content.layout, view, event.x, event.y)
-  local pointerId = event.pointerId
+  local pointerId = assert(type(event.pointerId) == "string", "pointer events have stable identities")
+  if event.type == "pointer_cancel" or event.outside then
+    self._gestures[pointerId] = nil
+    return event
+  end
   if event.type == "pointer_down" then
-    self._gestures[pointerId] = { hit = hit, x = event.x, y = event.y, dragging = false }
+    local targetId = LauncherLayout.hitTest(plan.content.layout, view, event.x, event.y)
+    self._gestures[pointerId] = targetId ~= nil
+        and {
+          targetId = targetId,
+          mode = view.mode,
+          attemptId = view.import and view.import.attemptId,
+          geometry = self._geometry,
+        }
+      or nil
+    if targetId ~= nil then
+      self.focusId = targetId
+      if view.mode == "selection" then
+        self.focusedId = targetId
+      end
+    end
   elseif event.type == "pointer_move" then
     local gesture = self._gestures[pointerId]
-    if gesture ~= nil and gesture.hit.kind == "game" and math.abs(event.y - gesture.y) > 6 then
-      gesture.dragging = true
-      self._revealFocused = false
-      self.scrollOffset = math.max(0, self.scrollOffset + (event.y - gesture.y))
-      gesture.y = event.y
+    if gesture ~= nil then
+      local targetId = LauncherLayout.hitTest(plan.content.layout, view, event.x, event.y)
+      if targetId ~= gesture.targetId then
+        gesture.armed = false
+      end
     end
   elseif event.type == "pointer_up" then
     local gesture = self._gestures[pointerId]
     self._gestures[pointerId] = nil
-    if gesture ~= nil and not gesture.dragging then
-      local current = LauncherLayout.hitTest(plan.content.layout, view, event.x, event.y)
-      if current.kind == gesture.hit.kind and current.gameId == gesture.hit.gameId then
-        event.activate = current
-      end
+    local currentImport = view.import
+    if
+      gesture ~= nil
+      and gesture.armed ~= false
+      and gesture.geometry == self._geometry
+      and gesture.mode == view.mode
+      and gesture.attemptId == (currentImport and currentImport.attemptId or nil)
+      and LauncherLayout.hitTest(plan.content.layout, view, event.x, event.y) == gesture.targetId
+      and view.layout.graph.targets[gesture.targetId] ~= nil
+    then
+      event.activate = gesture.targetId
     end
-  elseif event.type == "pointer_cancel" then
-    self._gestures[pointerId] = nil
   end
-  event.hit = hit
   return event
 end
 
 function GameSelectState:_dispatch(events)
-  self:_resolve()
-  local view = self:_snapshot()
-  local mapped = self._session:mapInput(events, view)
-  for _, event in ipairs(mapped) do
+  if self._disposed then
+    return
+  end
+  local view = self:_resolve()
+  self:_reconcile(view)
+  for _, event in ipairs(self._session:mapInput(events, view)) do
     if event.activate ~= nil and not self._disposed then
-      local hit = event.activate
-      if hit.kind == "game" then
-        self:_activateNode(self._nodeForGame(hit.gameId))
-      elseif hit.kind == "add-game" or hit.kind == "play" then
-        self:_activateNode(hit.kind)
-      elseif hit.kind == "cancel" then
-        self.focusNode = "cancel"
-        self:_activateNode("cancel")
-      elseif hit.kind == "back" then
-        self.focusNode = "back"
-        self:_dismissError()
-      elseif hit.kind == "pick" then
-        self.focusNode = "pick"
-        self:_activateNode("pick")
-      end
+      self:_activate(event.activate)
+      -- A mode-changing callback publishes a new graph for the next gesture.
+      return
     end
   end
 end
@@ -492,18 +430,14 @@ function GameSelectState:touchreleased(id, x, y)
   end
 end
 
-function GameSelectState:wheelmoved(_, y)
-  if not self._disposed and (self:view()).modal == nil then
-    self._revealFocused = false
-    self.scrollOffset = math.max(0, self.scrollOffset + y * 24)
-    self.audio:play("focus")
-  end
-end
-
-function GameSelectState:resize(width, height)
+function GameSelectState:resize(width, height, safeRect, pixelRatio)
+  assert(width > 0 and height > 0, "selection dimensions must be positive")
   self.width, self.height = width, height
-  self._revealFocused = true
+  self.safeRect = copyRect(safeRect or { x = 0, y = 0, width = width, height = height })
+  self.pixelRatio = pixelRatio or self.pixelRatio
+  self._geometry = self._geometry + 1
   self._gestures = {}
+  self._session:cancelPointers()
   self:_resolve()
 end
 
@@ -514,14 +448,9 @@ function GameSelectState:focus(focused)
   end
 end
 
-function GameSelectState:update() end
-
----@param pending boolean
-function GameSelectState:setPickerPending(pending)
-  assert(type(pending) == "boolean", "native picker pending state must be boolean")
+function GameSelectState:update(_)
   if not self._disposed then
-    self._pickerPending = pending
-    self._pickerFocusedId = pending and (self.selectedGameId or self.focusedId) or nil
+    self:_updateClock()
   end
 end
 
@@ -530,25 +459,23 @@ function GameSelectState:draw()
     return
   end
   local view, plan = self:_resolve()
+  self:_reconcile(view)
   self._painted = nil
   ApplicationPresentation.draw(love.graphics, { renderer = self.renderer }, view, plan)
-  if self._received ~= nil and view.status ~= nil then
-    self._painted = self._received
+  local token = view.paintedReceiptToken
+  if view.import ~= nil and token == view.import.attemptId and view.layout.receiptRect ~= nil then
+    self._painted = token
   end
-end
-
-function GameSelectState:markReceived(displayName)
-  local clean = sanitizeName(displayName)
-  if clean ~= nil then
-    self._received, self._painted = clean, nil
-  end
-end
-
-function GameSelectState:receivedName()
-  return self._received
 end
 
 function GameSelectState:paintedReceipt()
+  if self._disposed or self._painted == nil or self.getImportView == nil then
+    return nil
+  end
+  local import = self.getImportView()
+  if import == nil or import.attemptId ~= self._painted then
+    return nil
+  end
   return self._painted
 end
 
@@ -560,10 +487,7 @@ function GameSelectState:dispose()
   self._gestures = {}
   self._session:dispose()
   self._session = nil
-  self.renderer, self.audio, self.importer = nil, nil, nil
-  self._pickerPending = false
-  self._pickerFocusedId = nil
-  self.onPick, self.onPlay, self.onCancelImport, self.onDismissError, self.onQuit = nil, nil, nil, nil, nil
+  self.renderer, self.audio, self.onAction, self.getImportView = nil, nil, nil, nil
 end
 
 return GameSelectState

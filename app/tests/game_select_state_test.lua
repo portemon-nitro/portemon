@@ -1,6 +1,6 @@
--- Interactive library owner contracts. The state borrows process renderers and
--- the real importer status shape; only those host/collaborator boundaries are
--- scripted. Geometry and capture remain production-composed.
+-- Semantic cartridge selection over the real presentation/input session. Only
+-- process paint/audio boundaries are recorded; geometry, focus and gestures use
+-- the production launcher and shared UI mechanisms.
 
 local Assert = require("tests.support.Assert")
 local DisplayContext = require("libs.ui.src.DisplayContext")
@@ -8,371 +8,311 @@ local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 
 local T = {}
 
-local function games(count)
-  local result = {}
-  for index = 1, count do
-    local gameId = string.format("game-%02d", index)
-    result[#result + 1] = {
-      gameId = gameId,
-      versionId = gameId,
-      label = string.format("Game %02d", index),
-      ready = index ~= 3,
-      hasSave = index % 2 == 0,
-    }
-  end
-  return result
+local function editionGames(installed)
+  installed = installed or {}
+  return {
+    { versionId = "heartgold", label = "HeartGold", installed = installed.heartgold == true },
+    { versionId = "soulsilver", label = "SoulSilver", installed = installed.soulsilver == true },
+  }
 end
 
 local function renderer()
-  return {
-    draws = 0,
-    draw = function(self)
-      self.draws = self.draws + 1
-    end,
-    drawButton = function() end,
-    dispose = function() end,
-  }
+  local painter = { draws = 0, views = {} }
+  function painter:draw(view)
+    self.draws = self.draws + 1
+    self.views[#self.views + 1] = view
+    if view.receipt ~= nil then
+      return view.import and view.import.attemptId or view.attemptId
+    end
+  end
+  function painter:drawDual() end
+  function painter:drawButton() end
+  function painter:dispose() end
+  return painter
 end
 
 local function audio()
   return { play = function() end, fadeBoot = function() end, update = function() end, dispose = function() end }
 end
 
-local function importer(snapshot)
-  return {
-    status = function()
-      return snapshot
-    end,
-    isBusy = function()
-      return snapshot.state == "reading" or snapshot.state == "verifying" or snapshot.state == "registering"
-    end,
-  }
-end
-
-local function state(options)
-  local GameSelectState = require("app.src.launcher.GameSelectState")
-  options = options or {}
-  options.games = options.games or games(20)
-  options.initialGameId = options.initialGameId or "game-01"
-  options.pickerAvailable = true
-  options.renderer = options.renderer or renderer()
-  options.audio = options.audio or audio()
-  options.importer = options.importer or importer({ state = "idle", canCancel = false })
-  options.onPick = options.onPick or function() end
-  options.onPlay = options.onPlay or function() end
-  options.onCancelImport = options.onCancelImport or function() end
-  options.onDismissError = options.onDismissError or function() end
-  options.onQuit = options.onQuit or function() end
-  return GameSelectState.new(options)
-end
-
-local function hostPoint(view, logicalX, logicalY)
-  local placement = assert(view.presentation.panes[1].placement, "the library publishes its input placement")
-  return LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
-end
-
-function T.keyboard_and_gamepad_reach_rows_and_never_play_a_disabled_game()
-  local plays = {}
-  local library = state({
-    onPlay = function(gameId)
-      plays[#plays + 1] = gameId
-    end,
-  })
-  library:keypressed("down")
-  library:keypressed("down")
-  Assert.equal(library:view().focusedId, "game-03")
-  library:keypressed("return")
-  Assert.deepEqual(plays, {}, "a Needs ROM row cannot launch")
-  library:keypressed("up")
-  library:gamepadpressed({}, "a")
-  Assert.deepEqual(plays, { "game-02" }, "the enabled focused row launches through the normal action")
-  library:dispose()
-end
-
-function T.row_drag_scrolls_and_press_rotate_release_activates_nothing()
-  local plays = {}
-  local library = state({
-    onPlay = function(gameId)
-      plays[#plays + 1] = gameId
-    end,
-  })
-  library:resize(390, 844)
-  local view = library:view()
-  local row = assert(view.layout.list.rows["game-01"])
-  local x, y = hostPoint(view, row.x + row.width / 2, row.y + row.height / 2)
-  library:mousepressed(x, y, 1)
-  library:mousemoved(x, y + 12, 12, false)
-  library:mousereleased(x, y + 12, 1)
-  Assert.deepEqual(plays, {}, "a vertical drag cancels row activation")
-  Assert.isTrue(library:view().scroll.offset > 0, "the same gesture scrolls the list")
-
-  view = library:view()
-  local play = assert(view.layout.actions.play)
-  x, y = hostPoint(view, play.x + play.width / 2, play.y + play.height / 2)
-  library:mousepressed(x, y, 1)
-  library:resize(844, 390)
-  library:mousereleased(x, y, 1)
-  Assert.deepEqual(plays, {}, "rotation cancels a held action before release")
-  library:dispose()
-end
-
-function T.import_error_modal_has_precedence_and_dismissal_returns_the_focused_game()
-  local Errors = require("libs.errors.src.Errors")
-  local supplied = Errors.new("ROM_SOURCE_REQUIRED", "the managed source needs repair")
-  local dismissed = {}
-  local library = state({
-    initialGameId = "game-04",
-    failure = supplied,
-    importer = importer({ state = "error", errorCode = "IMPORT_NOT_NDS", error = "older importer failure" }),
-    onDismissError = function(focusedId)
-      dismissed[#dismissed + 1] = focusedId
-    end,
-  })
-  local view = library:view()
-  Assert.equal(view.failure, supplied, "an explicit source failure takes precedence over terminal importer status")
-  Assert.notNil(view.layout.modal, "the failure uses the one compact modal surface")
-  local row = assert(view.layout.list.rows["game-04"])
-  local x, y = hostPoint(view, row.x + row.width / 2, row.y + row.height / 2)
-  library:mousepressed(x, y, 1)
-  library:mousereleased(x, y, 1)
-  Assert.equal(view.focusedId, "game-04", "the backdrop cannot change selection through the modal")
-  library:keypressed("escape")
-  Assert.deepEqual(dismissed, { "game-04" }, "dismissal hands the current semantic focus back to App")
-  library:dispose()
-end
-
-function T.error_modal_keeps_back_and_pick_in_the_focus_graph()
-  local Errors = require("libs.errors.src.Errors")
-  local picks, dismissals = {}, {}
-  local library = state({
-    initialGameId = "game-02",
-    failure = Errors.new("ROM_SOURCE_REQUIRED", "the managed source needs repair"),
-    onPick = function()
-      picks[#picks + 1] = true
-    end,
-    onDismissError = function(focusedId)
-      dismissals[#dismissals + 1] = focusedId
-    end,
-  })
-  local initial = library:view()
-  Assert.equal(initial.action, "back", "the modal publishes its initial Back focus")
-  Assert.notNil(initial.layout.graph.targets.back, "Back is a semantic modal focus target")
-  Assert.notNil(initial.layout.graph.targets.pick, "Pick another is a semantic modal focus target")
-  library:gamepadpressed({}, "dpdown")
-  Assert.equal(library:view().action, "pick", "directional gamepad input reaches Pick another")
-  Assert.equal(library.selectedGameId, "game-02", "modal focus never changes the underlying selection")
-  library:gamepadpressed({}, "a")
-  Assert.deepEqual(picks, { true }, "A activates the focused Pick another action")
-
-  library:gamepadpressed({}, "dpdown")
-  Assert.equal(library:view().action, "back", "the modal can return focus to Back")
-  local modal = assert(library:view().layout.modal)
-  local x, y = hostPoint(library:view(), modal.pick.x + modal.pick.width / 2, modal.pick.y + modal.pick.height / 2)
-  library:touchpressed("finger", x, y)
-  library:touchreleased("finger", x, y)
-  Assert.deepEqual(picks, { true, true }, "touch activates the same focused Pick another geometry")
-  Assert.equal(library:view().action, "pick", "pointer activation publishes the modal focus")
-  library:gamepadpressed({}, "b")
-  Assert.deepEqual(dismissals, { "game-02" }, "B retains the modal's Back action")
-  library:dispose()
-end
-
-function T.dual_surfaces_keep_summary_noninteractive_and_actions_on_the_auxiliary_surface()
-  local width, height = 512, 192
-  local context = DisplayContext.new({
+local function displayContext(width, height, ratio, safeRect, dual)
+  safeRect = safeRect or { x = 0, y = 0, width = width, height = height }
+  return DisplayContext.new({
     graphics = {
       getDimensions = function()
         return width, height
       end,
       getDPIScale = function()
-        return 1
+        return ratio or 1
       end,
     },
     topologyProvider = function()
-      return {
+      local surfaces
+      if dual then
         surfaces = {
           {
             id = "main",
             role = "world",
             rect = { x = 0, y = 0, width = 256, height = 192 },
+            safeRect = safeRect,
             touch = true,
           },
           {
             id = "aux",
             role = "auxiliary",
             rect = { x = 256, y = 0, width = 256, height = 192 },
+            safeRect = { x = 256, y = 0, width = 256, height = 192 },
             touch = true,
           },
-        },
-      }
+        }
+      else
+        surfaces = {
+          {
+            id = "main",
+            role = "world",
+            rect = { x = 0, y = 0, width = width, height = height },
+            safeRect = safeRect,
+            touch = true,
+          },
+        }
+      end
+      return { surfaces = surfaces }
     end,
   })
-  local plays = {}
-  local library = state({
-    games = games(2),
+end
+
+local function state(options)
+  options = options or {}
+  options.games = options.games or editionGames({ heartgold = true })
+  options.renderer = options.renderer or renderer()
+  options.audio = options.audio or audio()
+  options.width = options.width or 320
+  options.height = options.height or 240
+  options.safeRect = options.safeRect or { x = 0, y = 0, width = options.width, height = options.height }
+  options.pixelRatio = options.pixelRatio or 1
+  options.displayContext = options.displayContext
+    or displayContext(options.width, options.height, options.pixelRatio, options.safeRect)
+  options.onAction = options.onAction or function() end
+  options.getImportView = options.getImportView or function()
+    return nil
+  end
+  return require("app.src.launcher.GameSelectState").new(options)
+end
+
+local function hostPoint(view, logicalX, logicalY)
+  local placement = assert(view.presentation.panes[1].placement, "selection publishes its input placement")
+  return LayoutGeometry.logicalToHost(placement, logicalX, logicalY)
+end
+
+local function targetPoint(view, targetId)
+  local target = assert(view.layout.graph.targets[targetId], "current graph exposes " .. targetId)
+  return hostPoint(view, target.rect.x + target.rect.width / 2, target.rect.y + target.rect.height / 2)
+end
+
+local function tap(selection, targetId)
+  local x, y = targetPoint(selection:view(), targetId)
+  selection:touchpressed("finger", x, y)
+  selection:touchreleased("finger", x, y)
+end
+
+function T.root_has_two_detached_direct_cartridge_actions_for_every_input_mode()
+  local actions = {}
+  local selection = state({
+    onAction = function(targetId)
+      actions[#actions + 1] = targetId
+    end,
+  })
+  local view = selection:view()
+  Assert.equal(#view.games, 2)
+  Assert.equal(view.games[1].versionId, "heartgold")
+  Assert.equal(view.games[2].versionId, "soulsilver")
+  Assert.equal(view.focusedId, "heartgold")
+  Assert.keySet(view.games[1], "installed,label,versionId", "root edition records carry only source facts")
+  Assert.keySet(view.games[2], "installed,label,versionId", "missing editions remain real records")
+  Assert.isTrue(view.layout.graph.targets.heartgold ~= nil)
+  Assert.isTrue(view.layout.graph.targets.soulsilver ~= nil)
+  Assert.isNil(view.layout.graph.targets["add-game"])
+  Assert.isNil(view.layout.graph.targets.play)
+
+  view.games[1].installed = false
+  Assert.isTrue(selection:view().games[1].installed, "painter mutation cannot alter the source snapshot")
+
+  tap(selection, "heartgold")
+  Assert.deepEqual(actions, { "heartgold" }, "one tap dispatches the installed cartridge directly")
+  selection:keypressed("down")
+  selection:keypressed("return")
+  selection:gamepadpressed({}, "a")
+  Assert.deepEqual(
+    actions,
+    { "heartgold", "soulsilver", "soulsilver" },
+    "keyboard and controller A share direct dispatch"
+  )
+  selection:dispose()
+end
+
+function T.outside_cancel_drag_and_reflow_never_activate_a_stale_target()
+  local actions = {}
+  local selection = state({
+    width = 320,
+    height = 240,
+    onAction = function(targetId)
+      actions[#actions + 1] = targetId
+    end,
+  })
+  selection:_dispatch({
+    { type = "pointer_down", pointerId = "outside", outside = true },
+    { type = "pointer_up", pointerId = "outside", x = 0, y = 0 },
+    { type = "pointer_cancel", pointerId = "never-held" },
+    { type = "pointer_up", pointerId = "never-held", x = 0, y = 0 },
+  })
+  Assert.deepEqual(actions, {}, "outside and coordinate-free cancellation are semantic misses")
+
+  local x, y = targetPoint(selection:view(), "heartgold")
+  selection:touchpressed("drag", x, y)
+  selection:touchmoved("drag", x, y + 80)
+  selection:touchreleased("drag", x, y + 80)
+  Assert.deepEqual(actions, {}, "leaving and re-entering a cartridge does not arm activation")
+
+  x, y = targetPoint(selection:view(), "soulsilver")
+  selection:touchpressed("cancel", x, y)
+  selection._session:cancelPointers()
+  selection:_dispatch({ { type = "pointer_cancel", pointerId = "touch:cancel" } })
+  selection:touchreleased("cancel", x, y)
+  Assert.deepEqual(actions, {}, "direct and session cancellation consume the held release")
+
+  x, y = targetPoint(selection:view(), "heartgold")
+  selection:touchpressed("resize", x, y)
+  selection:resize(844, 390, { x = 0, y = 0, width = 844, height = 390 }, 1)
+  selection:touchreleased("resize", x, y)
+  Assert.deepEqual(actions, {}, "geometry replacement invalidates the old capture before release")
+  selection:dispose()
+end
+
+function T.import_and_error_modes_use_one_action_graph_for_keyboard_controller_and_touch()
+  local actions = {}
+  local importView = nil
+  local selection = state({
+    onAction = function(targetId)
+      actions[#actions + 1] = targetId
+      if targetId == "soulsilver" then
+        importView = {
+          attemptId = "choose-attempt",
+          mode = "choose",
+          expectedVersionId = "soulsilver",
+          pickerAvailable = true,
+          canCancel = true,
+        }
+      end
+    end,
+    getImportView = function()
+      return importView
+    end,
+  })
+  tap(selection, "soulsilver")
+  Assert.equal(selection:view().mode, "choose")
+  Assert.equal(selection:view().focusedId, nil, "operation focus is not a root edition")
+  Assert.isNil(selection:view().layout.graph.targets.heartgold)
+  Assert.isNil(selection:view().layout.graph.targets.soulsilver)
+  Assert.notNil(selection:view().layout.graph.targets["choose-rom"])
+  Assert.notNil(selection:view().layout.graph.targets.back)
+
+  selection:keypressed("down")
+  selection:keypressed("return")
+  selection:gamepadpressed({}, "dpdown")
+  selection:gamepadpressed({}, "a")
+  tap(selection, "back")
+  Assert.deepEqual(
+    actions,
+    { "soulsilver", "choose-rom", "back", "back" },
+    "all input modes activate the same current operation targets"
+  )
+
+  importView = {
+    attemptId = "error-attempt",
+    mode = "error",
+    expectedVersionId = "soulsilver",
+    pickerAvailable = false,
+    canCancel = false,
+    error = "expected SoulSilver, detected HeartGold",
+  }
+  selection:update(0)
+  Assert.equal(selection:view().mode, "error")
+  Assert.isNil(selection:view().layout.graph.targets["choose-rom"], "an unavailable picker has no dead action")
+  Assert.notNil(selection:view().layout.graph.targets.retry)
+  Assert.notNil(selection:view().layout.graph.targets.back)
+  selection:keypressed("down")
+  selection:keypressed("return")
+  Assert.equal(actions[#actions], "retry", "keyboard reaches the actionable retry")
+  selection:gamepadpressed({}, "dpdown")
+  selection:gamepadpressed({}, "a")
+  Assert.equal(actions[#actions], "back", "controller B/Back follows the same graph")
+  selection:dispose()
+end
+
+function T.receipt_is_acknowledged_only_by_the_current_attempts_visible_draw()
+  local importView = {
+    attemptId = "first-attempt",
+    mode = "importing",
+    expectedVersionId = "soulsilver",
+    receipt = "private/HeartGold\\name.nds",
+    statusText = "Checking ROM",
+    canCancel = true,
+  }
+  local selection = state({
+    getImportView = function()
+      return importView
+    end,
+  })
+  Assert.isNil(selection:paintedReceipt(), "a latched receipt is not paint evidence")
+  selection:draw()
+  Assert.equal(selection:paintedReceipt(), "first-attempt", "the renderer returns the exact drawn attempt token")
+  selection:draw()
+  Assert.equal(selection:paintedReceipt(), "first-attempt", "repeated paint keeps one stable receipt")
+
+  importView = {
+    attemptId = "second-attempt",
+    mode = "receipt",
+    expectedVersionId = "soulsilver",
+    receipt = "SoulSilver.nds",
+    statusText = "Waiting for readers",
+    canCancel = true,
+  }
+  Assert.isNil(selection:paintedReceipt(), "replacing the attempt invalidates the old paint proof")
+  selection:dispose()
+end
+
+function T.dual_surfaces_put_status_on_primary_and_both_cartridges_on_the_auxiliary_surface()
+  local width, height = 512, 192
+  local safe = { x = 0, y = 0, width = 256, height = 192 }
+  local context = displayContext(width, height, 1, safe, true)
+  local actions = {}
+  local selection = state({
+    games = editionGames({}),
     displayContext = context,
     width = width,
     height = height,
-    onPlay = function(gameId)
-      plays[#plays + 1] = gameId
+    safeRect = safe,
+    onAction = function(targetId)
+      actions[#actions + 1] = targetId
     end,
   })
-  local view = library:view()
-  Assert.equal(#view.presentation.panes, 2, "physical dual surfaces resolve two panes")
-  Assert.isFalse(view.presentation.panes[1].interactive, "the primary summary pane is noninteractive")
-  Assert.isTrue(view.presentation.panes[2].interactive, "the auxiliary library pane owns input")
+  local view = selection:view()
+  Assert.equal(#view.presentation.panes, 2)
+  Assert.isFalse(view.presentation.panes[1].interactive, "the status surface is noninteractive")
+  Assert.isTrue(view.presentation.panes[2].interactive, "the auxiliary surface owns both cartridges")
+  Assert.notNil(view.layout.graph.targets.heartgold)
+  Assert.notNil(view.layout.graph.targets.soulsilver)
   local placement = view.presentation.panes[2].placement
-  local play = assert(view.layout.actions.play)
-  local x, y = LayoutGeometry.logicalToHost(placement, play.x + play.width / 2, play.y + play.height / 2)
-  library:touchpressed("finger", x, y)
-  library:touchreleased("finger", x, y)
-  Assert.deepEqual(plays, { "game-01" }, "auxiliary actions use the same resolved geometry as drawing")
-  library:dispose()
-end
-
-function T.cancellable_import_exposes_one_focusable_touch_cancel_action()
-  local cancels, quits = 0, 0
-  local library = state({
-    importer = importer({ state = "verifying", progress = 0.6, canCancel = true }),
-    onCancelImport = function()
-      cancels = cancels + 1
-    end,
-    onQuit = function()
-      quits = quits + 1
-    end,
-  })
-  library:markReceived("heartgold.nds")
-  local view = library:view()
-  local cancel = assert(view.layout.cancelRect, "cancellable import status resolves a Cancel target")
-  Assert.equal(cancel.height, 44, "Cancel keeps the ordinary touch target height")
-  Assert.isTrue(
-    view.layout.list.viewport.y >= view.layout.statusRect.y + view.layout.statusRect.height,
-    "the Cancel row reserves its space before the scrollable list"
+  local target = view.layout.graph.targets.soulsilver
+  local x, y = LayoutGeometry.logicalToHost(
+    placement,
+    target.rect.x + target.rect.width / 2,
+    target.rect.y + target.rect.height / 2
   )
-  Assert.notNil(view.layout.graph.targets.cancel, "Cancel belongs to the semantic focus graph")
-  Assert.equal(view.action, nil, "opening import status does not steal game focus")
-  library:keypressed("up")
-  Assert.equal(library:view().action, "cancel", "keyboard focus reaches the Cancel action")
-  library:gamepadpressed({}, "a")
-  Assert.equal(cancels, 1, "gamepad activation uses the existing import cancellation callback")
-
-  view = library:view()
-  cancel = assert(view.layout.cancelRect)
-  local x, y = hostPoint(view, cancel.x + cancel.width / 2, cancel.y + cancel.height / 2)
-  library:touchpressed("finger", x, y)
-  library:touchreleased("finger", x, y)
-  Assert.equal(cancels, 2, "touch release inside Cancel uses the same callback")
-  library:touchpressed("drag", x, y)
-  library:touchmoved("drag", x, y - 60)
-  library:touchreleased("drag", x, y - 60)
-  Assert.equal(cancels, 2, "press-drag-away does not cancel")
-  Assert.equal(quits, 0, "Cancel never falls through to ordinary quit")
-  library:dispose()
-end
-
-function T.receipt_and_busy_import_keep_one_progress_session()
-  local picks, cancels = 0, 0
-  local running = importer({ state = "verifying", progress = 0.6, canCancel = true })
-  local library = state({
-    importer = running,
-    onPick = function()
-      picks = picks + 1
-    end,
-    onCancelImport = function()
-      cancels = cancels + 1
-    end,
-  })
-  library:markReceived("soulsilver.nds")
-  Assert.equal(library:receivedName(), "soulsilver.nds")
-  Assert.isNil(library:paintedReceipt(), "latching a receipt is not proof that it was drawn")
-  library:draw()
-  Assert.equal(library:paintedReceipt(), "soulsilver.nds", "the first draw acknowledges the file before work")
-  library:keypressed("return")
-  Assert.equal(picks, 0, "a busy importer cannot open a second picker")
-  library:keypressed("return")
-  Assert.equal(picks, 0, "a repeated activation cannot replace the running session")
-  Assert.equal(library:receivedName(), "soulsilver.nds", "a duplicate does not reset the first receipt")
-  library:keypressed("escape")
-  Assert.equal(cancels, 1, "cancellable status owns the single cancel action")
-  library:dispose()
-end
-
-function T.native_pending_reuses_one_cancellable_strip_and_disables_both_actions()
-  local picks, plays, cancels = 0, 0, 0
-  local library = state({
-    onPick = function()
-      picks = picks + 1
-    end,
-    onPlay = function()
-      plays = plays + 1
-    end,
-    onCancelImport = function()
-      cancels = cancels + 1
-    end,
-  })
-  library.scrollOffset = 24
-  library._revealFocused = false
-  local before = library:view()
-  Assert.equal(
-    type(library.setPickerPending),
-    "function",
-    "native picking needs a borrowed-operation presentation flag"
-  )
-  library:setPickerPending(true)
-  local pending = library:view()
-  Assert.equal(pending.status, "Adding game…", "the existing compact strip owns the native copy interval")
-  Assert.equal(pending.focusedId, before.focusedId, "pending native work preserves game focus")
-  Assert.equal(pending.scrollOffset, before.scrollOffset, "pending native work preserves scroll")
-  Assert.equal(pending.canCancel, true, "the existing cancel action abandons the App request")
-  Assert.notNil(pending.layout.statusRect, "native pending has no second loading surface")
-  Assert.notNil(pending.layout.cancelRect, "native copy exposes the same touch Cancel target")
-  Assert.isNil(pending.progress, "native copying cannot invent importer progress")
-
-  for _ = 1, 20 do
-    library:keypressed("down")
-  end
-  Assert.equal(library.focusNode, "add-game")
-  library:keypressed("return")
-  library:keypressed("left")
-  library:keypressed("return")
-  Assert.deepEqual({ picks, plays }, { 0, 0 }, "focus activation cannot Add or Play during native pending")
-
-  local add = assert(pending.layout.actions.addGame)
-  local play = assert(pending.layout.actions.play)
-  local function tap(rect)
-    local x, y = hostPoint(library:view(), rect.x + rect.width / 2, rect.y + rect.height / 2)
-    library:touchpressed("finger", x, y)
-    library:touchreleased("finger", x, y)
-  end
-  tap(add)
-  tap(play)
-  Assert.deepEqual({ picks, plays }, { 0, 0 }, "button hits cannot Add or Play during native pending")
-
-  library:keypressed("up")
-  Assert.equal(library:view().action, "cancel", "native pending focus can leave the disabled footer for Cancel")
-  library:gamepadpressed({}, "a")
-  Assert.equal(cancels, 1, "gamepad can cancel the native copy")
-  local pendingView = library:view()
-  local cancel = assert(pendingView.layout.cancelRect)
-  local cancelX, cancelY = hostPoint(pendingView, cancel.x + cancel.width / 2, cancel.y + cancel.height / 2)
-  library:touchpressed("finger", cancelX, cancelY)
-  library:touchreleased("finger", cancelX, cancelY)
-  Assert.equal(cancels, 2, "touch can cancel the native copy")
-
-  library:keypressed("escape")
-  Assert.equal(cancels, 3, "cancel uses the existing import callback")
-  library:setPickerPending(false)
-  local restored = library:view()
-  Assert.isNil(restored.status, "clearing native pending restores the ordinary library")
-  Assert.equal(restored.canCancel, false)
-  Assert.equal(restored.focusedId, before.focusedId, "cancellation preserves the focused game")
-  library:keypressed("up")
-  for _ = 1, 20 do
-    library:keypressed("down")
-  end
-  library:keypressed("return")
-  Assert.equal(picks, 1, "Add is usable again after the borrowed operation clears")
-  library:dispose()
+  selection:touchpressed("finger", x, y)
+  selection:touchreleased("finger", x, y)
+  Assert.deepEqual(actions, { "soulsilver" }, "auxiliary input uses the same resolved action geometry")
+  selection:dispose()
 end
 
 return { tests = T }

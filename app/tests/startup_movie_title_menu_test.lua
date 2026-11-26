@@ -137,6 +137,17 @@ local function withStartup(fn)
     drawableWidth = App.drawableWidth,
     drawableHeight = App.drawableHeight,
     pixelRatio = App.pixelRatio,
+    safeRect = App._safeRect,
+    bootSwallowed = App._bootSwallowedInputs,
+    realTouches = App._realTouches,
+    foreground = App._foreground,
+    importAttempt = App._importAttempt,
+    bootIntro = App._bootIntro,
+    displayContext = App._displayContext,
+    iconRepairAttempted = App._iconRepairAttempted,
+    touchSuspended = App._touchGamepadSuspended,
+    forceDisplayPublication = App._forceDisplayPublication,
+    managedPath = require("romdump.src.source.RomArchive").recoverablePath,
     loadingNew = LauncherLoadingPresentation.new,
     menuNew = MainMenuComposition.new,
     graphicsDimensions = love.graphics.getDimensions,
@@ -283,6 +294,25 @@ local function withStartup(fn)
   App.startupAudioError = nil
   App.opts = { dev = false }
   App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
+  App._safeRect = { x = 0, y = 0, width = 800, height = 600 }
+  App._bootSwallowedInputs = {}
+  App._realTouches = {}
+  App._foreground = true
+  App._importAttempt = nil
+  App._bootIntro = nil
+  App._displayContext = nil
+  App._iconRepairAttempted = {}
+  App._touchGamepadSuspended = false
+  App._forceDisplayPublication = false
+  require("romdump.src.source.RomArchive").recoverablePath = function(sha1)
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil and info.sha1 == sha1 then
+        return "managed/" .. sha1 .. ".zip"
+      end
+    end
+    return nil
+  end
   movieModule.new = fakeMovie
   StartupAssetCache.loadOpeningScene = function(_, sceneNumber, versionId)
     if active.sceneReady[sceneNumber] == true then
@@ -468,6 +498,16 @@ local function withStartup(fn)
   App.drawableWidth = saved.drawableWidth
   App.drawableHeight = saved.drawableHeight
   App.pixelRatio = saved.pixelRatio
+  App._safeRect = saved.safeRect
+  App._bootSwallowedInputs = saved.bootSwallowed
+  App._realTouches = saved.realTouches
+  App._foreground = saved.foreground
+  App._importAttempt = saved.importAttempt
+  App._bootIntro = saved.bootIntro
+  App._displayContext = saved.displayContext
+  App._iconRepairAttempted = saved.iconRepairAttempted
+  App._touchGamepadSuspended = saved.touchSuspended
+  App._forceDisplayPublication = saved.forceDisplayPublication
   LauncherLoadingPresentation.new = saved.loadingNew
   MainMenuComposition.new = saved.menuNew
   love.graphics.getDimensions = saved.graphicsDimensions
@@ -475,6 +515,7 @@ local function withStartup(fn)
   love.graphics.setColor = saved.graphicsSetColor
   love.graphics.rectangle = saved.graphicsRectangle
   require("romdump.src.source.RomImporter").isReady = saved.romIsReady
+  require("romdump.src.source.RomArchive").recoverablePath = saved.managedPath
   titleSceneModule.new = saved.titleSceneNew
   titleSceneModule.begin = saved.titleSceneBegin
   movieModule.new = saved.movieNew

@@ -1,9 +1,8 @@
--- Neutral pre-movie loading adapter borrowing the process launcher renderer.
+-- Neutral pre-movie loading or one real import/quiescence operation.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local LauncherLayout = require("app.src.launcher.LauncherLayout")
-local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 local LauncherLoadingPresentation = {}
 LauncherLoadingPresentation.__index = LauncherLoadingPresentation
@@ -12,126 +11,88 @@ local function copyRect(rect)
   return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
 end
 
-local function colorBackground(graphics, viewport)
-  graphics.setColor(0.984, 0.984, 0.984, 1)
-  graphics.rectangle("fill", viewport.x, viewport.y, viewport.width, viewport.height)
-end
-
-local function paintLoading(renderer, view, layout)
-  local graphics = love.graphics
-  colorBackground(graphics, layout.viewport)
-  LogicalSurface.clip(graphics, layout.content, function()
-    local content = layout.content
-    local titleY = content.y + math.max(0, math.floor((content.height - 96) / 2))
-    local font = renderer.fonts.bold
-    graphics.setFont(font)
-    graphics.setColor(0.157, 0.157, 0.157, 1)
-    graphics.print(view.gameLabel, content.x + (content.width - font:getWidth(view.gameLabel)) / 2, titleY)
-    graphics.setFont(renderer.fonts.body)
-    font = graphics.getFont()
-    graphics.print(view.label, content.x + (content.width - font:getWidth(view.label)) / 2, titleY + 24)
-    renderer:drawLoadingSquares(content.x + (content.width - 50) / 2, titleY + 54, view.elapsed)
-    if view.receipt ~= nil then
-      graphics.print(view.receipt, content.x + (content.width - font:getWidth(view.receipt)) / 2, titleY + 78)
-    end
-    if view.error ~= nil then
-      graphics.printf(tostring(view.error), content.x + 8, titleY + 96, math.max(1, content.width - 16), "center")
-    end
-  end)
-  renderer:drawButton(layout.cancelRect, "Cancel", "back", { focused = true })
-end
-
-local function renderLoading(resources, view, plan)
-  local renderer = assert(resources.renderer, "neutral loading borrows its renderer")
-  LogicalSurface.draw(love.graphics, assert(plan.panes[1].placement), function()
-    paintLoading(renderer, view, assert(plan.content.layout))
-  end)
+local function renderLoading(_, view, plan)
+  view.paintedReceiptToken = view.renderer:drawLoading(view, assert(plan.content.layout))
 end
 
 local function resolveLoading(context, view)
-  local usable = assert(context.primary and context.primary.usableBounds, "neutral loading needs its safe surface")
+  local usable = assert(context.primary and context.primary.usableBounds, "loading needs its safe surface")
+  local surface = LauncherLayout.surface(usable, context.measurement.pixelRatio)
+  local options = {
+    selectionInterrupt = view.selectionInterrupt,
+    receipt = view.receipt,
+    canCancel = view.canCancel,
+    error = view.error,
+    fonts = view.renderer.fonts,
+  }
   return {
-    panes = {
-      {
-        id = "content",
-        placement = {
-          frame = usable,
-          origin = { x = usable.x, y = usable.y },
-          scale = 1,
-          logicalWidth = usable.width,
-          logicalHeight = usable.height,
-          clipRect = usable,
-        },
-        interactive = true,
-      },
-    },
+    panes = { { id = "content", placement = surface.placement, interactive = true } },
     frames = {},
-    content = { layout = LauncherLayout.loading(usable.width, usable.height) },
-    inputKey = "launcher-loading",
+    content = {
+      layout = LauncherLayout.loading(surface.logicalViewport.width, surface.logicalViewport.height, options),
+    },
+    inputKey = view.selectionInterrupt and "launcher-opening" or "launcher-operation",
     render = renderLoading,
     mapInput = view.mapInput,
   }
 end
 
 local function defaults()
-  return {
-    dualDisplay = resolveLoading,
-    nativeLike = resolveLoading,
-    wide = resolveLoading,
-    tall = resolveLoading,
-  }
-end
-
-local function displayContext(width, height, safeRect)
-  return DisplayContext.new({
-    graphics = {
-      getDimensions = function()
-        return width, height
-      end,
-      getDPIScale = function()
-        return 1
-      end,
-    },
-    topologyProvider = function()
-      return {
-        surfaces = {
-          {
-            id = "main",
-            role = "world",
-            rect = { x = 0, y = 0, width = width, height = height },
-            safeRect = safeRect,
-            touch = true,
-          },
-        },
-      }
-    end,
-  })
+  return { dualDisplay = resolveLoading, nativeLike = resolveLoading, wide = resolveLoading, tall = resolveLoading }
 end
 
 function LauncherLoadingPresentation.new(options)
-  assert(type(options) == "table" and options.renderer, "neutral loading requires its borrowed renderer")
-  assert(type(options.label) == "string" and options.label ~= "", "neutral loading requires a game label")
-  assert(type(options.onCancel) == "function", "neutral loading requires its cancellation route")
-  assert(type(options.width) == "number" and options.width > 0, "neutral loading requires its host width")
-  assert(type(options.height) == "number" and options.height > 0, "neutral loading requires its host height")
+  assert(type(options) == "table" and options.renderer, "loading requires its borrowed renderer")
+  assert(type(options.label) == "string" and options.label ~= "", "loading requires a game label")
+  assert(type(options.onCancel) == "function", "loading requires its cancellation route")
   assert(
-    type(options.renderer.drawButton) == "function" and type(options.renderer.drawLoadingSquares) == "function",
-    "neutral loading requires the shared launcher painter"
+    type(options.width) == "number" and options.width > 0 and type(options.height) == "number" and options.height > 0
   )
-  local safeRect = copyRect(options.safeRect or { x = 0, y = 0, width = options.width, height = options.height })
+  local width, height = options.width, options.height
+  local safeRect = copyRect(options.safeRect or { x = 0, y = 0, width = width, height = height })
+  local ratio = options.pixelRatio or 1
   local self = setmetatable({
     renderer = options.renderer,
     onCancel = options.onCancel,
     versionId = options.versionId,
     label = options.label,
-    width = options.width,
-    height = options.height,
+    gameLabel = options.gameLabel or options.versionId or "Game",
+    selectionInterrupt = options.selectionInterrupt == true,
+    receipt = options.receipt,
+    attemptId = options.attemptId,
+    canCancel = options.canCancel == true,
+    width = width,
+    height = height,
     safeRect = safeRect,
+    pixelRatio = ratio,
     elapsed = 0,
     disposed = false,
     cancelled = false,
     _gestures = {},
-    _displayContext = displayContext(options.width, options.height, safeRect),
+    _geometry = 0,
+    _displayContext = options.displayContext or DisplayContext.new({
+      graphics = {
+        getDimensions = function()
+          return width, height
+        end,
+        getDPIScale = function()
+          return ratio
+        end,
+      },
+      topologyProvider = function()
+        return {
+          surfaces = {
+            {
+              id = "main",
+              role = "world",
+              rect = { x = 0, y = 0, width = width, height = height },
+              safeRect = safeRect,
+              touch = true,
+            },
+          },
+        }
+      end,
+    }),
     _session = ApplicationPresentation.new(defaults()),
   }, LauncherLoadingPresentation)
   self._mapInput = function(event, view, plan)
@@ -143,17 +104,19 @@ end
 
 function LauncherLoadingPresentation:_resolve(status)
   local view = {
-    gameLabel = self.label,
-    label = status and status.label or "Starting game",
-    receipt = status and status.receipt or nil,
+    gameLabel = self.gameLabel,
+    label = status and status.label or self.label,
+    receipt = status and status.receipt or self.receipt,
+    attemptId = self.attemptId,
     error = status and status.error or nil,
+    detail = status and status.detail or nil,
+    selectionInterrupt = self.selectionInterrupt,
+    canCancel = self.canCancel,
     elapsed = self.elapsed,
-    action = "cancel",
     renderer = self.renderer,
     mapInput = self._mapInput,
   }
-  local plan = self._session:resolve(self._displayContext:measure(self.width, self.height), view)
-  return view, plan
+  return view, self._session:resolve(self._displayContext:measure(self.width, self.height), view)
 end
 
 function LauncherLoadingPresentation:update(dt)
@@ -168,10 +131,15 @@ function LauncherLoadingPresentation:draw(status)
   end
   local view, plan = self:_resolve(status)
   ApplicationPresentation.draw(love.graphics, { renderer = self.renderer }, view, plan)
+  self.paintedReceiptToken = view.paintedReceiptToken
+end
+
+function LauncherLoadingPresentation:paintedReceipt()
+  return self.paintedReceiptToken
 end
 
 function LauncherLoadingPresentation:_cancel()
-  if self.disposed or self.cancelled then
+  if self.disposed or self.cancelled or self.selectionInterrupt or not self.canCancel then
     return
   end
   self.cancelled = true
@@ -179,99 +147,127 @@ function LauncherLoadingPresentation:_cancel()
 end
 
 function LauncherLoadingPresentation:_mapEvent(event, _, plan)
-  local hit = LauncherLayout.hitTestLoading(plan.content.layout, event.x, event.y)
-  local pointerId = event.pointerId
+  local pointerId = assert(type(event.pointerId) == "string")
+  if event.type == "pointer_cancel" or event.outside or self.selectionInterrupt then
+    self._gestures[pointerId] = nil
+    return event
+  end
   if event.type == "pointer_down" then
-    self._gestures[pointerId] = { kind = hit.kind }
+    local targetId = LauncherLayout.hitTestLoading(plan.content.layout, event.x, event.y)
+    self._gestures[pointerId] = targetId ~= nil and { targetId = targetId, geometry = self._geometry } or nil
+  elseif event.type == "pointer_move" then
+    local gesture = self._gestures[pointerId]
+    if gesture ~= nil and LauncherLayout.hitTestLoading(plan.content.layout, event.x, event.y) ~= gesture.targetId then
+      gesture.armed = false
+    end
   elseif event.type == "pointer_up" then
     local gesture = self._gestures[pointerId]
     self._gestures[pointerId] = nil
-    if gesture ~= nil and gesture.kind == "cancel" and hit.kind == "cancel" then
-      event.activate = hit
+    if
+      gesture ~= nil
+      and gesture.armed ~= false
+      and gesture.geometry == self._geometry
+      and LauncherLayout.hitTestLoading(plan.content.layout, event.x, event.y) == gesture.targetId
+    then
+      event.activate = gesture.targetId
     end
-  elseif event.type == "pointer_cancel" then
-    self._gestures[pointerId] = nil
   end
   return event
 end
 
 function LauncherLoadingPresentation:_dispatch(events)
-  if self.disposed then
+  if self.disposed or self.selectionInterrupt then
     return
   end
   local view, _ = self:_resolve()
   for _, event in ipairs(self._session:mapInput(events, view)) do
-    if event.activate ~= nil and event.activate.kind == "cancel" then
+    if event.activate == "cancel" then
       self:_cancel()
     end
   end
 end
 
 function LauncherLoadingPresentation:keypressed(key, _, isrepeat)
-  if self.disposed or isrepeat then
-    return
-  end
-  if key == "escape" or key == "backspace" or key == "return" or key == "kpenter" or key == "space" then
+  if not isrepeat and (key == "escape" or key == "backspace") then
     self:_cancel()
   end
 end
 
 function LauncherLoadingPresentation:gamepadpressed(_, button)
-  if not self.disposed and (button == "a" or button == "b") then
+  if button == "b" then
     self:_cancel()
   end
 end
 
 function LauncherLoadingPresentation:mousepressed(x, y, button, istouch)
-  if not self.disposed and button == 1 and not istouch then
+  if button == 1 and not istouch then
     self:_dispatch({ { type = "pointer_down", pointerId = "mouse:1", x = x, y = y } })
   end
 end
 
 function LauncherLoadingPresentation:mousemoved(x, y, _, _, istouch)
-  if not self.disposed and not istouch then
+  if not istouch then
     self:_dispatch({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
   end
 end
 
 function LauncherLoadingPresentation:mousereleased(x, y, button, istouch)
-  if not self.disposed and button == 1 and not istouch then
+  if button == 1 and not istouch then
     self:_dispatch({ { type = "pointer_up", pointerId = "mouse:1", x = x, y = y } })
   end
 end
 
 function LauncherLoadingPresentation:touchpressed(id, x, y)
-  if not self.disposed then
-    self:_dispatch({ { type = "pointer_down", pointerId = "touch:" .. tostring(id), x = x, y = y } })
-  end
+  self:_dispatch({ { type = "pointer_down", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
 
 function LauncherLoadingPresentation:touchmoved(id, x, y)
-  if not self.disposed then
-    self:_dispatch({ { type = "pointer_move", pointerId = "touch:" .. tostring(id), x = x, y = y } })
-  end
+  self:_dispatch({ { type = "pointer_move", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
 
 function LauncherLoadingPresentation:touchreleased(id, x, y)
-  if not self.disposed then
-    self:_dispatch({ { type = "pointer_up", pointerId = "touch:" .. tostring(id), x = x, y = y } })
-  end
+  self:_dispatch({ { type = "pointer_up", pointerId = "touch:" .. tostring(id), x = x, y = y } })
 end
 
 function LauncherLoadingPresentation:focus(focused)
-  if not focused and not self.disposed then
+  if not focused then
     self._gestures = {}
     self._session:cancelPointers()
   end
 end
 
-function LauncherLoadingPresentation:resize(width, height, safeRect)
-  assert(width > 0 and height > 0, "neutral loading dimensions must be positive")
+function LauncherLoadingPresentation:resize(width, height, safeRect, pixelRatio)
+  assert(width > 0 and height > 0, "loading dimensions must be positive")
   self.width, self.height = width, height
   self.safeRect = copyRect(safeRect or { x = 0, y = 0, width = width, height = height })
+  self.pixelRatio = pixelRatio or self.pixelRatio
+  self._geometry = self._geometry + 1
   self._gestures = {}
   self._session:cancelPointers()
-  self._displayContext = displayContext(width, height, self.safeRect)
+  local ratio = self.pixelRatio
+  self._displayContext = DisplayContext.new({
+    graphics = {
+      getDimensions = function()
+        return width, height
+      end,
+      getDPIScale = function()
+        return ratio
+      end,
+    },
+    topologyProvider = function()
+      return {
+        surfaces = {
+          {
+            id = "main",
+            role = "world",
+            rect = { x = 0, y = 0, width = width, height = height },
+            safeRect = self.safeRect,
+            touch = true,
+          },
+        },
+      }
+    end,
+  })
   self:_resolve()
 end
 
@@ -283,8 +279,7 @@ function LauncherLoadingPresentation:dispose()
   self._gestures = {}
   self._session:dispose()
   self._session = nil
-  self.renderer = nil
-  self.onCancel = nil
+  self.renderer, self.onCancel = nil, nil
 end
 
 return LauncherLoadingPresentation

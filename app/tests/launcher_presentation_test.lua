@@ -6,6 +6,10 @@ local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
 local FakeCache = require("tests.support.FakeCache")
 local PublishedSaveFixture = require("tests.support.PublishedSaveFixture")
+local ManagedRomIconFixture = require("tests.support.ManagedRomIconFixture")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local RomArchive = require("romdump.src.source.RomArchive")
+local GameVersion = require("romdump.src.source.GameVersion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local RomImporter = require("romdump.src.source.RomImporter")
 local CacheArchive = require("romdump.src.build.CacheArchive")
@@ -26,7 +30,7 @@ local function fakeFont()
     for word in tostring(text):gmatch("%S+") do
       words[#words + 1] = word
     end
-    return words
+    return #tostring(text) * 6, { tostring(text) }
   end
   function font:release()
     self.released = self.released + 1
@@ -37,13 +41,13 @@ end
 local function fakeImage()
   local image = { released = 0 }
   function image:getWidth()
-    return 16
+    return 32
   end
   function image:getHeight()
-    return 16
+    return 32
   end
   function image:getDimensions()
-    return 16, 16
+    return 32, 32
   end
   function image:setFilter() end
   function image:release()
@@ -52,13 +56,22 @@ local function fakeImage()
   return image
 end
 
-local function fakeSource()
-  local source = { released = 0, volume = 1 }
-  function source:play() end
-  function source:pause() end
-  function source:stop() end
+local function fakeSource(onStop)
+  local source = { released = 0, volume = 1, playing = false }
+  function source:play()
+    self.playing = true
+  end
+  function source:pause()
+    self.playing = false
+  end
+  function source:stop()
+    self.playing = false
+    if onStop ~= nil then
+      onStop(self)
+    end
+  end
   function source:isPlaying()
-    return false
+    return self.playing
   end
   function source:getDuration()
     return 0.1
@@ -82,7 +95,11 @@ local function withLauncherHost(options, fn)
   local backend = options.backend or FakeCache.new()
   local copy = {}
   local pickerOpens = 0
+  local pickerPolls = 0
+  local pickerResult = options.pickerResult or { kind = "cancel" }
+  local pickerPollResult = nil
   local audioSources = {}
+  local audioEvents = {}
   local fonts = {}
   local images = {}
   local imageDatas = {}
@@ -97,8 +114,24 @@ local function withLauncherHost(options, fn)
     return transform.x + x * transform.scaleX, transform.y + y * transform.scaleY
   end
   local quitCodes = {}
+  local fullscreenEvents = {}
   local safeAreaReads = 0
+  local metadataReads = 0
+  local saveLoads = 0
+  local managedProbes = 0
+  local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
+  local originalListMetadata = GameSaveStore.listMetadata
+  local originalLoad = GameSaveStore.load
+  GameSaveStore.listMetadata = function(self, ...)
+    metadataReads = metadataReads + 1
+    return originalListMetadata(self, ...)
+  end
+  GameSaveStore.load = function(self, ...)
+    saveLoads = saveLoads + 1
+    return originalLoad(self, ...)
+  end
   local hostWidth, hostHeight = options.width or 360, options.height or 640
+  local hostPixelRatio = options.pixelRatio or 1
   local safeRect = options.safeRect or { x = 0, y = 0, width = hostWidth, height = hostHeight }
   local graphics = love.graphics
   local originalAudio = love.audio
@@ -136,11 +169,15 @@ local function withLauncherHost(options, fn)
     audioVolume = audio.setVolume,
     newSource = audio.newSource,
     safeArea = love.window.getSafeArea,
+    fullscreen = love.window.getFullscreen,
+    setFullscreen = love.window.setFullscreen,
+    localClockSystem = require("game.src.LocalClock").system,
     assetRead = LauncherAssets.read,
     quit = love.event.quit,
     ready = RomImporter.isReady,
     registered = RomImporter.isRegistered,
     recoverable = CacheArchive.recoverableFileName,
+    managed = RomArchive.recoverablePath,
     pickerAvailable = NativeRomPicker.available,
     pickerOpen = NativeRomPicker.openSingle,
     appBackend = ProducerFingerprint.appBackend,
@@ -159,7 +196,7 @@ local function withLauncherHost(options, fn)
     return hostWidth
   end
   graphics.getDPIScale = function()
-    return 1
+    return hostPixelRatio
   end
   graphics.setBackgroundColor = function() end
   graphics.newFont = function()
@@ -176,8 +213,20 @@ local function withLauncherHost(options, fn)
     images[#images + 1] = image
     return image
   end
-  love.image.newImageData = function(data)
+  love.image.newImageData = function(data, format, bytes)
+    if type(data) == "number" then
+      return original.imageData(data, format, bytes)
+    end
     local imageData = { path = data:getFilename(), releases = 0 }
+    function imageData:getWidth()
+      return 32
+    end
+    function imageData:getHeight()
+      return 32
+    end
+    function imageData:getDimensions()
+      return 32, 32
+    end
     function imageData:release()
       self.releases = self.releases + 1
     end
@@ -257,14 +306,32 @@ local function withLauncherHost(options, fn)
     if options.failAudioAt == sourceAttempts then
       error("synthetic launcher audio acquisition failure", 0)
     end
-    local source = fakeSource()
+    local source
+    source = fakeSource(function()
+      audioEvents[#audioEvents + 1] = "boot-stop:" .. tostring(source.path)
+    end)
     source.path = data:getFilename()
     audioSources[#audioSources + 1] = source
     return source
   end
+  if options.audioMissing then
+    audio.newSource = nil
+  end
   love.window.getSafeArea = function()
     safeAreaReads = safeAreaReads + 1
     return safeRect.x, safeRect.y, safeRect.width, safeRect.height
+  end
+  love.window.getFullscreen = function()
+    return false
+  end
+  love.window.setFullscreen = function()
+    fullscreenEvents[#fullscreenEvents + 1] = true
+  end
+  local LocalClock = require("game.src.LocalClock")
+  LocalClock.system = function()
+    return LocalClock.new(function()
+      return options.now or { year = 2026, month = 12, day = 31, hour = 23, minute = 59, second = 0 }
+    end)
   end
   LauncherAssets.read = function(path)
     if path == options.missingAsset then
@@ -300,12 +367,25 @@ local function withLauncherHost(options, fn)
   CacheArchive.recoverableFileName = function()
     return nil
   end
+  RomArchive.recoverablePath = function(romSha1)
+    managedProbes = managedProbes + 1
+    if options.managed == true then
+      return original.managed(romSha1)
+    end
+    return nil
+  end
   NativeRomPicker.available = function()
-    return true
+    return options.pickerAvailable ~= false
   end
   NativeRomPicker.openSingle = function()
     pickerOpens = pickerOpens + 1
-    return { kind = "cancel" }
+    return pickerResult
+  end
+  NativeRomPicker.poll = function()
+    pickerPolls = pickerPolls + 1
+    local result = pickerPollResult
+    pickerPollResult = nil
+    return result
   end
   ProducerFingerprint.appBackend = function()
     return {
@@ -335,7 +415,17 @@ local function withLauncherHost(options, fn)
     pickerOpens = function()
       return pickerOpens
     end,
+    pickerPolls = function()
+      return pickerPolls
+    end,
+    setPickerResult = function(result)
+      pickerResult = result
+    end,
+    setPickerPollResult = function(result)
+      pickerPollResult = result
+    end,
     audioSources = audioSources,
+    audioEvents = audioEvents,
     fonts = fonts,
     images = images,
     imageDatas = imageDatas,
@@ -346,17 +436,34 @@ local function withLauncherHost(options, fn)
     safeAreaReads = function()
       return safeAreaReads
     end,
+    metadataReads = function()
+      return metadataReads
+    end,
+    saveLoads = function()
+      return saveLoads
+    end,
+    managedProbes = function()
+      return managedProbes
+    end,
     safeRect = function()
       return safeRect
     end,
     setSafeRect = function(rect)
       safeRect = rect
     end,
+    setHostSize = function(width, height)
+      hostWidth, hostHeight = width, height
+    end,
+    setPixelRatio = function(ratio)
+      hostPixelRatio = ratio
+    end,
     quitCodes = quitCodes,
+    fullscreenEvents = fullscreenEvents,
   }
   local ok, err = xpcall(function()
     fn(result)
   end, debug.traceback)
+  App.quit()
   App.setState(nil)
   App._retireSelection()
   App._releaseLauncherResources()
@@ -394,12 +501,18 @@ local function withLauncherHost(options, fn)
   audio.setVolume = original.audioVolume
   audio.newSource = original.newSource
   love.window.getSafeArea = original.safeArea
+  love.window.getFullscreen = original.fullscreen
+  love.window.setFullscreen = original.setFullscreen
+  LocalClock.system = original.localClockSystem
+  GameSaveStore.listMetadata = originalListMetadata
+  GameSaveStore.load = originalLoad
   LauncherAssets.read = original.assetRead
   love.audio = originalAudio
   love.event.quit = original.quit
   RomImporter.isReady = original.ready
   RomImporter.isRegistered = original.registered
   CacheArchive.recoverableFileName = original.recoverable
+  RomArchive.recoverablePath = original.managed
   NativeRomPicker.available = original.pickerAvailable
   NativeRomPicker.openSingle = original.pickerOpen
   ProducerFingerprint.appBackend = original.appBackend
@@ -412,50 +525,12 @@ local function withLauncherHost(options, fn)
   end
 end
 
-local function drawnText(result)
-  return table.concat(result.copy, "\n")
-end
-
-local function colorMatches(actual, expected)
-  for index = 1, 4 do
-    if math.abs((actual[index] or 1) - expected[index]) > 0.002 then
-      return false
-    end
+local function drawnText(result, first)
+  local copy = {}
+  for index = first or 1, #result.copy do
+    copy[#copy + 1] = result.copy[index]
   end
-  return true
-end
-
-function T.rom_free_boot_times_out_to_empty_selection_and_picker_cancel_leaves_it_unchanged()
-  withLauncherHost({}, function(result)
-    App.load({ dev = false })
-    Assert.isNil(App.importer, "the first boot frame starts no ROM import")
-    Assert.isNil(App.selectedVersionId, "the first boot frame selects no game")
-    App.draw()
-    local firstFrame = drawnText(result)
-    Assert.isTrue(
-      firstFrame:find("Press any button to select game", 1, true) ~= nil,
-      "the exact muted prompt is visible immediately"
-    )
-    Assert.isTrue(firstFrame:find("Portémon Nitro", 1, true) ~= nil, "the accented wordmark uses the bundled font")
-
-    for _ = 1, 120 do
-      App.update(1 / 60)
-    end
-    Assert.equal(type(App.state.view), "function", "the foreground timer commits to the game library")
-    App.draw()
-    local empty = drawnText(result)
-    Assert.isTrue(empty:find("No games yet", 1, true) ~= nil, "first boot is the empty library state")
-    Assert.isTrue(empty:find("Add game", 1, true) ~= nil, "the empty library exposes Add game")
-    Assert.isTrue(empty:find("dev", 1, true) ~= nil, "the installed source version is visible")
-    Assert.isTrue(empty:lower():find("settings", 1, true) == nil, "the first build has no settings dead end")
-    Assert.isTrue(empty:lower():find("update", 1, true) == nil, "the first build has no update dead end")
-
-    local before = App.state
-    App.state:keypressed("return")
-    Assert.equal(result.pickerOpens(), 1, "Add game opens the native picker")
-    Assert.isTrue(App.state == before, "picker cancellation keeps the same library state")
-    Assert.deepEqual(result.quitCodes, {}, "cancelling the picker does not quit")
-  end)
+  return table.concat(copy, "\n")
 end
 
 local function candidateBackend()
@@ -471,427 +546,1106 @@ local function candidateBackend()
   return backend
 end
 
-function T.boot_gesture_selects_once_and_is_not_replayed_as_play_or_movie_skip()
-  withLauncherHost({ ready = { heartgold = true }, candidate = true, backend = candidateBackend() }, function(result)
-    local routes = {}
-    App._selectVersion = function(versionId)
-      routes[#routes + 1] = "play:" .. versionId
-      App.selectedVersionId = versionId
+local function installEdition(rom, versionId, withIcon)
+  local edition = rom[versionId]
+  local bytes = love.data.newByteData(edition.cart.data)
+  local prepared = assert(RomArchive.prepare(edition.cart.info, bytes, edition.cart.versions))
+  Assert.isTrue(RomArchive.publish(prepared), "managed source publication failed")
+  if withIcon then
+    local png = assert(RomArchive.encodeIcon(bytes))
+    Assert.isTrue(RomArchive.publishIcon(edition.cart.sha1, png))
+    png:release()
+  end
+  bytes:release()
+end
+
+local function withManagedLauncher(options, fn)
+  options.managed = true
+  ManagedRomIconFixture.with(function(rom)
+    for editionId, info in pairs(GameVersion.VERSIONS) do
+      if editionId ~= "heartgold" and info.sha1 == rom.heartgold.cart.sha1 then
+        GameVersion.VERSIONS[editionId] = nil
+      end
     end
-    App._showGameSelection = function()
-      routes[#routes + 1] = "selection"
-      App.selectedVersionId = nil
-      App.state = {
-        view = function()
-          return { focusedId = "heartgold" }
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      if options.installed and options.installed[versionId] then
+        installEdition(rom, versionId, options.icons ~= false)
+      end
+    end
+    withLauncherHost(options, function(host)
+      fn(host, rom)
+    end)
+  end)
+end
+
+local function scriptedService(options)
+  options = options or {}
+  local record = {
+    epochs = {},
+    requests = {},
+    retired = {},
+    sourceRequests = 0,
+    quiesceCalls = 0,
+    importCalls = 0,
+    sweeps = 0,
+    barrier = options.barrier,
+    barrierStatus = "pending",
+    authorizeImport = options.authorizeImport ~= false,
+  }
+  local service = {}
+  local view = {}
+  function view:resolveAsset(_)
+    return nil
+  end
+  function view:loadLua(_)
+    return nil
+  end
+  function view:withPackages()
+    return self
+  end
+  function service:select(selectOptions)
+    local epoch = #record.epochs + 1
+    record.epochs[epoch] = selectOptions.versionId
+    view.versionId = selectOptions.versionId
+    return epoch
+  end
+  function service:request(epoch, selector)
+    record.requests[#record.requests + 1] = { epoch = epoch, selector = selector }
+    return true
+  end
+  function service:observe(_, selector)
+    if selector.requestKind == "opening-scene" then
+      return options.scenesReady ~= false, nil
+    end
+    if selector.requestKind == "milestone" then
+      if selector.name == "startup-title" then
+        return options.titleReady ~= false, nil
+      elseif selector.name == "startup-audio" then
+        if options.audioFailure ~= nil then
+          return false, options.audioFailure
+        end
+        return options.audioReady ~= false, nil
+      elseif selector.name == "bootstrap" then
+        return options.bootstrapReady == true, nil
+      end
+    end
+    return false, nil
+  end
+  function service:requestBootSource(_)
+    record.sourceRequests = record.sourceRequests + 1
+    return true
+  end
+  function service:bootSourceStatus(_)
+    if options.sourceStatus ~= nil then
+      return options.sourceStatus, options.sourceDetail
+    end
+    record.sourceChecks = (record.sourceChecks or 0) + 1
+    return record.sourceChecks == 1 and "pending" or "ready", nil
+  end
+  function service:update() end
+  function service:retire(epoch)
+    record.retired[#record.retired + 1] = epoch
+  end
+  function service:setExecutionPolicy() end
+  function service:generationId(_)
+    return "launcher-test-generation"
+  end
+  function service:getCacheFs(epoch)
+    for _, retired in ipairs(record.retired) do
+      if retired == epoch then
+        return nil
+      end
+    end
+    return view
+  end
+  function service:cacheIdentity(epoch)
+    return {
+      schema = "derived-cache",
+      versionId = record.epochs[epoch],
+      romSha1 = string.rep("0", 40),
+      mode = "release",
+      producerId = "launcher-test",
+      assetRevision = 19,
+      scriptApi = 1,
+      generationId = "launcher-test-generation",
+    }
+  end
+  function service:firstPlayReady(_)
+    return true
+  end
+  function service:recordFirstPlay(_) end
+  function service:enableSweep(_)
+    record.sweeps = record.sweeps + 1
+  end
+  function service:quiesce(_)
+    record.quiesceCalls = record.quiesceCalls + 1
+    return record.barrier
+  end
+  function service:barrierStatus(_, _)
+    return record.barrierStatus
+  end
+  function service:importSource(_, _)
+    record.importCalls = record.importCalls + 1
+    return record.authorizeImport
+  end
+  function service:offerSource()
+    return true
+  end
+  function service:shutdown() end
+  return service, record
+end
+
+local function withStartupConsumers(options, fn)
+  local Movie = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local Title = require("libs.hgss.src.presentation.HgssTitleScene")
+  local StartupAssets = require("libs.assets.src.StartupAssetCache")
+  local StartupAudio = require("app.src.audio.StartupAudioSession")
+  local MainMenu = require("app.src.mainmenu.MainMenuComposition")
+  local HgssGame = require("game.hgss.src.HgssGame")
+  local saved = {
+    movieNew = Movie.new,
+    titleBegin = Title.begin,
+    loadScene = StartupAssets.loadOpeningScene,
+    audioNew = StartupAudio.new,
+    menuNew = MainMenu.new,
+    firstPlay = HgssGame.newFirstPlayCachePreparation,
+    saveLocation = HgssGame.newSaveLocationPreparation,
+  }
+  local record = { movieTicks = 0, movieDraws = 0, warmups = 0, saveLocationWarmups = 0, audioEvents = {} }
+  Movie.new = function()
+    local movie = {}
+    function movie:updateFixed()
+      record.movieTicks = record.movieTicks + 1
+    end
+    function movie:draw()
+      record.movieDraws = record.movieDraws + 1
+    end
+    function movie:resize() end
+    function movie:skipAllowed()
+      return false
+    end
+    function movie:requestSkip()
+      return false
+    end
+    function movie:isFinished()
+      return false
+    end
+    function movie:sceneNumber()
+      return 1
+    end
+    function movie:dispose() end
+    return movie
+  end
+  StartupAssets.loadOpeningScene = function(_, sceneNumber, versionId)
+    return { sceneNumber = sceneNumber, versionId = versionId, generationId = "launcher-test-generation" }
+  end
+  Title.begin = function()
+    local title = { bundle = { crySpeciesId = 25 } }
+    function title:updateFixed() end
+    function title:update() end
+    function title:draw() end
+    function title:resize() end
+    function title:beginProceed() end
+    function title:dispose() end
+    local build = { ready = false }
+    function build:advance()
+      self.ready = true
+      return 1
+    end
+    function build:isReady()
+      return self.ready
+    end
+    function build:takeResult()
+      return title
+    end
+    function build:release()
+      title:dispose()
+    end
+    return build
+  end
+  StartupAudio.new = function()
+    local session = {}
+    function session:beginOpening()
+      record.audioEvents[#record.audioEvents + 1] = "retail-audio"
+      if options.recordRetailAudio then
+        options.recordRetailAudio()
+      end
+      if options.openingAck == false then
+        return false, "synthetic opening soundtrack rejection"
+      end
+      return true
+    end
+    function session:bindTitleRecord() end
+    function session:beginTitle() end
+    function session:beginMovieCycle() end
+    function session:notifySkip() end
+    function session:beginFade() end
+    function session:playMenuCue() end
+    function session:update() end
+    function session:dispose() end
+    return session
+  end
+  MainMenu.new = function()
+    local menu = {}
+    function menu:update() end
+    function menu:draw() end
+    function menu:resize() end
+    function menu:keypressed() end
+    function menu:mousereleased() end
+    function menu:dispose() end
+    return menu
+  end
+  HgssGame.newFirstPlayCachePreparation = function()
+    return {
+      poll = function()
+        return false
+      end,
+      dispose = function() end,
+    }
+  end
+  HgssGame.newSaveLocationPreparation = function()
+    record.saveLocationWarmups = record.saveLocationWarmups + 1
+    return {
+      poll = function()
+        return false
+      end,
+      dispose = function() end,
+    }
+  end
+  local originalWarmup = App._beginSaveAgnosticWarmup
+  App._beginSaveAgnosticWarmup = function(...)
+    record.warmups = record.warmups + 1
+    return originalWarmup(...)
+  end
+  local ok, failure = xpcall(function()
+    fn(record)
+  end, debug.traceback)
+  App._beginSaveAgnosticWarmup = originalWarmup
+  Movie.new = saved.movieNew
+  Title.begin = saved.titleBegin
+  StartupAssets.loadOpeningScene = saved.loadScene
+  StartupAudio.new = saved.audioNew
+  MainMenu.new = saved.menuNew
+  HgssGame.newFirstPlayCachePreparation = saved.firstPlay
+  HgssGame.newSaveLocationPreparation = saved.saveLocation
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+local function targetPoint(view, targetId)
+  local target = assert(view.layout.graph.targets[targetId], "current graph exposes " .. targetId)
+  local placement = assert(view.presentation.panes[1].placement)
+  return LayoutGeometry.logicalToHost(
+    placement,
+    target.rect.x + target.rect.width / 2,
+    target.rect.y + target.rect.height / 2
+  )
+end
+
+local function tap(targetId)
+  local x, y = targetPoint(assert(App.state:view()), targetId)
+  App.touchpressed("finger", x, y)
+  App.touchreleased("finger", x, y)
+end
+
+local function trackImporter(rom)
+  if App.importer ~= nil then
+    local found = false
+    for _, importer in ipairs(rom.host.importers) do
+      if importer == App.importer then
+        found = true
+      end
+    end
+    if not found then
+      rom.host.importers[#rom.host.importers + 1] = App.importer
+    end
+  end
+end
+
+local function advanceUntil(predicate, label, rom)
+  local deadline = love.timer.getTime() + 20
+  while love.timer.getTime() < deadline do
+    if rom ~= nil then
+      trackImporter(rom)
+    end
+    App.update(1 / 60)
+    if predicate() then
+      if rom ~= nil then
+        trackImporter(rom)
+      end
+      return
+    end
+    love.timer.sleep(0.002)
+  end
+  error("timed out waiting for " .. label .. "; state=" .. tostring(App.state and App.state.phase))
+end
+
+function T.native_display_facts_intersect_once_and_suspend_across_invalid_intervals()
+  withManagedLauncher({
+    installed = { heartgold = true },
+    width = 385,
+    height = 287,
+    pixelRatio = 3,
+    safeRect = { x = 0, y = 0, width = 800, height = 600 },
+  }, function(host)
+    App.load({ dev = false })
+    Assert.deepEqual(
+      App._safeRect,
+      { x = 0, y = 0, width = 385, height = 287 },
+      "load intersects the actual safe query with the drawable"
+    )
+    Assert.equal(App.drawableWidth, 385)
+    Assert.equal(App.drawableHeight, 287)
+    Assert.equal(App.pixelRatio, 3)
+    App.keypressed("return", "return", false)
+    App.keyreleased("return", "return")
+    local service, record = scriptedService()
+    App.service = service
+    local selection = assert(App.state)
+    local originalResize = selection.resize
+    local resizes = 0
+    selection.resize = function(self, ...)
+      resizes = resizes + 1
+      return originalResize(self, ...)
+    end
+    host.setSafeRect({ x = -20, y = -10, width = 430, height = 320 })
+    App.resize(800, 600)
+    Assert.deepEqual(
+      App._safeRect,
+      { x = 0, y = 0, width = 385, height = 287 },
+      "resize event dimensions never replace current host facts"
+    )
+    Assert.equal(resizes, 1)
+    local x, y = targetPoint(selection:view(), "heartgold")
+    App.touchpressed("held", x, y)
+    host.setHostSize(0, 0)
+    App.update(1 / 60)
+    Assert.equal(App.drawableWidth, 385, "invalid intervals retain the last valid facts for disposal")
+    Assert.equal(App.drawableHeight, 287)
+    Assert.equal(resizes, 1, "invalid intervals never publish resize(0, 0)")
+    local copyBefore, rectanglesBefore = #host.copy, #host.rectangles
+    App.draw()
+    Assert.equal(#host.copy, copyBefore, "suspended launcher draws no stale actionable text")
+    Assert.equal(#host.rectangles, rectanglesBefore, "suspended launcher draws no stale surfaces")
+    host.setHostSize(385, 287)
+    App.update(1 / 60)
+    Assert.equal(resizes, 2, "same-size restoration forces exactly one geometry publication")
+    App.touchmoved("held", x, y)
+    App.touchreleased("held", x, y)
+    Assert.equal(record.sourceRequests, 0, "the suspended touch tail cannot activate a cartridge")
+    host.setPixelRatio(2)
+    App.update(1 / 60)
+    Assert.equal(resizes, 3, "DPI-only changes republish geometry")
+    Assert.equal(selection:view().presentation.panes[1].placement.pixelRatio, 2)
+    App._selectVersion("heartgold")
+    Assert.deepEqual(App.state.loading.safeRect, App._safeRect, "the ordinary loader borrows the same safe facts")
+    Assert.equal(
+      App.state.loading._displayContext:measure(385, 287).pixelRatio,
+      2,
+      "loader measurement uses the published DPI"
+    )
+  end)
+end
+
+function T.semantic_pointer_events_activate_only_the_current_cartridge_once()
+  withManagedLauncher({ installed = { heartgold = true } }, function()
+    App.load({ dev = false })
+    App.keypressed("return", "return", false)
+    App.keyreleased("return", "return")
+    local service, record = scriptedService()
+    App.service = service
+    local selection = assert(App.state)
+    Assert.equal(#selection:view().games, 2)
+    selection:_dispatch({
+      { type = "pointer_down", pointerId = "outside", outside = true },
+      { type = "pointer_up", pointerId = "outside", x = 0, y = 0 },
+      { type = "pointer_cancel", pointerId = "cancel" },
+      { type = "pointer_up", pointerId = "cancel", x = 0, y = 0 },
+    })
+    Assert.equal(record.sourceRequests, 0)
+    local x, y = targetPoint(selection:view(), "heartgold")
+    App.touchpressed("drag", x, y)
+    App.touchmoved("drag", x, y + 100)
+    App.touchreleased("drag", x, y + 100)
+    Assert.equal(record.sourceRequests, 0, "drag-away and re-entry cannot activate")
+    tap("heartgold")
+    Assert.equal(record.sourceRequests, 1, "one direct cartridge tap starts one selected epoch")
+    Assert.equal(App.selectedVersionId, "heartgold")
+  end)
+end
+
+function T.boot_paints_before_discovery_and_overlaps_real_opening_preparation()
+  withManagedLauncher(
+    { installed = { heartgold = true }, ready = { heartgold = true }, candidate = true, backend = candidateBackend() },
+    function(host)
+      withStartupConsumers({
+        recordRetailAudio = function()
+          host.audioEvents[#host.audioEvents + 1] = "retail-audio"
+        end,
+      }, function(startup)
+        local service, record = scriptedService()
+        App.load({ dev = false })
+        App.service = service
+        Assert.equal(host.metadataReads(), 0, "load performs no save metadata discovery")
+        App.draw()
+        local first = drawnText(host)
+        Assert.equal(host.metadataReads(), 0, "candidate discovery waits for the first painted update")
+        Assert.equal(record.sourceRequests, 0, "candidate discovery and source work wait for the first painted update")
+        Assert.isTrue(first:find("Portémon", 1, true) ~= nil and first:find("Nitro", 1, true) ~= nil)
+        Assert.isTrue(first:find("Press a button for game selection", 1, true) ~= nil)
+        Assert.notNil(App._bootIntro)
+        Assert.isTrue(App._bootIntro.painted)
+        App.update(1 / 60)
+        Assert.equal(record.sourceRequests, 1, "the first update starts the real selected source gate")
+        Assert.equal(host.metadataReads(), 1, "candidate discovery reads one metadata snapshot")
+        Assert.equal(host.saveLoads(), 0, "automatic startup never loads or restores a save")
+        Assert.notNil(App._bootIntro, "source preparation remains covered by the same jingle")
+        Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.CachePreparationState"))
+        advanceUntil(function()
+          return getmetatable(App.state).__index == require("app.src.launcher.StartupTitleState")
+            and App.state.movie ~= nil
+        end, "staged opening behind the jingle")
+        Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
+        Assert.notNil(App.state.movie, "the real startup owner stages the opening behind the overlay")
+        Assert.equal(startup.movieTicks, 0)
+        Assert.equal(startup.movieDraws, 0)
+        Assert.deepEqual(startup.audioEvents, {})
+        advanceUntil(function()
+          return App._bootIntro == nil and App.state.phase == "movie"
+        end, "early movie admission")
+        Assert.isNil(App._bootIntro, "genuine readiness ends the foreground overlay early")
+        Assert.equal(App.state.phase, "movie")
+        Assert.equal(startup.warmups, 1, "gameplay warmup starts at actual movie entry")
+        Assert.equal(startup.saveLocationWarmups, 1)
+        local bootStop, retailAudio
+        for index, event in ipairs(host.audioEvents) do
+          if event == "boot-stop:assets/audio/launcher/boot.ogg" then
+            bootStop = index
+          elseif event == "retail-audio" then
+            retailAudio = index
+          end
+        end
+        Assert.notNil(bootStop)
+        Assert.notNil(retailAudio)
+        Assert.isTrue(bootStop < retailAudio, "the boot tail stops before retail soundtrack admission")
+      end)
+    end
+  )
+
+  withManagedLauncher({ installed = {} }, function()
+    App.load({ dev = false })
+    local intro = assert(App._bootIntro)
+    Assert.isFalse(intro.painted, "the jingle clock starts before its first paint")
+    App.update(1 / 60)
+    Assert.equal(intro.elapsed, 0, "time before the first painted frame is not jingle time")
+    App.draw()
+    Assert.isTrue(intro.painted, "the first painted frame starts jingle time")
+    for _ = 1, 120 do
+      App.update(1 / 60)
+    end
+    Assert.notNil(App._bootIntro, "no-candidate boot does not use the superseded short dwell")
+    local elapsedAtFocusLoss = intro.elapsed
+    App.focus(false)
+    for _ = 1, 600 do
+      App.update(1 / 60)
+    end
+    Assert.equal(intro.elapsed, elapsedAtFocusLoss, "background frames do not advance the jingle")
+    Assert.notNil(App._bootIntro, "background time is not foreground time")
+    App.focus(true)
+    for _ = 1, 178 do
+      App.update(1 / 60)
+    end
+    Assert.notNil(App._bootIntro)
+    App.update(1 / 60)
+    App.update(1 / 60)
+    Assert.isNil(App._bootIntro)
+    Assert.equal(#App.state:view().games, 2)
+  end)
+
+  withManagedLauncher(
+    { installed = { heartgold = true }, candidate = true, backend = candidateBackend(), audioMissing = true },
+    function()
+      withStartupConsumers({}, function()
+        local service, record = scriptedService()
+        App.load({ dev = false })
+        App.service = service
+        App.draw()
+        App.update(1 / 60)
+        advanceUntil(function()
+          return App.state and App.state.phase == "movie"
+        end, "movie admission without launcher audio")
+        Assert.isTrue(App.launcherAudio.unavailable)
+        Assert.equal(App.state.phase, "movie", "launcher audio failure adds no readiness delay")
+        Assert.equal(record.sourceRequests, 1)
+      end)
+    end
+  )
+
+  withManagedLauncher({ installed = { heartgold = true }, candidate = true, backend = candidateBackend() }, function()
+    local service = scriptedService({
+      sourceStatus = "failed",
+      sourceDetail = { code = "ROM_SOURCE_REQUIRED", message = "repair HeartGold" },
+    })
+    App.load({ dev = false })
+    App.service = service
+    App.draw()
+    App.update(1 / 60)
+    Assert.isNil(App._bootIntro, "terminal source failure does not wait out the animation")
+    Assert.equal(App.state:view().mode, "error")
+    Assert.equal(App.state:view().focusedId, "heartgold")
+  end)
+end
+
+function T.boot_admission_requires_a_foreground_window_and_overlay()
+  withManagedLauncher({ installed = {} }, function()
+    App.load({ dev = false })
+    App.draw()
+    local epoch, versionId = App.epoch, App.selectedVersionId
+    App.focus(false)
+    Assert.isFalse(App._admitOpening(epoch, versionId), "a backgrounded window cannot admit the retail movie")
+    Assert.notNil(App._bootIntro, "closed admission keeps the boot overlay owned")
+
+    App.focus(true)
+    local intro = assert(App._bootIntro)
+    Assert.isTrue(intro.foreground)
+    intro:focus(false)
+    Assert.isFalse(App._admitOpening(epoch, versionId), "a non-foreground overlay cannot admit the retail movie")
+    Assert.isTrue(App._bootIntro == intro, "closed admission keeps the overlay in place")
+
+    intro:focus(true)
+    Assert.isTrue(App._admitOpening(epoch, versionId), "foreground admission still retires the overlay")
+    Assert.isNil(App._bootIntro)
+    Assert.isTrue(App._admitOpening(epoch, versionId), "later title and attract reentry is not gated by the boot overlay")
+  end)
+end
+
+function T.boot_audio_admission_failure_leaves_the_overlay_with_a_recoverable_error()
+  for _, scenario in ipairs({
+    {
+      label = "milestone failure",
+      audioFailure = "synthetic startup audio failure",
+      cause = "synthetic startup audio failure",
+    },
+    { label = "soundtrack rejection", openingAck = false, cause = "synthetic opening soundtrack rejection" },
+  }) do
+    withManagedLauncher(
+      { installed = { heartgold = true }, candidate = true, backend = candidateBackend() },
+      function(host)
+        withStartupConsumers({ openingAck = scenario.openingAck }, function()
+          local service, record = scriptedService({ audioFailure = scenario.audioFailure })
+          App.load({ dev = false })
+          App.service = service
+          App.draw()
+          local intro = assert(App._bootIntro)
+          advanceUntil(function()
+            return App._bootIntro == nil
+          end, scenario.label .. " overlay teardown")
+          Assert.isTrue(intro.elapsed < 5, scenario.label .. " tears down before the five-second deadline")
+          Assert.notNil(App.state, scenario.label .. " keeps the recoverable startup owner")
+          Assert.equal(App.state.phase, "loading", scenario.label .. " never admits the movie")
+          Assert.notNil(App.state.audioError, scenario.label .. " keeps its audio diagnostic")
+          local first = #host.copy + 1
+          App.draw()
+          local text = drawnText(host, first)
+          Assert.isTrue(text:find(scenario.cause, 1, true) ~= nil, scenario.label .. " shows its cause")
+          Assert.isTrue(text:find("Press Esc to return", 1, true) ~= nil, scenario.label .. " offers recovery")
+          Assert.equal(record.sourceRequests, 1, scenario.label .. " still starts one selected source")
+        end)
+      end
+    )
+  end
+end
+
+function T.manual_selection_wins_and_swallows_the_initiating_gesture_through_release()
+  withManagedLauncher(
+    { installed = { heartgold = true }, candidate = true, backend = candidateBackend() },
+    function(host)
+      local service, record = scriptedService()
+      App.load({ dev = false })
+      App.service = service
+      App.keypressed("return", "return", false)
+      Assert.equal(#App.state:view().games, 2)
+      Assert.equal(App.state:view().focusedId, "heartgold")
+      Assert.equal(record.sourceRequests, 0, "pre-paint interruption starts no speculative epoch")
+      App.keypressed("return", "return", true)
+      App.resize(800, 600)
+      App.keyreleased("return", "return")
+      Assert.equal(record.sourceRequests, 0, "repeat, resize and release cannot replay the initiating press")
+      App.keypressed("return", "return", false)
+      App.keyreleased("return", "return")
+      Assert.equal(record.sourceRequests, 1, "the next deliberate confirmation launches once")
+      Assert.deepEqual(host.quitCodes, {})
+    end
+  )
+
+  withManagedLauncher({ installed = { heartgold = true }, candidate = true, backend = candidateBackend() }, function()
+    withStartupConsumers({}, function(startup)
+      local service, record = scriptedService()
+      App.load({ dev = false })
+      App.service = service
+      App.draw()
+      App.update(1 / 60)
+      Assert.notNil(App._bootIntro)
+      App.gamepadpressed({}, "x")
+      Assert.isNil(App._bootIntro)
+      Assert.equal(#App.state:view().games, 2)
+      Assert.equal(#record.retired, 1)
+      service.bootSourceStatus = function()
+        return "ready"
+      end
+      for _ = 1, 10 do
+        App.update(1 / 60)
+      end
+      Assert.equal(startup.movieTicks, 0)
+      Assert.deepEqual(startup.audioEvents, {})
+      Assert.equal(record.sourceRequests, 1, "late readiness cannot mint another selected epoch")
+    end)
+  end)
+
+  withManagedLauncher(
+    { installed = { heartgold = true }, candidate = true, backend = candidateBackend() },
+    function(host)
+      local service = scriptedService()
+      App.load({ dev = false })
+      App.service = service
+      App.gamepadaxis({}, "leftx", 0.9)
+      App.wheelmoved(0, 1)
+      App.keypressed("lshift", "lshift", false)
+      App.keyreleased("lshift", "lshift")
+      App.keypressed("f11", "f11", false)
+      Assert.equal(#host.fullscreenEvents, 1, "F11 remains the global fullscreen shortcut")
+      Assert.notNil(App._bootIntro)
+      Assert.isTrue(App._bootIntro.foreground)
+      Assert.isNil(App.state, "non-button input does not choose selection or start speculation")
+    end
+  )
+end
+
+function T.targeted_import_channels_preserve_edition_and_terminal_ownership()
+  withManagedLauncher({ installed = { heartgold = true } }, function(host, rom)
+    local service = scriptedService()
+    App.load({ dev = false })
+    App.keypressed("return", "return", false)
+    App.keyreleased("return", "return")
+    App.service = service
+    tap("soulsilver")
+    Assert.equal(App.state:view().mode, "choose")
+    Assert.equal(App.state:view().import.expectedVersionId, "soulsilver")
+    host.setPickerResult({ kind = "path", path = rom.heartgold.originalPath })
+    local receiptFrame = #host.copy + 1
+    tap("choose-rom")
+    App.draw()
+    Assert.isTrue(
+      drawnText(host, receiptFrame):find("original.nds", 1, true) ~= nil,
+      "the sanitized receipt is visible before validation"
+    )
+    advanceUntil(function()
+      return App.state:view().mode == "error"
+    end, "targeted mismatch", rom)
+    local view = App.state:view()
+    Assert.equal(view.import.expectedVersionId, "soulsilver")
+    Assert.equal(view.import.error.context.expectedVersionId, "soulsilver")
+    Assert.equal(view.import.error.context.actualVersionId, "heartgold")
+    Assert.isNil(RomArchive.recoverablePath(rom.soulsilver.cart.sha1), "wrong-edition validation publishes no source")
+    Assert.notNil(RomArchive.recoverablePath(rom.heartgold.cart.sha1), "the prior edition remains unchanged")
+    tap("back")
+    tap("soulsilver")
+    host.setPickerResult({ kind = "cancel" })
+    tap("choose-rom")
+    Assert.equal(App.state:view().mode, "choose", "native picker cancellation restores the targeted choose view")
+    local dropPath = "launcher-targeted-drop.nds"
+    Assert.isTrue(love.filesystem.write(dropPath, rom.soulsilver.cart.data))
+    local dropped = assert(love.filesystem.newFile(dropPath))
+    App.filedropped(dropped)
+    App.draw()
+    advanceUntil(function()
+      return App.importer == nil and App.state:view().mode == "selection"
+    end, "targeted drop publication", rom)
+    Assert.isTrue(love.filesystem.remove(dropPath))
+    Assert.equal(App.state:view().focusedId, "soulsilver")
+    Assert.equal(App.state:view().games[2].installed, true)
+    Assert.notNil(RomArchive.recoverablePath(rom.soulsilver.cart.sha1))
+    Assert.notNil(love.filesystem.getInfo(RomArchive.iconPath(rom.soulsilver.cart.sha1), "file"))
+
+    Assert.isTrue(love.filesystem.remove(rom.soulsilver.canonical))
+    Assert.isTrue(love.filesystem.remove(rom.soulsilver.icon))
+    tap("soulsilver")
+    local requestId = "123e4567-e89b-12d3-a456-426614174000"
+    host.setPickerResult({ kind = "pending", requestId = requestId })
+    tap("choose-rom")
+    App.update(1 / 60)
+    Assert.isTrue(host.pickerPolls() > 0, "the native bridge is polled by exact request identity")
+    local temporary = rom.heartgold:writePickerTemporary(requestId, rom.soulsilver.cart.data)
+    host.setPickerPollResult({
+      kind = "path",
+      requestId = requestId,
+      relativePath = temporary,
+      displayName = "Android SoulSilver.nds",
+    })
+    App.update(1 / 60)
+    App.draw()
+    advanceUntil(function()
+      return App.importer == nil and App.state:view().mode == "selection"
+    end, "Android temporary publication", rom)
+    Assert.equal(App.state:view().focusedId, "soulsilver")
+    Assert.isNil(love.filesystem.getInfo(temporary), "the worker owns and removes the accepted private stage")
+
+    Assert.isTrue(love.filesystem.remove(rom.soulsilver.canonical))
+    Assert.isTrue(love.filesystem.remove(rom.soulsilver.icon))
+    tap("soulsilver")
+    local staleRequestId = "123e4567-e89b-12d3-a456-426614174001"
+    host.setPickerResult({ kind = "pending", requestId = staleRequestId })
+    tap("choose-rom")
+    App.update(1 / 60)
+    tap("back")
+    local staleTemporary = rom.heartgold:writePickerTemporary(staleRequestId, rom.soulsilver.cart.data)
+    host.setPickerPollResult({
+      kind = "path",
+      requestId = staleRequestId,
+      relativePath = staleTemporary,
+      displayName = "late.nds",
+    })
+    App.update(1 / 60)
+    Assert.equal(App.state:view().mode, "selection", "a late native result cannot navigate a canceled attempt")
+    Assert.isNil(love.filesystem.getInfo(staleTemporary), "stale native temporary data is cleaned up")
+    Assert.isNil(RomArchive.recoverablePath(rom.soulsilver.cart.sha1), "stale picker data cannot publish a source")
+  end)
+
+  withManagedLauncher({ installed = { heartgold = true }, pickerAvailable = false }, function(host)
+    App.load({ dev = false })
+    App.keypressed("return", "return", false)
+    App.keyreleased("return", "return")
+    tap("soulsilver")
+    Assert.equal(App.state:view().mode, "choose")
+    Assert.isNil(App.state:view().layout.graph.targets["choose-rom"], "an unavailable native picker has no dead button")
+    App.draw()
+    Assert.isTrue(drawnText(host):lower():find("drop", 1, true) ~= nil, "desktop drop guidance remains actionable")
+  end)
+end
+
+function T.receipt_barrier_and_commit_gates_have_one_import_owner()
+  withManagedLauncher({ installed = { heartgold = true } }, function(host, rom)
+    rom.host.holdValidation = true
+    local service, record = scriptedService({ barrier = 7 })
+    App.load({ dev = false })
+    App.keypressed("return", "return", false)
+    App.keyreleased("return", "return")
+    App.service = service
+    tap("soulsilver")
+    host.setPickerResult({ kind = "path", path = rom.soulsilver.originalPath })
+    tap("choose-rom")
+    Assert.notNil(App.pendingQuiesce)
+    Assert.equal(record.importCalls, 0, "no source worker starts before barrier acknowledgement")
+    Assert.isNil(App.importer)
+    host.setHostSize(0, 0)
+    App.update(1 / 60)
+    App.draw()
+    Assert.equal(record.importCalls, 0, "suspension cannot acknowledge receipt paint")
+    host.setHostSize(360, 640)
+    local receiptFrame = #host.copy + 1
+    App.draw()
+    Assert.isTrue(drawnText(host, receiptFrame):find("SoulSilver", 1, true) ~= nil)
+    Assert.notNil(App.state:paintedReceipt(), "the real operation draw returns its receipt token")
+    local waitingView = App.state:view()
+    Assert.equal(waitingView.import.receipt, "soulsilver.nds")
+    Assert.notNil(waitingView.import.statusText, "the operation publishes its actual waiting phase")
+    Assert.isNil(waitingView.import.progress, "an unstarted worker cannot invent a finite fraction")
+    Assert.equal(record.importCalls, 0)
+    local epoch = App.epoch
+    App._selectVersion("heartgold")
+    Assert.equal(App.epoch, epoch, "a competing launch cannot replace the attempt owner")
+    App.state:keypressed("escape")
+    Assert.notNil(App.pendingQuiesce, "canceling the view never forgets the outstanding source barrier")
+    Assert.equal(record.importCalls, 0)
+    Assert.equal(record.quiesceCalls, 1, "canceling a view does not create another source barrier")
+
+    tap("soulsilver")
+    host.setPickerResult({ kind = "path", path = rom.soulsilver.originalPath })
+    tap("choose-rom")
+    Assert.equal(record.quiesceCalls, 1, "a new attempt waits behind the existing barrier")
+    Assert.equal(record.importCalls, 0)
+    record.barrierStatus = "ready"
+    App.update(1 / 60)
+    Assert.equal(record.importCalls, 1, "barrier acknowledgement authorizes exactly one source import")
+    waitingView = App.state:view()
+    App.draw()
+    App.update(1 / 60)
+    trackImporter(rom)
+    local importer = assert(App.importer, "the painted and authorized attempt starts its queued worker")
+    local session = rom.host:validationGate(importer)
+    Assert.equal(
+      App.state:view().import.attemptId,
+      waitingView.import.attemptId,
+      "worker progress keeps the same attempt identity"
+    )
+    Assert.equal(
+      App.state:view().import.receipt,
+      waitingView.import.receipt,
+      "worker progress keeps the first receipt visible"
+    )
+    Assert.notNil(App.state:view().import.statusText, "the active worker publishes its real stage")
+    Assert.isTrue(importer:status().canCancel, "precommit validation remains cancellable")
+    App._cancelImport()
+    session.outbox:discardValidation()
+    rom.host:finish(importer, RomImporter.STATES.IDLE)
+    Assert.isNil(RomArchive.recoverablePath(rom.soulsilver.cart.sha1), "precommit cancellation publishes no source")
+    rom.host.holdValidation = false
+    rom.host.holdCommit = true
+    record.barrier = nil
+    tap("soulsilver")
+    host.setPickerResult({ kind = "path", path = rom.soulsilver.originalPath })
+    tap("choose-rom")
+    App.draw()
+    App.update(1 / 60)
+    trackImporter(rom)
+    importer = assert(App.importer)
+    rom.host:commitGate(importer)
+    Assert.isFalse(importer:status().canCancel, "commit-sent is the noncancellable linearization point")
+    App._cancelImport()
+    App.keypressed("escape", "escape", false)
+    App.gamepadpressed({}, "b")
+    local lateDropPath = "launcher-late-drop.nds"
+    Assert.isTrue(love.filesystem.write(lateDropPath, rom.heartgold.cart.data))
+    local lateDrop = assert(love.filesystem.newFile(lateDropPath))
+    App.filedropped(lateDrop)
+    lateDrop:close()
+    Assert.isTrue(love.filesystem.remove(lateDropPath))
+    Assert.isTrue(App.importer == importer, "late cancel/back/drop cannot replace the committed owner")
+    Assert.isTrue(importer._commitSent)
+    rom.host:releaseCommit()
+    advanceUntil(function()
+      return App.importer == nil and App.state:view().mode == "selection"
+    end, "committed publication", rom)
+    Assert.notNil(RomArchive.recoverablePath(rom.soulsilver.cart.sha1), "committed source survives terminal handoff")
+    Assert.equal(App.state:view().focusedId, "soulsilver")
+  end)
+end
+
+function T.root_source_facts_clock_and_optional_icon_recovery_stay_independent()
+  for _, installed in ipairs({
+    {},
+    { heartgold = true },
+    { soulsilver = true },
+    { heartgold = true, soulsilver = true },
+  }) do
+    withManagedLauncher({ installed = installed, icons = false }, function(host)
+      App.load({ dev = false })
+      App.keypressed("return", "return", false)
+      App.keyreleased("return", "return")
+      Assert.equal(host.managedProbes(), 2, "one installation fact per edition enters the selector")
+      local view = App.state:view()
+      Assert.equal(#view.games, 2)
+      Assert.equal(view.games[1].versionId, "heartgold")
+      Assert.equal(view.games[2].versionId, "soulsilver")
+      Assert.equal(view.games[1].installed, installed.heartgold == true)
+      Assert.equal(view.games[2].installed, installed.soulsilver == true)
+      Assert.equal(
+        view.games[1].iconSha1,
+        installed.heartgold and GameVersion.info("heartgold").sha1 or nil,
+        "the snapshot icon identity reuses the installed fact"
+      )
+      Assert.equal(
+        view.focusedId,
+        installed.heartgold and "heartgold" or installed.soulsilver and "soulsilver" or "heartgold"
+      )
+    end)
+  end
+
+  withLauncherHost({ ready = { heartgold = true } }, function()
+    App.load({ dev = false })
+    App.keypressed("return", "return", false)
+    App.keyreleased("return", "return")
+    local games = App.state:view().games
+    Assert.equal(#games, 2)
+    Assert.isFalse(games[1].installed, "cache readiness is not managed source installation")
+    Assert.isFalse(games[2].installed)
+  end)
+
+  withManagedLauncher({ installed = { heartgold = true }, icons = false }, function()
+    local Recovery = require("romdump.src.source.RomIconRecovery")
+    local originalStart = Recovery.start
+    Recovery.start = function()
+      return {
+        poll = function()
+          return "failed", "synthetic optional recovery failure"
+        end,
+        dispose = function() end,
+      }
+    end
+    local ok, failure = xpcall(function()
+      App.load({ dev = false })
+      App.keypressed("return", "return", false)
+      App.keyreleased("return", "return")
+      App.update(1 / 60)
+      Assert.isTrue(App.state:view().games[1].installed, "optional recovery failure does not mark the source missing")
+      local service, record = scriptedService()
+      App.service = service
+      tap("heartgold")
+      Assert.equal(record.sourceRequests, 1, "installed source remains directly playable without an icon")
+    end, debug.traceback)
+    Recovery.start = originalStart
+    if not ok then
+      error(failure, 0)
+    end
+  end)
+
+  withManagedLauncher({ installed = { heartgold = true }, icons = false }, function(_, rom)
+    local Recovery = require("romdump.src.source.RomIconRecovery")
+    local originalStart = Recovery.start
+    local starts = 0
+    Recovery.start = function()
+      starts = starts + 1
+      return {
+        poll = function()
+          return "failed", "synthetic invalid PNG recovery"
+        end,
+        dispose = function() end,
+      }
+    end
+    local renderer, originalRefresh, originalDrop
+    local ok, failure = xpcall(function()
+      Assert.isTrue(love.filesystem.write(rom.heartgold.icon, "not a png"))
+      Assert.notNil(love.filesystem.getInfo(rom.heartgold.icon, "file"), "the invalid PNG is present")
+      App.load({ dev = false })
+      renderer = assert(App.launcherRenderer)
+      originalRefresh, originalDrop = renderer.refreshGameIcon, renderer.dropGameIcon
+      local dropped = {}
+      renderer.refreshGameIcon = function(_, sha1, path)
+        Assert.equal(path, rom.heartgold.icon, "refresh receives the installed sidecar path")
+        Assert.equal(sha1, rom.heartgold.cart.sha1, "refresh receives the installed source identity")
+        return false
+      end
+      renderer.dropGameIcon = function(_, sha1)
+        dropped[#dropped + 1] = sha1
+      end
+      App.keypressed("return", "return", false)
+      App.keyreleased("return", "return")
+      Assert.equal(starts, 1, "a present but unusable PNG schedules one process-local repair")
+      local droppedInstalledSha = false
+      for _, sha1 in ipairs(dropped) do
+        droppedInstalledSha = droppedInstalledSha or sha1 == rom.heartgold.cart.sha1
+      end
+      Assert.isTrue(droppedInstalledSha, "an unusable PNG drops its stale texture")
+      App._refreshRootIcons()
+      Assert.equal(starts, 1, "repair is one-shot across icon refreshes")
+
+      local savedAttempt = App._importAttempt
+      App._importAttempt = { attemptId = {} }
+      App._refreshRootIcons()
+      App._importAttempt = savedAttempt
+      Assert.equal(starts, 1, "an active import still defers optional icon repair")
+    end, debug.traceback)
+    if renderer ~= nil then
+      renderer.refreshGameIcon = originalRefresh
+      renderer.dropGameIcon = originalDrop
+    end
+    Recovery.start = originalStart
+    if not ok then
+      error(failure, 0)
+    end
+  end)
+
+  local now = { year = 2026, month = 12, day = 31, hour = 23, minute = 59, second = 0 }
+  withManagedLauncher({ installed = { heartgold = true, soulsilver = true }, now = now }, function(host, rom)
+    local Recovery = require("romdump.src.source.RomIconRecovery")
+    local originalStart = Recovery.start
+    local starts = 0
+    Recovery.start = function(versionId)
+      starts = starts + 1
+      local bytes = love.data.newByteData(rom[versionId].cart.data)
+      local png = assert(RomArchive.encodeIcon(bytes))
+      bytes:release()
+      local delivered, disposed, polls = false, false, 0
+      return {
+        poll = function()
+          polls = polls + 1
+          if polls == 1 then
+            return "pending"
+          end
+          if polls == 2 and not disposed then
+            delivered = true
+            local result = png
+            png = nil
+            return "ready", rom[versionId].cart.sha1, result
+          end
+          return nil
+        end,
+        dispose = function()
+          if disposed then
+            return
+          end
+          disposed = true
+          if not delivered and png ~= nil then
+            png:release()
+            png = nil
+          end
         end,
       }
     end
-    App.load({ dev = false })
-    Assert.deepEqual(routes, {}, "loading a candidate does not commit the timed route early")
-    App.keypressed("return", "return", false)
-    App.keyreleased("return", "return")
-    App.update(1 / 60)
-    Assert.deepEqual(routes, { "selection" }, "the initiating gesture chooses selection exactly once")
-    App.keypressed("return", "return", false)
-    App.keyreleased("return", "return")
-    for _ = 1, 120 do
-      App.update(1 / 60)
-    end
-    Assert.deepEqual(routes, { "selection" }, "the timed route and release never activate Play or skip a movie")
-  end)
-end
-
-function T.analog_drift_wheel_and_background_time_do_not_veto_automatic_choice()
-  withLauncherHost({ ready = { heartgold = true }, candidate = true, backend = candidateBackend() }, function()
-    local routes = {}
-    App._selectVersion = function(versionId)
-      routes[#routes + 1] = "play:" .. versionId
-      App.selectedVersionId = versionId
-    end
-    App._showGameSelection = function()
-      routes[#routes + 1] = "selection"
-      App.selectedVersionId = nil
-    end
-    App.load({ dev = false })
-    App.gamepadaxis({}, "leftx", 0.8)
-    App.wheelmoved(0, 1)
-    App.focus(false)
-    for _ = 1, 120 do
-      App.update(1 / 60)
-    end
-    Assert.deepEqual(routes, {}, "background time and non-button input do not commit a route")
-    App.focus(true)
-    for _ = 1, 120 do
-      App.update(1 / 60)
-    end
-    Assert.equal(routes[1], "play:heartgold", "foreground timeout uses the ordinary automatic game choice")
-    Assert.equal(#routes, 1, "the automatic route commits once")
-  end)
-end
-
-local function assertDrawInside(result, safe, firstPrint, firstRectangle)
-  for index = firstPrint or 1, #result.printPositions do
-    local printed = result.printPositions[index]
-    Assert.isTrue(printed.x >= safe.x and printed.y >= safe.y, "text starts inside the native safe rectangle")
-    Assert.isTrue(
-      printed.x + #printed.text * 6 <= safe.x + safe.width and printed.y + 12 <= safe.y + safe.height,
-      "text ends inside the native safe rectangle: " .. printed.text
-    )
-  end
-  for index = firstRectangle or 1, #result.rectangles do
-    local rectangle = result.rectangles[index]
-    Assert.isTrue(
-      rectangle.x >= safe.x
-        and rectangle.y >= safe.y
-        and rectangle.x + rectangle.width <= safe.x + safe.width
-        and rectangle.y + rectangle.height <= safe.y + safe.height,
-      "launcher painting stays inside the native safe rectangle"
-    )
-  end
-end
-
-function T.app_composes_native_safe_area_into_boot_selection_and_loading()
-  local hostOptions = {
-    width = 640,
-    height = 360,
-    safeRect = { x = 40, y = 20, width = 560, height = 300 },
-    ready = { heartgold = true },
-  }
-  withLauncherHost(hostOptions, function(result)
-    App.load({ dev = false })
-    local safe = result.safeRect()
-    Assert.isTrue(result.safeAreaReads() > 0, "App observes the native safe area during production boot composition")
-    Assert.deepEqual(App.state.safeRect, safe, "boot receives App's measured safe rectangle")
-    local firstPrint, firstRectangle = #result.printPositions + 1, #result.rectangles + 1
-    App.draw()
-    assertDrawInside(result, safe, firstPrint, firstRectangle)
-
-    for _ = 1, 120 do
-      App.update(1 / 60)
-    end
-    local view = App.state:view()
-    local measured = App.state._displayContext:measure(640, 360)
-    Assert.deepEqual(
-      measured.topology.surfaces[1].safeRect,
-      safe,
-      "selection resolves against App's measured safe topology"
-    )
-    local frame = assert(view.presentation.panes[1].placement.frame)
-    Assert.isTrue(
-      frame.x >= safe.x
-        and frame.y >= safe.y
-        and frame.x + frame.width <= safe.x + safe.width
-        and frame.y + frame.height <= safe.y + safe.height,
-      "the composed selection frame stays inside the native safe rectangle"
-    )
-    local readsBeforeView = result.safeAreaReads()
-    App.state:view()
-    App.draw()
-    Assert.equal(result.safeAreaReads(), readsBeforeView, "launcher states never observe the native window themselves")
-
-    local epoch = 0
-    App.service = {
-      select = function()
-        epoch = epoch + 1
-        return epoch
-      end,
-      request = function() end,
-      observe = function()
-        return false
-      end,
-      update = function() end,
-      setExecutionPolicy = function() end,
-      requestBootSource = function() end,
-      bootSourceStatus = function()
-        return "pending"
-      end,
-      retire = function() end,
-      shutdown = function() end,
-    }
-    App._selectVersion("heartgold")
-    Assert.deepEqual(App.state.loading.safeRect, safe, "neutral loading receives the same measured safe rectangle")
-    firstPrint, firstRectangle = #result.printPositions + 1, #result.rectangles + 1
-    App.draw()
-    assertDrawInside(result, safe, firstPrint, firstRectangle)
-
-    local changed = { x = 60, y = 30, width = 520, height = 280 }
-    result.setSafeRect(changed)
-    local readsBeforeResize = result.safeAreaReads()
-    App.update(1 / 60)
-    Assert.equal(result.safeAreaReads(), readsBeforeResize + 1, "App alone refreshes a same-size safe-area change")
-    Assert.deepEqual(App.state.loading.safeRect, changed, "safe-area-only changes reach the live loading presentation")
-    firstPrint, firstRectangle = #result.printPositions + 1, #result.rectangles + 1
-    App.draw()
-    assertDrawInside(result, changed, firstPrint, firstRectangle)
-  end)
-end
-
-function T.launcher_construction_releases_every_file_data_after_use()
-  withLauncherHost({}, function(result)
-    App.load({ dev = false })
-    Assert.equal(#result.fileData, 14, "the renderer and audio owner acquire their nine visual and five audio files")
-    for _, data in ipairs(result.fileData) do
-      Assert.equal(
-        data.releases,
-        1,
-        "each FileData releases immediately after its consuming constructor: " .. data.path
+    local ok, failure = xpcall(function()
+      Assert.isTrue(love.filesystem.remove(rom.heartgold.icon), "missing-icon setup failed")
+      App.load({ dev = false })
+      App.keypressed("return", "return", false)
+      App.keyreleased("return", "return")
+      App.draw()
+      local text = drawnText(host)
+      Assert.isTrue(text:find("31/12/2026", 1, true) ~= nil)
+      Assert.isTrue(text:find("23:59", 1, true) ~= nil)
+      Assert.isTrue(text:find(require("app.src.BuildInfo").version, 1, true) ~= nil)
+      advanceUntil(function()
+        return love.filesystem.getInfo(rom.heartgold.icon, "file") ~= nil
+      end, "optional icon recovery", rom)
+      Assert.equal(starts, 1, "missing sidecar schedules one process-local repair")
+      Assert.notNil(
+        RomArchive.recoverablePath(rom.heartgold.cart.sha1),
+        "optional icon recovery never gates installation"
       )
-    end
-    Assert.equal(#result.imageDatas, 6, "each launcher icon acquires one intermediate ImageData")
-    for _, imageData in ipairs(result.imageDatas) do
-      Assert.equal(imageData.releases, 1, "each ImageData releases immediately after its Image is constructed")
-    end
-  end)
-end
-
-function T.partial_visual_construction_releases_prior_resources_and_file_data()
-  withLauncherHost({ failImageAt = 2 }, function(result)
-    local ok, failure = pcall(App.load, { dev = false })
-    Assert.isFalse(ok, "a partial visual constructor fails instead of publishing a half-usable renderer")
-    Assert.isTrue(tostring(failure):find("image acquisition failure", 1, true) ~= nil)
-    Assert.equal(#result.fileData, 5, "three fonts and two icon files were acquired before the failure")
-    for _, data in ipairs(result.fileData) do
-      Assert.equal(data.releases, 1, "partial visual construction releases each FileData exactly once")
-    end
-    for index = 2, #result.fonts do
-      Assert.equal(result.fonts[index].released, 1, "partial visual construction releases each prior Font exactly once")
-    end
-    for _, image in ipairs(result.images) do
-      Assert.equal(image.released, 1, "partial visual construction releases each prior Image exactly once")
-    end
-    Assert.equal(#result.imageDatas, 2, "both icon ImageData objects exist before the second Image fails")
-    for _, imageData in ipairs(result.imageDatas) do
-      Assert.equal(imageData.releases, 1, "partial visual construction releases each ImageData exactly once")
+      for _ = 1, 5 do
+        App.update(1 / 60)
+      end
+      local imagesAfterRecovery = #host.images
+      for _ = 1, 10 do
+        App.state:view()
+        App.draw()
+        App.update(1 / 60)
+      end
+      Assert.equal(starts, 1, "recovery is not retried per view")
+      Assert.equal(#host.images, imagesAfterRecovery, "a recovered texture is cached rather than allocated per view")
+      now.day, now.month, now.year, now.hour, now.minute = 1, 1, 2027, 0, 0
+      App.state:update(0)
+      local first = #host.copy + 1
+      App.draw()
+      text = drawnText(host, first)
+      Assert.isTrue(text:find("01/01/2027", 1, true) ~= nil)
+      Assert.isTrue(text:find("00:00", 1, true) ~= nil)
+    end, debug.traceback)
+    Recovery.start = originalStart
+    if not ok then
+      error(failure, 0)
     end
   end)
 end
 
-function T.partial_audio_construction_releases_prior_sources_and_file_data()
-  withLauncherHost({ failAudioAt = 3 }, function(result)
+function T.launcher_resources_release_every_acquired_file_and_host_object()
+  withLauncherHost({}, function(host)
     App.load({ dev = false })
-    Assert.isTrue(
-      App.launcherAudio.unavailable,
-      "App retains the explicit silent audio owner after partial device failure"
-    )
-    Assert.equal(#result.audioSources, 2, "only the two Sources completed before the failure were acquired")
-    for _, source in ipairs(result.audioSources) do
-      Assert.equal(source.released, 1, "partial audio construction releases each prior Source exactly once")
+    for _, data in ipairs(host.fileData) do
+      Assert.equal(data.releases, 1, "constructor FileData releases once: " .. data.path)
     end
-    Assert.equal(#result.fileData, 12, "visual construction and three attempted audio acquisitions use FileData")
-    for _, data in ipairs(result.fileData) do
-      Assert.equal(data.releases, 1, "silent-audio fallback releases every acquired FileData exactly once")
+    for _, imageData in ipairs(host.imageDatas) do
+      Assert.equal(imageData.releases, 1)
     end
-  end)
-end
-
-function T.import_status_renders_real_progress_and_the_back_cancel_action()
-  withLauncherHost({}, function(result)
-    App.load({ dev = false })
-    local GameSelectState = require("app.src.launcher.GameSelectState")
-    local library = GameSelectState.new({
-      games = {
-        { gameId = "heartgold", versionId = "heartgold", label = "HeartGold", ready = true, hasSave = false },
-      },
-      initialGameId = "heartgold",
-      importer = {
-        status = function()
-          return { state = "verifying", progress = 0.6, canCancel = true }
-        end,
-      },
-      renderer = App.launcherRenderer,
-      audio = App.launcherAudio,
-      width = 360,
-      height = 640,
-      onPick = function() end,
-      onPlay = function() end,
-      onCancelImport = function() end,
-      onDismissError = function() end,
-      onQuit = function() end,
-    })
-    library:markReceived("heartgold.nds")
-    local view = library:view()
-    local status = assert(view.layout.statusRect)
-    local cancel = assert(view.layout.cancelRect)
-    library:draw()
-    Assert.isTrue(drawnText(result):find("Cancel", 1, true) ~= nil, "the status action has a visible label")
-    local backDrawn = false
-    local drawnIcons = {}
-    for _, draw in ipairs(result.draws) do
-      drawnIcons[#drawnIcons + 1] = string.format("%s@%g,%g", tostring(draw.image.path), draw.x, draw.y)
-      if draw.image.path == "assets/ui/launcher/icons/back.png" then
-        backDrawn = draw.x >= cancel.x
-          and draw.x + 32 <= cancel.x + cancel.width
-          and draw.y >= cancel.y
-          and draw.y + 32 <= cancel.y + cancel.height
-      end
+    App.quit()
+    for index = 2, #host.fonts do
+      Assert.equal(host.fonts[index].released, 1, "renderer fonts release once")
     end
-    Assert.isTrue(
-      backDrawn,
-      "Cancel renders with the existing Back icon inside its target: " .. table.concat(drawnIcons, ", ")
-    )
-
-    local track, fill
-    for _, rectangle in ipairs(result.rectangles) do
-      if rectangle.mode == "fill" and rectangle.y == status.y + 30 and rectangle.height == 4 then
-        if colorMatches(rectangle.color, { 0.984, 0, 0.573, 1 }) then
-          fill = rectangle
-        else
-          track = rectangle
-        end
-      end
+    for _, image in ipairs(host.images) do
+      Assert.equal(image.released, 1, "renderer images release once")
     end
-    Assert.notNil(track, "determinate importer progress renders a track")
-    Assert.notNil(fill, "determinate importer progress renders its real fraction")
-    Assert.isTrue(math.abs(fill.width / track.width - 0.6) <= 0.02, "the rendered fraction follows importer progress")
-    Assert.isTrue(track.x + track.width <= cancel.x, "progress reserves space before Cancel")
-    library:dispose()
-  end)
-end
-
-function T.panel_faces_paint_clipped_alternating_one_pixel_rows()
-  withLauncherHost({}, function(result)
-    App.load({ dev = false })
-    local GameSelectState = require("app.src.launcher.GameSelectState")
-    local library = GameSelectState.new({
-      games = {
-        { gameId = "heartgold", versionId = "heartgold", label = "HeartGold", ready = true, hasSave = false },
-      },
-      initialGameId = "heartgold",
-      renderer = App.launcherRenderer,
-      audio = App.launcherAudio,
-      width = 360,
-      height = 640,
-      onPick = function() end,
-      onPlay = function() end,
-      onCancelImport = function() end,
-      onDismissError = function() end,
-      onQuit = function() end,
-    })
-    local row = assert(library:view().layout.list.rows.heartgold)
-    library:draw()
-    local face = { x = row.x + 1, y = row.y + 1, width = row.width - 3, height = row.height - 3 }
-    local rows = {}
-    for _, rectangle in ipairs(result.rectangles) do
-      if
-        rectangle.mode == "fill"
-        and rectangle.height == 1
-        and rectangle.x == face.x
-        and rectangle.width == face.width
-        and rectangle.y >= face.y - 2
-        and rectangle.y <= face.y + face.height + 2
-      then
-        Assert.isTrue(
-          rectangle.y >= face.y and rectangle.y < face.y + face.height,
-          "face rows stay inside the panel rim"
-        )
-        rows[#rows + 1] = rectangle
-      end
+    for _, source in ipairs(host.audioSources) do
+      Assert.equal(source.released, 1, "launcher Sources release once")
     end
-    Assert.isTrue(#rows >= 20, "the panel face is painted as fine horizontal rows")
-    for index = 2, #rows do
-      Assert.equal(rows[index].y, rows[index - 1].y + 1, "face rows are contiguous")
-      Assert.isFalse(colorMatches(rows[index].color, rows[index - 1].color), "face rows alternate color")
-    end
-    Assert.isTrue(
-      colorMatches(rows[1].color, { 0.922, 0.922, 0.922, 1 }) or colorMatches(rows[1].color, { 0.984, 0.984, 0.984, 1 }),
-      "face rows use only the locked panel colors"
-    )
-    library:dispose()
-  end)
-end
-
-function T.neutral_loading_uses_the_locked_primitive_and_touch_cancel()
-  local hostOptions = { width = 640, height = 360, safeRect = { x = 40, y = 20, width = 560, height = 300 } }
-  withLauncherHost(hostOptions, function(result)
-    App.load({ dev = false })
-    local epoch = 0
-    App.service = {
-      select = function()
-        epoch = epoch + 1
-        return epoch
-      end,
-      request = function() end,
-      observe = function()
-        return false
-      end,
-      update = function() end,
-      setExecutionPolicy = function() end,
-      requestBootSource = function() end,
-      bootSourceStatus = function()
-        return "pending"
-      end,
-      retire = function() end,
-      shutdown = function() end,
-    }
-    App._selectVersion("heartgold")
-    App.draw()
-    Assert.isTrue(drawnText(result):find("Cancel", 1, true) ~= nil, "neutral loading has a visible Cancel action")
-    local squares = {}
-    for _, rectangle in ipairs(result.rectangles) do
-      if rectangle.mode == "fill" and rectangle.width == 8 and rectangle.height == 8 then
-        squares[#squares + 1] = rectangle
-      end
-    end
-    Assert.equal(#squares, 4, "loading uses exactly four square primitives")
-    table.sort(squares, function(left, right)
-      return left.x < right.x
-    end)
-    for index = 2, 4 do
-      Assert.equal(squares[index].x - squares[index - 1].x, 14, "the 8px squares keep 6px gaps")
-    end
-    local accentCount = 0
-    local activeIndex
-    for index, square in ipairs(squares) do
-      if colorMatches(square.color, { 0.984, 0, 0.573, 1 }) then
-        accentCount = accentCount + 1
-        activeIndex = index - 1
-      end
-    end
-    Assert.equal(accentCount, 1, "one accent square advances through the primitive")
-    App.state.loading:update(0.12)
-    local firstAdvancedRectangle = #result.rectangles + 1
-    App.draw()
-    local advanced = {}
-    for index = firstAdvancedRectangle, #result.rectangles do
-      local rectangle = result.rectangles[index]
-      if rectangle.mode == "fill" and rectangle.width == 8 and rectangle.height == 8 then
-        advanced[#advanced + 1] = rectangle
-      end
-    end
-    table.sort(advanced, function(left, right)
-      return left.x < right.x
-    end)
-    Assert.equal(#advanced, 4, "the same four-square primitive advances without changing geometry")
-    local advancedIndex
-    for index, square in ipairs(advanced) do
-      if colorMatches(square.color, { 0.984, 0, 0.573, 1 }) then
-        advancedIndex = index - 1
-      end
-    end
-    Assert.equal(advancedIndex, (activeIndex + 1) % 4, "the accent square advances every 120ms")
-
-    local safe = result.safeRect()
-    local x = safe.x + safe.width - 10 - 56
-    local y = safe.y + safe.height - 10 - 22
-    App.touchpressed("drag", x, y)
-    App.touchmoved("drag", safe.x + 20, safe.y + 20)
-    App.touchreleased("drag", safe.x + 20, safe.y + 20)
-    Assert.equal(App.selectedVersionId, "heartgold", "press-drag-away cannot cancel neutral loading")
-    App.touchpressed("finger", x, y)
-    App.touchreleased("finger", x, y)
-    Assert.isNil(App.selectedVersionId, "touch Cancel retires the selected loading epoch")
-    Assert.equal(
-      getmetatable(App.state).__index,
-      require("app.src.launcher.GameSelectState"),
-      "Cancel returns to game selection"
-    )
-    Assert.deepEqual(result.quitCodes, {}, "loading Cancel never quits the process")
-
-    App._selectVersion("heartgold")
-    App.gamepadpressed({}, "a")
-    Assert.isNil(App.selectedVersionId, "gamepad activation can cancel neutral loading")
-    Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.GameSelectState"))
   end)
 end
 

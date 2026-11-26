@@ -1,263 +1,237 @@
 -- Pure responsive geometry for the app-owned game launcher.
 
-local ScrollViewport = require("libs.ui.src.ScrollViewport")
+local PixelScale = require("libs.ui.src.PixelScale")
 
 local LauncherLayout = {}
 
-local MARGIN = 10
-local HEADER_HEIGHT = 24
-local ACTION_HEIGHT = 44
-local ACTION_GAP = 8
-local CANCEL_WIDTH = 112
-local ROW_HEIGHT = 48
-local ROW_GAP = 8
+local MARGIN = 8
+local HEADER_HEIGHT = 36
+local HEADER_TALL_HEIGHT = 40
+local SLOT_HEIGHT = 56
+local SLOT_GAP = 10
+local ACTION_HEIGHT = 32
 
 local function rect(x, y, width, height)
-  return { x = x, y = y, width = math.max(1, width), height = math.max(1, height) }
+  return { x = x, y = y, width = math.max(0, width), height = math.max(0, height) }
 end
 
 local function contains(shape, x, y)
-  return x >= shape.x and x < shape.x + shape.width and y >= shape.y and y < shape.y + shape.height
+  return shape.width > 0
+    and shape.height > 0
+    and x >= shape.x
+    and x < shape.x + shape.width
+    and y >= shape.y
+    and y < shape.y + shape.height
 end
 
-function LauncherLayout.cancelRect(x, y, width, height)
-  local actionWidth = math.min(CANCEL_WIDTH, width)
-  return rect(x + width - actionWidth, y, actionWidth, height)
+local function textWidth(view, text, bold)
+  local fonts = view.fonts
+  local font = fonts and (bold and fonts.bold or fonts.body)
+  if font ~= nil and type(font.getWidth) == "function" then
+    return font:getWidth(tostring(text))
+  end
+  return #tostring(text) * 6
 end
 
-function LauncherLayout.loading(width, height)
-  assert(type(width) == "number" and width > 0 and type(height) == "number" and height > 0)
-  local cancel = LauncherLayout.cancelRect(MARGIN, height - MARGIN - ACTION_HEIGHT, width - MARGIN * 2, ACTION_HEIGHT)
-  local contentHeight = math.max(1, cancel.y - MARGIN - 12)
-  local graph = { cancel = { up = {}, down = {}, left = {}, right = {} } }
+local function graph(targets, order, cyclic)
+  local nodes, fallbacks = {}, {}
+  for _, targetId in ipairs(order) do
+    assert(targets[targetId], "action order names a current target")
+    nodes[targetId] = { up = {}, down = {}, left = {}, right = {} }
+    fallbacks[#fallbacks + 1] = targetId
+  end
+  for index, targetId in ipairs(order) do
+    if index > 1 then
+      nodes[targetId].up = { order[index - 1] }
+      nodes[order[index - 1]].down = { targetId }
+      nodes[targetId].left = { order[index - 1] }
+      nodes[order[index - 1]].right = { targetId }
+    end
+  end
+  if cyclic and #order > 1 then
+    nodes[order[#order]].down = { order[1] }
+    nodes[order[1]].up = { order[#order] }
+    nodes[order[#order]].right = { order[1] }
+    nodes[order[1]].left = { order[#order] }
+    local reversed = {}
+    for index = #fallbacks, 1, -1 do
+      reversed[#reversed + 1] = fallbacks[index]
+    end
+    fallbacks = reversed
+  end
+  return { graph = nodes, targets = targets, fallbacks = fallbacks }
+end
+
+-- One integer physical density for every launcher surface. A high-DPI host
+-- steps down until the reference layout has room instead of shrinking it into
+-- an unusable fractionally magnified surface.
+function LauncherLayout.surface(bounds, ratio)
+  assert(type(bounds) == "table", "launcher surface needs native bounds")
+  assert(type(ratio) == "number" and ratio > 0 and ratio < math.huge, "launcher surface needs a positive pixel ratio")
+  local scale = math.max(1, math.min(3, math.floor(math.min(bounds.width * ratio / 320, bounds.height * ratio / 240))))
+  local surface
+  repeat
+    surface = PixelScale.cover(bounds, scale, ratio)
+    if surface.logicalViewport.width >= 256 and surface.logicalViewport.height >= 192 then
+      break
+    end
+    scale = scale - 1
+  until scale < 1
+  return surface
+end
+
+local function emptyPlan(width, height)
   return {
-    viewport = { x = 0, y = 0, width = width, height = height },
-    content = rect(MARGIN, MARGIN, width - MARGIN * 2, contentHeight),
-    cancelRect = cancel,
-    graph = {
-      graph = graph,
-      targets = { cancel = { kind = "cancel", rect = cancel } },
-      fallbacks = { "cancel" },
-    },
+    viewport = rect(0, 0, width, height),
+    unavailable = true,
+    graph = graph({}, {}),
   }
+end
+
+function LauncherLayout.loading(width, height, options)
+  assert(type(width) == "number" and width > 0 and type(height) == "number" and height > 0)
+  options = options or {}
+  local viewport = rect(0, 0, width, height)
+  if width < 200 or height < 128 then
+    local plan = emptyPlan(width, height)
+    plan.promptRect = nil
+    return plan
+  end
+  local promptWidth = math.min(width - MARGIN * 2, textWidth(options, "Press a button for game selection"))
+  local promptHeight = 12
+  local prompt = rect(width - MARGIN - promptWidth, height - MARGIN - promptHeight, promptWidth, promptHeight)
+  local plan = { viewport = viewport, content = rect(MARGIN, MARGIN, width - MARGIN * 2, height - MARGIN * 2) }
+  local errorRect = options.error ~= nil
+      and rect(MARGIN + 4, MARGIN + 96, width - MARGIN * 2 - 8, math.max(12, height - 150))
+    or nil
+  if options.selectionInterrupt == true then
+    plan.promptRect = prompt
+    plan.errorRect = errorRect
+    plan.graph = graph({}, {})
+    return plan
+  end
+  local receipt = options.receipt ~= nil and rect(MARGIN + 4, MARGIN + 34, width - MARGIN * 2 - 8, 24) or nil
+  local cancel = options.canCancel == true
+      and rect(width - MARGIN - 96, height - MARGIN - ACTION_HEIGHT, 96, ACTION_HEIGHT)
+    or nil
+  local targets = cancel ~= nil and { cancel = { kind = "cancel", rect = cancel } } or {}
+  plan.receiptRect = receipt
+  plan.statusRect = receipt ~= nil and rect(MARGIN + 4, MARGIN + 62, width - MARGIN * 2 - 8, 32) or nil
+  plan.errorRect = errorRect
+  plan.cancelRect = cancel
+  plan.promptRect = nil
+  plan.graph = graph(targets, cancel ~= nil and { "cancel" } or {})
+  return plan
+end
+
+local function headerHeight(view, width)
+  local versionWidth = textWidth(view, view.version or "", false) + 8
+  local clockWidth = textWidth(view, string.format("%s  %s", view.dateText or "", view.timeText or ""), true)
+  return clockWidth + versionWidth + 24 <= width and HEADER_HEIGHT or HEADER_TALL_HEIGHT
+end
+
+local function actionRow(y, width, targets, order)
+  local gap = 8
+  local actionWidth = math.floor((width - gap * (#order - 1)) / #order)
+  local x = MARGIN + math.floor((width - MARGIN * 2 - (actionWidth * #order + gap * (#order - 1))) / 2)
+  for _, targetId in ipairs(order) do
+    targets[targetId] = { kind = targetId, rect = rect(x, y, actionWidth, ACTION_HEIGHT) }
+    x = x + actionWidth + gap
+  end
 end
 
 function LauncherLayout.compute(view, width, height)
-  assert(type(view) == "table" and type(view.games) == "table", "launcher geometry needs its game snapshot")
+  assert(type(view) == "table" and type(view.games) == "table", "launcher geometry needs its edition snapshot")
   assert(type(width) == "number" and width > 0 and type(height) == "number" and height > 0)
-  local header = rect(MARGIN, MARGIN, width - MARGIN * 2, HEADER_HEIGHT)
-  local wide = width >= 480 and width / height >= 1.35
-  local tiny = width < 280
-  local stacked = width < 296
-  local footerHeight = stacked and ACTION_HEIGHT * 2 + ACTION_GAP or ACTION_HEIGHT
-  local footerY = height - MARGIN - footerHeight
-  local contentX, contentWidth = MARGIN, width - MARGIN * 2
-  local summary
-  local listX, listWidth
-  if wide then
-    summary = rect(
-      contentX,
-      header.y + header.height + MARGIN,
-      208,
-      math.max(32, footerY - header.y - header.height - MARGIN * 2)
-    )
-    listX = summary.x + summary.width + 12
-    listWidth = width - MARGIN - listX
-  else
-    local summaryHeight = math.min(96, math.max(32, math.floor((footerY - header.y - header.height) * 0.3)))
-    if height < 300 then
-      summaryHeight = 32
-    end
-    summary = rect(contentX, header.y + header.height + 4, contentWidth, summaryHeight)
-    listX, listWidth = contentX, contentWidth
+  if width < 200 or height < 160 or #view.games ~= 2 then
+    return emptyPlan(width, height)
   end
-  if stacked then
-    local actionWidth = contentWidth
-    local actions = {
-      addGame = rect(contentX, footerY, actionWidth, ACTION_HEIGHT),
-      play = rect(contentX, footerY + ACTION_HEIGHT + ACTION_GAP, actionWidth, ACTION_HEIGHT),
-    }
-    local listTop = summary.y + summary.height + 8
-    local statusHeight = view.status ~= nil and ((view.canCancel == true or view.busy == true) and ACTION_HEIGHT or 24)
-      or 0
-    local statusRect = view.status ~= nil and rect(listX, listTop, listWidth, statusHeight) or nil
-    local cancelRect = statusRect ~= nil
-        and view.canCancel == true
-        and LauncherLayout.cancelRect(statusRect.x, statusRect.y, statusRect.width, statusRect.height)
-      or nil
-    local list =
-      LauncherLayout._list(view, listX, listTop + statusHeight, listWidth, footerY - listTop - statusHeight - 8)
-    return {
-      viewport = { x = 0, y = 0, width = width, height = height },
-      header = header,
-      summary = summary,
-      statusRect = statusRect,
-      cancelRect = cancelRect,
-      list = list,
-      actions = actions,
-      scroll = { offset = list.offset, maxOffset = list.maxOffset },
-      wide = wide,
-      tiny = tiny,
-      modal = view.modal and LauncherLayout._modal(view.modal, width, height) or nil,
-      graph = LauncherLayout._graph(view, list.rows, actions, cancelRect),
-    }
-  end
-  local actionWidth = math.floor((contentWidth - ACTION_GAP) / 2)
-  local actions = {
-    addGame = rect(contentX, footerY, actionWidth, ACTION_HEIGHT),
-    play = rect(contentX + actionWidth + ACTION_GAP, footerY, contentWidth - actionWidth - ACTION_GAP, ACTION_HEIGHT),
-  }
-  local listTop = wide and header.y + header.height + MARGIN or summary.y + summary.height + 8
-  local statusHeight = view.status ~= nil and ((view.canCancel == true or view.busy == true) and ACTION_HEIGHT or 24)
-    or 0
-  local statusRect = view.status ~= nil and rect(listX, listTop, listWidth, statusHeight) or nil
-  local cancelRect = statusRect ~= nil
-      and view.canCancel == true
-      and LauncherLayout.cancelRect(statusRect.x, statusRect.y, statusRect.width, statusRect.height)
-    or nil
-  local list =
-    LauncherLayout._list(view, listX, listTop + statusHeight, listWidth, footerY - listTop - statusHeight - 8)
-  return {
-    viewport = { x = 0, y = 0, width = width, height = height },
+  local header = rect(0, 0, width, headerHeight(view, width))
+  local plan = {
+    viewport = rect(0, 0, width, height),
     header = header,
-    summary = summary,
-    statusRect = statusRect,
-    cancelRect = cancelRect,
-    list = list,
-    actions = actions,
-    scroll = { offset = list.offset, maxOffset = list.maxOffset },
-    wide = wide,
-    tiny = tiny,
-    modal = view.modal and LauncherLayout._modal(view.modal, width, height) or nil,
-    graph = LauncherLayout._graph(view, list.rows, actions, cancelRect),
+    content = rect(MARGIN, header.height + MARGIN, width - MARGIN * 2, height - header.height - MARGIN * 2),
+    narrowHeader = header.height == HEADER_TALL_HEIGHT,
   }
-end
-
-function LauncherLayout._list(view, x, y, width, height)
-  local viewport = rect(x, y, width, height)
-  local count = #view.games
-  local stride = ROW_HEIGHT + ROW_GAP
-  local extent = count == 0 and 0 or count * stride - ROW_GAP
-  local maxOffset = math.max(0, extent - viewport.height)
-  local offset = ScrollViewport.clamp(view.scrollOffset or 0, extent, viewport.height)
-  local focusedIndex = 1
-  for index, game in ipairs(view.games) do
-    if game.gameId == view.focusedId then
-      focusedIndex = index
-      break
-    end
-  end
-  if count > 0 and view.revealFocused ~= false then
-    offset = ScrollViewport.reveal(offset, viewport.height, (focusedIndex - 1) * stride, ROW_HEIGHT)
-  end
-  offset = ScrollViewport.clamp(offset, extent, viewport.height)
-  local rows = {}
-  for index, game in ipairs(view.games) do
-    local row = rect(x, y + (index - 1) * stride - offset, width, ROW_HEIGHT)
-    rows[#rows + 1] = row
-    rows[game.gameId] = row
-  end
-  return { viewport = viewport, rows = rows, offset = offset, maxOffset = maxOffset, extent = extent }
-end
-
-function LauncherLayout._modal(_, width, height)
-  local boxWidth = math.min(360, width - MARGIN * 2)
-  local boxHeight = math.min(160, height - MARGIN * 2)
-  local box = rect((width - boxWidth) / 2, (height - boxHeight) / 2, boxWidth, boxHeight)
-  local actionWidth = math.floor((box.width - 30) / 2)
-  return {
-    box = box,
-    back = rect(box.x + 10, box.y + box.height - 54, actionWidth, ACTION_HEIGHT),
-    pick = rect(box.x + 20 + actionWidth, box.y + box.height - 54, actionWidth, ACTION_HEIGHT),
-  }
-end
-
-function LauncherLayout._graph(view, rows, actions, cancelRect)
-  local graph, targets = {}, {}
-  local function node(id, _, target)
-    graph[id] = { up = {}, down = {}, left = {}, right = {} }
-    targets[id] = target
-    return id
-  end
-  if view.modal ~= nil then
-    local back = node("back", nil, { kind = "back" })
-    local pick = node("pick", nil, { kind = "pick" })
-    for _, direction in ipairs({ "up", "down", "left", "right" }) do
-      graph[back][direction] = { pick }
-      graph[pick][direction] = { back }
-    end
-    return { graph = graph, targets = targets, fallbacks = { "back", "pick" } }
-  end
-  local add = node("add-game", actions.addGame, { kind = "add-game" })
-  local play = node("play", actions.play, { kind = "play" })
-  local cancel = cancelRect ~= nil and node("cancel", cancelRect, { kind = "cancel" }) or nil
-  graph[add].right = { play }
-  graph[play].left = { add }
-  local first, previous
-  for _, game in ipairs(view.games) do
-    local id = node("game:" .. game.gameId, rows[game.gameId], { kind = "game", gameId = game.gameId })
-    if first == nil then
-      first = id
-    end
-    if previous ~= nil then
-      graph[previous].down = { id }
-      graph[id].up = { previous }
-    end
-    previous = id
-  end
-  if first ~= nil then
-    graph[add].up = { first }
-    graph[play].up = { first }
-    graph[previous].down = { add }
-  end
-  if cancel ~= nil then
-    graph[add].up = { cancel }
-    graph[play].up = { cancel }
-    graph[cancel].up = { add }
-    graph[cancel].down = { first or add }
-    if first ~= nil then
-      graph[first].up = { cancel }
-    end
-  end
-  return { graph = graph, targets = targets, fallbacks = { "add-game", first or "play", "play" } }
-end
-
-function LauncherLayout.hitTest(layout, view, x, y)
-  assert(type(layout) == "table" and type(x) == "number" and type(y) == "number")
-  if layout.modal ~= nil then
-    if contains(layout.modal.back, x, y) then
-      return { kind = "back" }
-    elseif contains(layout.modal.pick, x, y) then
-      return { kind = "pick" }
-    end
-    return { kind = "modal-backdrop" }
-  end
-  if layout.cancelRect ~= nil and contains(layout.cancelRect, x, y) then
-    return { kind = "cancel" }
-  end
-  if contains(layout.actions.addGame, x, y) then
-    return { kind = "add-game" }
-  end
-  if contains(layout.actions.play, x, y) then
-    return { kind = "play" }
-  end
-  if contains(layout.list.viewport, x, y) then
-    for _, game in ipairs(view.games) do
-      local row = layout.list.rows[game.gameId]
-      if contains(row, x, y) then
-        return { kind = "game", gameId = game.gameId }
+  local import = view.import
+  if import ~= nil then
+    plan.mode = import.mode
+    local inner = plan.content
+    local targets, order = {}, {}
+    if import.mode == "choose" or import.mode == "picker" then
+      if import.mode == "choose" and import.pickerAvailable == true then
+        order[#order + 1] = "choose-rom"
       end
+      order[#order + 1] = "back"
+      actionRow(inner.y + inner.height - ACTION_HEIGHT, width, targets, order)
+      plan.messageRect = rect(inner.x + 4, inner.y + 22, inner.width - 8, math.max(20, inner.height - 76))
+    elseif import.mode == "receipt" then
+      if import.canCancel == true then
+        order[#order + 1] = "cancel"
+      end
+      order[#order + 1] = "back"
+      actionRow(inner.y + inner.height - ACTION_HEIGHT, width, targets, order)
+      plan.receiptRect = rect(inner.x + 4, inner.y + 38, inner.width - 8, 28)
+      plan.statusRect = rect(inner.x + 4, inner.y + 72, inner.width - 8, math.max(16, inner.height - 116))
+    elseif import.mode == "importing" then
+      if import.canCancel == true then
+        order[#order + 1] = "cancel"
+        actionRow(inner.y + inner.height - ACTION_HEIGHT, width, targets, order)
+      end
+      plan.receiptRect = rect(inner.x + 4, inner.y + 38, inner.width - 8, 28)
+      plan.statusRect = rect(inner.x + 4, inner.y + 72, inner.width - 8, math.max(16, inner.height - 116))
+    elseif import.mode == "error" then
+      order = { "retry", "back" }
+      actionRow(inner.y + inner.height - ACTION_HEIGHT, width, targets, order)
+      plan.errorRect = rect(inner.x + 4, inner.y + 28, inner.width - 8, math.max(20, inner.height - 72))
+    else
+      error("unknown launcher import mode: " .. tostring(import.mode))
+    end
+    plan.graph = graph(targets, order, true)
+    return plan
+  end
+
+  local slotWidth = math.min(360, width - MARGIN * 2 - 8)
+  local slotX = math.floor((width - slotWidth) / 2)
+  local bodyTop = header.height + MARGIN
+  local available = height - bodyTop - MARGIN
+  local slotHeight = math.min(64, math.max(SLOT_HEIGHT, math.floor((available - SLOT_GAP) / 2)))
+  local groupHeight = slotHeight * 2 + SLOT_GAP
+  local groupY = bodyTop + math.floor((available - groupHeight) / 2)
+  local slots, targets = {}, {}
+  for index, game in ipairs(view.games) do
+    assert(type(game.versionId) == "string" and game.versionId ~= "", "edition targets have semantic identities")
+    local shape = rect(slotX, groupY + (index - 1) * (slotHeight + SLOT_GAP), slotWidth, slotHeight)
+    local slot = { rect = shape }
+    local wellSize = math.min(36, slotHeight - 12)
+    slot.iconWell =
+      rect(slot.rect.x + 8, slot.rect.y + math.floor((slot.rect.height - wellSize) / 2), wellSize, wellSize)
+    slot.textRect =
+      rect(slot.rect.x + wellSize + 18, slot.rect.y + 4, slot.rect.width - wellSize - 26, slot.rect.height - 8)
+    slot.focusRect = rect(slot.rect.x - 3, slot.rect.y - 3, slot.rect.width + 6, slot.rect.height + 6)
+    slots[game.versionId] = slot
+    targets[game.versionId] = { kind = game.versionId, rect = slot.rect }
+  end
+  plan.slots = slots
+  plan.graph = graph(targets, { view.games[1].versionId, view.games[2].versionId })
+  return plan
+end
+
+function LauncherLayout.hitTest(layout, _, x, y)
+  assert(type(layout) == "table", "hit testing needs a current launcher plan")
+  if type(x) ~= "number" or type(y) ~= "number" then
+    return nil
+  end
+  for targetId, target in pairs(layout.graph.targets) do
+    if contains(target.rect, x, y) then
+      return targetId
     end
   end
-  return { kind = "none" }
+  return nil
 end
 
 function LauncherLayout.hitTestLoading(layout, x, y)
-  assert(type(layout) == "table" and type(x) == "number" and type(y) == "number")
-  if contains(layout.cancelRect, x, y) then
-    return { kind = "cancel" }
-  end
-  return { kind = "none" }
+  return LauncherLayout.hitTest(layout, nil, x, y)
 end
 
 return LauncherLayout
