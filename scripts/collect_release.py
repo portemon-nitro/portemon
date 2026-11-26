@@ -100,7 +100,6 @@ def inspect_windows(path: Path, payload: Path) -> None:
         raise ValueError(f"{path.name} contains an unbranded LÖVE executable")
     required = {
         prefix + "app/native/windows/x64/nfd.dll",
-        prefix + "portemon-nitro.ico",
         prefix + "LICENSE",
     }
     missing = sorted(required.difference(members))
@@ -219,12 +218,16 @@ def inspect_linux(path: Path, payload_hash: str) -> None:
         root = Path(directory)
         for relative in (
             "game.love", "app/native/linux/x64/libnfd.so", "AppRun", "portemon.desktop", "portemon.png",
-            "share/pixmaps/portemon.png", ".DirIcon", "LICENSE",
+            "share/pixmaps/portemon.png", "share/icons/hicolor/256x256/apps/portemon.png", ".DirIcon", "LICENSE",
         ):
             if not (root / relative).is_file():
                 raise ValueError(f"{path.name} is missing {relative}")
-        if (root / "portemon.png").read_bytes() != (root / ".DirIcon").read_bytes():
-            raise ValueError(f"{path.name} AppDir icon differs from the product icon")
+        product_icon = (root / "portemon.png").read_bytes()
+        for relative in (
+            ".DirIcon", "share/pixmaps/portemon.png", "share/icons/hicolor/256x256/apps/portemon.png",
+        ):
+            if (root / relative).read_bytes() != product_icon:
+                raise ValueError(f"{path.name} product icon differs at {relative}")
         desktop = {}
         for line in (root / "portemon.desktop").read_text().splitlines():
             if "=" in line and not line.startswith("#"):
@@ -233,7 +236,7 @@ def inspect_linux(path: Path, payload_hash: str) -> None:
         if desktop.get("Icon") != "portemon":
             raise ValueError(f"{path.name} must set Icon=portemon in its desktop entry")
         if any((root / name).exists() for name in ("love.desktop", "love.svg", "share/pixmaps/love.svg")):
-            raise ValueError(f"{path.name} contains upstream LÖVE desktop branding")
+            raise ValueError(f"{path.name} contains upstream LÖVE desktop identity files")
         for member in root.rglob("*"):
             relative = member.relative_to(root).as_posix()
             if not safe_member(relative):

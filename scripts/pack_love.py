@@ -28,15 +28,6 @@ FONT_FILES = (
     "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
     "assets/fonts/mplus1p/OFL.txt",
 )
-ICON_FILES = tuple(
-    f"assets/ui/launcher/icons/{name}.png"
-    for name in ("add-game", "back", "check", "close", "play", "warning")
-) + ("assets/ui/launcher/LICENSE.txt",)
-BRANDING_FILES = (
-    "assets/branding/portemon-nitro.png",
-    "assets/branding/portemon-nitro.ico",
-    "assets/branding/portemon-nitro.icns",
-)
 AUDIO_FILES = tuple(
     f"assets/audio/launcher/{name}.ogg" for name in ("boot", "focus", "confirm", "back", "error")
 ) + ("assets/audio/launcher/README.md",)
@@ -48,8 +39,6 @@ REQUIRED_FILES = (
     "gen4/script.lua",
     "gen4/battle.lua",
     *FONT_FILES,
-    *ICON_FILES,
-    *BRANDING_FILES,
     *AUDIO_FILES,
 )
 SEMVER_IDENTIFIER = r"[0-9A-Za-z-]+"
@@ -88,11 +77,6 @@ def source_files(root: Path) -> list[str]:
                 names.add(path.relative_to(root).as_posix())
     names.update(REQUIRED_FILES[2:])
     names.difference_update(("app/main.lua", "app/conf.lua"))
-    branding = root / "assets" / "branding"
-    if branding.is_dir():
-        for path in branding.rglob("*"):
-            if path.is_file() and not path.is_symlink() and path.suffix.lower() in (".png", ".ico", ".icns"):
-                names.add(path.relative_to(root).as_posix())
     return sorted(names)
 
 

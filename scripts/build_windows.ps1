@@ -88,9 +88,6 @@ try {
   Copy-Item -LiteralPath (Join-Path $nfd "LICENSE") -Destination $native
   Copy-Item -LiteralPath (Join-Path $repo "LICENSE") -Destination $product
 
-  Copy-Item -LiteralPath (Join-Path $repo "assets/branding/portemon-nitro.ico") -Destination $product
-  & (Join-Path $repo "scripts/packaging/windows_icon.ps1") -Executable $executable -Icon (Join-Path $product "portemon-nitro.ico")
-
   $headers = & dumpbin /headers $executable 2>&1
   if ($LASTEXITCODE -ne 0 -or ($headers -join "`n") -notmatch "x64") { throw "build_windows: fused executable is not x64" }
   $verify = @'
@@ -115,8 +112,6 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
     names = archive.namelist()
     if archive.testzip() is not None or sum(name.endswith(".exe") for name in names) != 1:
         raise SystemExit("build_windows: ZIP verification failed")
-    if "Portemon Nitro/portemon-nitro.ico" not in names:
-        raise SystemExit("build_windows: ZIP verification omitted the product icon")
 '@ | python3 - $temporaryOutput
   if ($LASTEXITCODE -ne 0) { throw "build_windows: ZIP verification failed" }
 
@@ -130,7 +125,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
   $smokeExe = Join-Path $smokeInstall "Portemon Nitro/Portemon Nitro.exe"
   $smokeOut = Join-Path $smokeRoot "stdout.log"
   $smokeErr = Join-Path $smokeRoot "stderr.log"
-  $smokeVariableNames = @("APPDATA", "LOCALAPPDATA", "USERPROFILE", "PORTEMON_SAVE_DIR")
+  $smokeVariableNames = @("APPDATA", "LOCALAPPDATA", "USERPROFILE", "PORTEMON_SAVE_DIR", "ALSOFT_DRIVERS")
   $previousEnvironment = @{}
   foreach ($name in $smokeVariableNames) {
     $previousEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, "Process")

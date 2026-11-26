@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Black-box portable payload and alpha release packaging contracts."""
+"""Black-box portable payload and release packaging contracts."""
 
 from __future__ import annotations
 
@@ -75,12 +75,13 @@ FONT_FILES = (
     "assets/fonts/mplus1p/OFL.txt",
 )
 
-ICON_FILES = tuple(
+LAUNCHER_ICON_FILES: tuple[str, ...] = ()
+OBSOLETE_LAUNCHER_FILES = tuple(
     f"assets/ui/launcher/icons/{name}.png"
     for name in ("add-game", "back", "check", "close", "play", "warning")
 ) + ("assets/ui/launcher/LICENSE.txt",)
 
-BRANDING_FILES = (
+CUSTOM_BRANDING_FILES = (
     "assets/branding/portemon-nitro.png",
     "assets/branding/portemon-nitro.ico",
     "assets/branding/portemon-nitro.icns",
@@ -122,7 +123,7 @@ def make_fixture(root: Path) -> None:
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(REPO_ROOT / relative, target)
-    for relative in FONT_FILES + ICON_FILES + BRANDING_FILES:
+    for relative in FONT_FILES + OBSOLETE_LAUNCHER_FILES + CUSTOM_BRANDING_FILES:
         write_file(root, relative, b"isolated packaging fixture\n")
     for relative in AUDIO_FILES:
         write_file(root, relative, b"TEST FIXTURE; synthetic bytes; not release provenance\n")
@@ -188,7 +189,6 @@ def write_windows_artifact(path: Path, payload: Path, extra: dict[str, bytes] | 
     members = {
         f"{folder}/Portemon Nitro.exe": b"MZ synthetic runtime\n" + payload.read_bytes(),
         f"{folder}/app/native/windows/x64/nfd.dll": b"synthetic nfd x64\n",
-        f"{folder}/portemon-nitro.ico": b"synthetic product icon\n",
         f"{folder}/LICENSE": b"fixture license\n",
     }
     members.update({f"{folder}/{name}": data for name, data in (extra or {}).items()})
@@ -215,7 +215,7 @@ def write_macos_artifact(
         f"{bundle}/Contents/Info.plist": info,
         f"{bundle}/Contents/MacOS/portemon": b"synthetic universal runtime\n",
         f"{bundle}/Contents/Resources/game.love": payload.read_bytes(),
-        f"{bundle}/Contents/Resources/portemon.icns": b"synthetic product icon\n",
+        f"{bundle}/Contents/Resources/portemon.icns": b"synthetic upstream shell artwork\n",
         f"{bundle}/Contents/Resources/app/native/macos/x64/libnfd.dylib": b"synthetic nfd x64\n",
         f"{bundle}/Contents/Resources/app/native/macos/arm64/libnfd.dylib": b"synthetic nfd arm64\n",
         f"{bundle}/Contents/Resources/LICENSE": b"fixture license\n",
@@ -241,8 +241,9 @@ def write_linux_artifact(
                 "[Desktop Entry]\nName=Portémon Nitro\nExec=AppRun\nType=Application\n"
                 "Icon=portemon\nTerminal=false\n"
             ).encode(),
-            "portemon.png": b"synthetic product icon\n",
-            "share/pixmaps/portemon.png": b"synthetic product icon\n",
+            "portemon.png": b"synthetic upstream shell artwork\n",
+            "share/pixmaps/portemon.png": b"synthetic upstream shell artwork\n",
+            "share/icons/hicolor/256x256/apps/portemon.png": b"synthetic upstream shell artwork\n",
             "LICENSE": b"fixture license\n",
         }
         files.update(extra or {})
@@ -481,6 +482,18 @@ def host_smoke_platform() -> str:
     raise RuntimeError(f"archive smoke has no owned user-data environment for {sys.platform}")
 
 
+def archive_probe_conf(original: bytes) -> bytes:
+    return original + b"\n" + textwrap.dedent(
+        """\
+        local packagedConf = love.conf
+        function love.conf(t)
+          packagedConf(t)
+          t.modules.audio = false
+        end
+        """
+    ).encode("utf-8")
+
+
 def smoke_payload(payload: Path, listing: Path | None = None) -> None:
     love = os.environ.get("LOVE_BIN") or shutil.which("love")
     if love is None:
@@ -506,8 +519,6 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
             "data/scripts/overrides/common.pokecenter_pc.lua",
             "libs/nds/src/love/shaders/map.glsl",
             *FONT_FILES,
-            *ICON_FILES,
-            *BRANDING_FILES,
             *AUDIO_FILES,
         }
         missing = sorted(required.difference(names))
@@ -538,8 +549,9 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
         untouched = untouched_dir / "portemon.love"
         shutil.copyfile(payload, untouched)
         owned_roots = SMOKE_ENVIRONMENT_MODULE.environment(host_smoke_platform(), root)
-        for owned_root in owned_roots.values():
-            Path(owned_root).mkdir(parents=True, exist_ok=True)
+        for name, owned_root in owned_roots.items():
+            if name != "ALSOFT_DRIVERS":
+                Path(owned_root).mkdir(parents=True, exist_ok=True)
         environment = os.environ.copy()
         environment.update(owned_roots)
         environment.update(
@@ -572,15 +584,17 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
         wrapped = probe_dir / "wrapped.love"
         with zipfile.ZipFile(probe) as source_archive, zipfile.ZipFile(wrapped, "w") as archive:
             for info in source_archive.infolist():
-                if info.filename != "main.lua":
+                if info.filename not in ("main.lua", "conf.lua"):
                     archive.writestr(info, source_archive.read(info.filename))
             archive.writestr("main.lua", wrapper)
+            archive.writestr("conf.lua", archive_probe_conf(source_archive.read("conf.lua")))
         wrapped.replace(probe)
         result = subprocess.run(
             [love, str(probe)], cwd=cwd, env=environment, capture_output=True, text=True, timeout=45,
         )
         if result.returncode != 0 or "ARCHIVE_SMOKE_OK" not in result.stdout:
             raise RuntimeError(f"archive probe failed ({result.returncode}):\n{result.stdout}\n{result.stderr}")
+        marker = next(line for line in result.stdout.splitlines() if line.startswith("ARCHIVE_SMOKE_OK "))
         if {path.name for path in probe_dir.iterdir()} != {"probe.love"}:
             raise RuntimeError("archive probe wrote beside its payload")
 
@@ -589,7 +603,7 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
     with zipfile.ZipFile(payload) as archive:
         if member_digest(archive) != before:
             raise RuntimeError("archive smoke mutated packaged members")
-    print(f"archive smoke passed: {version} {commit} {original_hash}")
+    print(f"archive smoke passed: {version} {commit} {original_hash}; {marker}")
 
 
 ANDROID_JAVA_STUBS = {
@@ -883,8 +897,14 @@ class PackagingContractTest(unittest.TestCase):
                 self.assertIn("conf.lua", names)
                 self.assertNotIn("app/main.lua", names)
                 self.assertNotIn("app/conf.lua", names)
-                for relative in SOURCE_FILES[2:] + FONT_FILES + ICON_FILES + BRANDING_FILES + AUDIO_FILES:
+                for relative in SOURCE_FILES[2:] + FONT_FILES + AUDIO_FILES:
                     self.assertIn(relative, names)
+                self.assertEqual(
+                    [name for name in names if name.startswith("assets/ui/launcher/icons/")],
+                    list(LAUNCHER_ICON_FILES),
+                )
+                self.assertFalse(any(name.startswith("assets/branding/") for name in names))
+                self.assertNotIn("assets/ui/launcher/LICENSE.txt", names)
                 for relative in EXCLUDED_FILES:
                     self.assertNotIn(relative, names)
                 self.assertFalse(any("icons-src/" in name for name in names))
@@ -923,6 +943,38 @@ class PackagingContractTest(unittest.TestCase):
                 self.assertRegex(identity, r'version\s*=\s*"dev"')
                 self.assertRegex(identity, rf'commit\s*=\s*"{COMMIT}"')
 
+    def test_native_shell_art_is_excluded_from_the_runtime_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_fixture(root)
+            write_file(root, "assets/branding/nested/unreviewed.icns", b"unapproved shell artwork fixture\n")
+            output = root / "runtime.love"
+
+            result = run_packer(root, output, root / "listing.txt")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with zipfile.ZipFile(output) as archive:
+                names = archive.namelist()
+            self.assertFalse(any(name.startswith("assets/branding/") for name in names))
+
+    def test_obsolete_art_is_not_required_and_unreviewed_shell_art_is_never_packaged(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_fixture(root)
+            for relative in OBSOLETE_LAUNCHER_FILES + CUSTOM_BRANDING_FILES:
+                (root / relative).unlink()
+            write_file(root, "assets/branding/unreviewed.png", b"unapproved shell artwork fixture\n")
+            write_file(root, "assets/branding/unreviewed.ico", b"unapproved shell artwork fixture\n")
+            output = root / "runtime-only.love"
+
+            result = run_packer(root, output, root / "listing.txt")
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with zipfile.ZipFile(output) as archive:
+                names = archive.namelist()
+            self.assertFalse(any(name.startswith("assets/branding/") for name in names))
+            self.assertFalse(any(name.startswith("assets/ui/launcher/icons/") for name in names))
+
     def test_missing_required_source_or_asset_preserves_the_previous_payload_and_listing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -930,9 +982,11 @@ class PackagingContractTest(unittest.TestCase):
             listing = root / "listing.txt"
             for relative in (
                 "gen4/battle.lua",
+                "assets/fonts/galmuri/Galmuri11.ttf",
+                "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
                 "assets/audio/launcher/boot.ogg",
+                "assets/audio/launcher/focus.ogg",
                 "assets/audio/launcher/README.md",
-                *BRANDING_FILES,
             ):
                 with self.subTest(missing=relative):
                     make_fixture(root)
@@ -1154,12 +1208,22 @@ class MacosMetadataContractTest(unittest.TestCase):
 
 
 class PackagedSmokeEnvironmentTest(unittest.TestCase):
+    def test_every_desktop_smoke_environment_selects_the_null_audio_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for platform in ("linux", "macos", "windows"):
+                with self.subTest(platform=platform):
+                    environment = SMOKE_ENVIRONMENT_MODULE.environment(platform, root)
+                    self.assertEqual(environment["ALSOFT_DRIVERS"], "null")
+                    self.assertTrue(all(Path(value).is_absolute() for name, value in environment.items() if name != "ALSOFT_DRIVERS"))
+
     def test_posix_smoke_process_receives_owned_roots_without_mutating_its_parent(self) -> None:
         sentinels = {
             "HOME": str(REPO_ROOT / "real-home"),
             "XDG_DATA_HOME": str(REPO_ROOT / "real-data"),
             "XDG_CACHE_HOME": str(REPO_ROOT / "real-cache"),
             "PORTEMON_SAVE_DIR": str(REPO_ROOT / "real-save"),
+            "ALSOFT_DRIVERS": "pulse",
         }
         expected = {
             "linux": {
@@ -1186,6 +1250,7 @@ class PackagedSmokeEnvironmentTest(unittest.TestCase):
                     )
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     environment = json.loads(captured.read_text())
+                    self.assertEqual(environment["ALSOFT_DRIVERS"], "null")
                     for name, relative in roots.items():
                         self.assertEqual(environment[name], str(root / relative))
                     for name, value in sentinels.items():
@@ -1225,11 +1290,13 @@ class PackagedSmokeEnvironmentTest(unittest.TestCase):
                     "LOCALAPPDATA": str(root / "local"),
                     "USERPROFILE": str(root / "home"),
                     "PORTEMON_SAVE_DIR": str(root / "data"),
+                    "ALSOFT_DRIVERS": "null",
                 },
             )
 
     def test_archive_smoke_uses_owned_platform_roots_for_every_child(self) -> None:
         expected = {
+            "linux": {"HOME": "home", "XDG_DATA_HOME": "data", "XDG_CACHE_HOME": "cache", "PORTEMON_SAVE_DIR": "data"},
             "windows": {
                 "APPDATA": "roaming",
                 "LOCALAPPDATA": "local",
@@ -1239,7 +1306,18 @@ class PackagedSmokeEnvironmentTest(unittest.TestCase):
             "macos": {"HOME": "home", "PORTEMON_SAVE_DIR": "data"},
         }
         with tempfile.TemporaryDirectory() as directory:
-            payload = make_payload(Path(directory))
+            root = Path(directory)
+            payload = make_payload(root)
+            with zipfile.ZipFile(payload) as archive:
+                original_conf = archive.read("conf.lua")
+            environment_module = SMOKE_ENVIRONMENT_MODULE
+            packaged_environment = environment_module.environment
+
+            def environment_with_audio(platform, owned_root):
+                values = packaged_environment(platform, owned_root)
+                values["ALSOFT_DRIVERS"] = "null"
+                return values
+
             for platform, roots in expected.items():
                 with self.subTest(platform=platform):
                     launches = []
@@ -1247,6 +1325,7 @@ class PackagedSmokeEnvironmentTest(unittest.TestCase):
                     def check_environment(environment):
                         root = Path(environment["PORTEMON_SAVE_DIR"]).parent
                         self.assertEqual(environment["PORTEMON_SMOKE_PARENT_SENTINEL"], "preserved")
+                        self.assertEqual(environment["ALSOFT_DRIVERS"], "null")
                         for name, relative in roots.items():
                             owned = root / relative
                             self.assertEqual(environment[name], str(owned))
@@ -1259,10 +1338,14 @@ class PackagedSmokeEnvironmentTest(unittest.TestCase):
                         if "--version" in command:
                             return subprocess.CompletedProcess(command, 0, "LOVE 11.5 (fixture)\n", "")
                         check_environment(kwargs["env"])
-                        return subprocess.CompletedProcess(command, 0, "ARCHIVE_SMOKE_OK\n", "")
+                        with zipfile.ZipFile(Path(command[1])) as archive:
+                            self.assertEqual(archive.read("conf.lua"), archive_probe_conf(original_conf))
+                        return subprocess.CompletedProcess(command, 0, "ARCHIVE_SMOKE_OK version=fixture commit=fixture frames=2\n", "")
 
                     def popen(command, **kwargs):
                         check_environment(kwargs["env"])
+                        with zipfile.ZipFile(Path(command[1])) as archive:
+                            self.assertEqual(archive.read("conf.lua"), original_conf)
                         return process
 
                     process = mock.Mock()
@@ -1273,19 +1356,23 @@ class PackagedSmokeEnvironmentTest(unittest.TestCase):
                         "PORTEMON_SMOKE_PARENT_SENTINEL": "preserved",
                         "LUA_PATH": "/real/lua/path",
                         "LUA_CPATH": "/real/lua/cpath",
+                        "ALSOFT_DRIVERS": "pulse",
                     })
                     with (
                         mock.patch.dict(os.environ, parent, clear=True),
                         mock.patch(f"{__name__}.host_smoke_platform", return_value=platform),
+                        mock.patch.object(environment_module, "environment", side_effect=environment_with_audio),
                         mock.patch(f"{__name__}.subprocess.run", side_effect=run),
                         mock.patch(f"{__name__}.subprocess.Popen", side_effect=popen),
                         mock.patch(f"{__name__}.stop_process"),
                         mock.patch(f"{__name__}.time.sleep"),
                     ):
                         smoke_payload(payload)
+                        self.assertEqual(os.environ["ALSOFT_DRIVERS"], "pulse")
 
                     self.assertEqual(len(launches), 2, "untouched and probe launches must use the same owned environment")
                     self.assertEqual(launches[0], launches[1])
+                    self.assertFalse((root / "null").exists(), "the audio backend value is not an owned directory")
 
 
 class ReleaseCollectorContractTest(unittest.TestCase):
@@ -1534,62 +1621,22 @@ class ReleaseCollectorContractTest(unittest.TestCase):
                     self.assertEqual(tree_snapshot(output), previous)
 
 
-class ProductBrandingContractTest(unittest.TestCase):
-    def test_authored_icon_files_have_native_platform_resource_shapes(self) -> None:
-        paths = {relative: REPO_ROOT / relative for relative in BRANDING_FILES}
-        for relative, path in paths.items():
-            self.assertTrue(path.is_file(), f"missing authored product icon: {relative}")
-
-        png = paths[BRANDING_FILES[0]].read_bytes()
-        self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
-        self.assertEqual(struct.unpack(">II", png[16:24]), (512, 512))
-        self.assertEqual(png[24:26], b"\x08\x06", "the product PNG must be 8-bit RGBA")
-
-        ico = paths[BRANDING_FILES[1]].read_bytes()
-        reserved, resource_type, count = struct.unpack_from("<HHH", ico)
-        self.assertEqual((reserved, resource_type), (0, 1))
-        sizes = set()
-        for index in range(count):
-            offset = 6 + index * 16
-            width, height, colors, _, planes, bits, length, data_offset = struct.unpack_from("<BBBBHHII", ico, offset)
-            sizes.add((width or 256, height or 256))
-            self.assertGreater(length, 0)
-            self.assertGreaterEqual(data_offset, 6 + count * 16)
-            self.assertLessEqual(data_offset + length, len(ico))
-            self.assertEqual((planes, bits), (1, 32))
-        self.assertEqual(sizes, {(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)})
-
-        icns = paths[BRANDING_FILES[2]].read_bytes()
-        self.assertEqual(icns[:4], b"icns")
-        self.assertEqual(struct.unpack_from(">I", icns, 4)[0], len(icns))
-        chunks = {}
-        offset = 8
-        while offset < len(icns):
-            code, length = struct.unpack_from(">4sI", icns, offset)
-            self.assertGreaterEqual(length, 8)
-            self.assertLessEqual(offset + length, len(icns))
-            chunks[code.decode("ascii")] = icns[offset + 8:offset + length]
-            offset += length
-        self.assertEqual(offset, len(icns))
-        for code, size in (("ic07", 128), ("ic08", 256), ("ic09", 512), ("ic10", 1024)):
-            self.assertIn(code, chunks)
-            self.assertTrue(chunks[code].startswith(b"\x89PNG\r\n\x1a\n"))
-            self.assertEqual(struct.unpack(">II", chunks[code][16:24]), (size, size))
-
-    def test_payload_carries_the_authored_branding_bytes(self) -> None:
+class NativeShellArtworkContractTest(unittest.TestCase):
+    def test_windows_uses_the_fused_executable_icon_without_a_standalone_custom_icon(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            make_fixture(root)
-            for relative in BRANDING_FILES:
-                shutil.copyfile(REPO_ROOT / relative, root / relative)
-            output = root / "branded.love"
-            result = run_packer(root, output, root / "listing.txt")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            with zipfile.ZipFile(output) as archive:
-                for relative in BRANDING_FILES:
-                    self.assertEqual(archive.read(relative), (REPO_ROOT / relative).read_bytes())
+            payload, inputs = make_release_fixture(root)
+            output = root / "release"
+            result = run_collector(inputs, output)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            artifact = inputs / release_artifacts(RELEASE_VERSION)[1]
+            with zipfile.ZipFile(artifact) as archive:
+                names = archive.namelist()
+            self.assertFalse(any(name.endswith(".ico") for name in names))
+            self.assertEqual([name for name in names if name.endswith(".exe")], ["Portemon Nitro/Portemon Nitro.exe"])
+            assert_embedded_payload(self, artifact, payload)
 
-    def test_native_packages_must_select_the_product_icon(self) -> None:
+    def test_macos_requires_exactly_one_product_named_icon(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             payload, inputs = make_release_fixture(root)
@@ -1597,43 +1644,57 @@ class ProductBrandingContractTest(unittest.TestCase):
             result = run_collector(inputs, output)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             previous = tree_snapshot(output)
-            names = release_artifacts(RELEASE_VERSION)
-            windows_icon = "Portemon Nitro/portemon-nitro.ico"
-            macos_icon = "Portemon Nitro.app/Contents/Resources/portemon.icns"
-            for name, omitted in ((names[1], {windows_icon}), (names[2], {macos_icon})):
-                with self.subTest(artifact=name, missing=next(iter(omitted))):
-                    write_release_artifacts(inputs, payload)
-                    omit_zip_members(inputs / name, omitted)
-                    result = run_collector(inputs, output)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(next(iter(omitted)), result.stdout + result.stderr)
-                    self.assertEqual(tree_snapshot(output), previous)
-
+            artifact = inputs / release_artifacts(RELEASE_VERSION)[2]
+            icon = "Portemon Nitro.app/Contents/Resources/portemon.icns"
             write_release_artifacts(inputs, payload)
-            with zipfile.ZipFile(inputs / names[2]) as archive:
-                members = {name: archive.read(name) for name in archive.namelist()}
-            info_name = "Portemon Nitro.app/Contents/Info.plist"
-            info = plistlib.loads(members[info_name])
-            info["CFBundleIconFile"] = "love"
-            members[info_name] = plistlib.dumps(info)
-            members["Portemon Nitro.app/Contents/Resources/love.icns"] = b"upstream icon\n"
-            write_zip(inputs / names[2], members)
+            omit_zip_members(artifact, {icon})
             result = run_collector(inputs, output)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("CFBundleIconFile", result.stdout + result.stderr)
+            self.assertIn(icon, result.stdout + result.stderr)
             self.assertEqual(tree_snapshot(output), previous)
 
-            info["CFBundleIconFile"] = "portemon"
-            members[info_name] = plistlib.dumps(info)
-            write_zip(inputs / names[2], members)
+            write_release_artifacts(
+                inputs, payload,
+                extras={artifact.name: {"Portemon Nitro.app/Contents/Resources/love.icns": b"stale upstream name\n"}},
+            )
             result = run_collector(inputs, output)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("only the product icon", result.stdout + result.stderr)
             self.assertEqual(tree_snapshot(output), previous)
 
+    def test_linux_keeps_matching_product_icon_paths_and_rejects_stale_desktop_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload, inputs = make_release_fixture(root)
+            output = root / "release"
+            result = run_collector(inputs, output)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            previous = tree_snapshot(output)
+            artifact = inputs / release_artifacts(RELEASE_VERSION)[3]
+            icons = (
+                "portemon.png",
+                "share/pixmaps/portemon.png",
+                "share/icons/hicolor/256x256/apps/portemon.png",
+            )
+            for relative in icons:
+                with self.subTest(missing=relative):
+                    write_linux_artifact(artifact, payload, omit={relative})
+                    result = run_collector(inputs, output)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(relative, result.stdout + result.stderr)
+                    self.assertEqual(tree_snapshot(output), previous)
+
+            for relative in icons[1:]:
+                with self.subTest(mismatched=relative):
+                    write_linux_artifact(artifact, payload, extra={relative: b"different shell artwork\n"})
+                    result = run_collector(inputs, output)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("icon", result.stdout + result.stderr)
+                    self.assertEqual(tree_snapshot(output), previous)
+
             write_release_artifacts(
                 inputs, payload,
-                extras={names[3]: {"portemon.desktop": b"[Desktop Entry]\nName=Portemon Nitro\nIcon=love\n"}},
+                extras={artifact.name: {"portemon.desktop": b"[Desktop Entry]\nName=Portemon Nitro\nIcon=love\n"}},
             )
             result = run_collector(inputs, output)
             self.assertNotEqual(result.returncode, 0)
@@ -1641,11 +1702,11 @@ class ProductBrandingContractTest(unittest.TestCase):
             self.assertEqual(tree_snapshot(output), previous)
 
             write_release_artifacts(
-                inputs, payload, extras={names[3]: {"love.svg": b"upstream artwork\n"}},
+                inputs, payload, extras={artifact.name: {"love.svg": b"stale upstream desktop identity\n"}},
             )
             result = run_collector(inputs, output)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("upstream LÖVE desktop branding", result.stdout + result.stderr)
+            self.assertIn("upstream LÖVE desktop identity files", result.stdout + result.stderr)
             self.assertEqual(tree_snapshot(output), previous)
 
 

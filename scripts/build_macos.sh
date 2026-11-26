@@ -113,8 +113,11 @@ else
 fi
 mv "$executable" "$bundle/Contents/MacOS/portemon"
 find "$resources" -maxdepth 1 -name '*.love' -delete
+upstream_icon="$stage/upstream-love.icns"
+[[ -f "$resources/love.icns" ]] || { echo "build_macos: official runtime omitted its shell icon" >&2; exit 1; }
+cp "$resources/love.icns" "$upstream_icon"
 rm -f "$resources/love.icns"
-cp "$repo/assets/branding/portemon-nitro.icns" "$resources/portemon.icns"
+cp "$upstream_icon" "$resources/portemon.icns"
 cp "$love_payload" "$resources/game.love"
 
 core="${version%%-*}"
@@ -155,7 +158,7 @@ if packaged.read_bytes() != source.read_bytes() or hashlib.sha256(packaged.read_
     raise SystemExit("build_macos: packaged payload differs")
 PY
 python3 scripts/packaging/macos_metadata.py --plist "$plist" --version "$core" --verify
-cmp "$repo/assets/branding/portemon-nitro.icns" "$resources/portemon.icns"
+cmp "$upstream_icon" "$resources/portemon.icns"
 test ! -e "$resources/love.icns"
 
 ditto -c -k --sequesterRsrc --keepParent "$bundle" "$temporary_output"

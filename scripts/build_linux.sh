@@ -147,10 +147,16 @@ mkdir -p "$native"
 cp "$nfd/libnfd.so" "$native/libnfd.so"
 cp "$nfd/LICENSE" "$native/LICENSE"
 cp LICENSE "$appdir/LICENSE"
-cp "$repo/assets/branding/portemon-nitro.png" "$appdir/portemon.png"
+upstream_icon="$stage/upstream-love.png"
+[[ -f "$appdir/share/icons/hicolor/256x256/apps/love.png" ]] || {
+  echo "build_linux: official AppImage omitted its shell icon" >&2
+  exit 1
+}
+cp "$appdir/share/icons/hicolor/256x256/apps/love.png" "$upstream_icon"
+cp "$upstream_icon" "$appdir/portemon.png"
 mkdir -p "$appdir/share/pixmaps" "$appdir/share/icons/hicolor/256x256/apps"
-cp "$repo/assets/branding/portemon-nitro.png" "$appdir/share/pixmaps/portemon.png"
-cp "$repo/assets/branding/portemon-nitro.png" "$appdir/share/icons/hicolor/256x256/apps/portemon.png"
+cp "$upstream_icon" "$appdir/share/pixmaps/portemon.png"
+cp "$upstream_icon" "$appdir/share/icons/hicolor/256x256/apps/portemon.png"
 
 # NFDe's portal backend needs D-Bus. Bundle its non-system shared dependency
 # closure and the corresponding distribution notices in the runtime lib path.
@@ -215,8 +221,10 @@ verify_offset="$($temporary_output --appimage-offset)"
 mkdir "$stage/verify"
 "$unsquashfs" -no-xattrs -o "$verify_offset" -d "$stage/verify" "$temporary_output" >/dev/null
 cmp "$love_payload" "$stage/verify/game.love"
-cmp "$repo/assets/branding/portemon-nitro.png" "$stage/verify/portemon.png"
-cmp "$repo/assets/branding/portemon-nitro.png" "$stage/verify/.DirIcon"
+cmp "$upstream_icon" "$stage/verify/portemon.png"
+cmp "$upstream_icon" "$stage/verify/share/pixmaps/portemon.png"
+cmp "$upstream_icon" "$stage/verify/share/icons/hicolor/256x256/apps/portemon.png"
+cmp "$upstream_icon" "$stage/verify/.DirIcon"
 grep -q '^Icon=portemon$' "$stage/verify/portemon.desktop"
 test ! -e "$stage/verify/love.svg"
 cmp "$nfd/libnfd.so" "$stage/verify/app/native/linux/x64/libnfd.so"

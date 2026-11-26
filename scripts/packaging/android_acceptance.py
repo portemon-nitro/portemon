@@ -217,8 +217,12 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
     print(f"Completed acceptance manifest: {args.manifest}")
     print(f"Private test ROM is available through the document picker at: {REMOTE_ROM}")
     print("Launch the installed Portémon Nitro app.")
-    print("Complete the touch-only journey: import, New Game/naming/field/menu, publish, return to selection, rotate, and background/resume.")
-    print("Set every journey entry to passed=true with observed evidence; the supplied saves/games/*.lua payload must remain unchanged.")
+    print("Use the touch-only journey; both edition slots are direct actions, with no separate Run or Add Game control.")
+    print("Startup/import: interrupt boot from a slot, tap a missing edition, exercise SAF cancel and wrong-edition rejection, then import the matching ROM and observe its banner.")
+    print("Game entry: tap the installed edition directly, complete New Game/naming/field/menu, and publish a new save.")
+    print("Return: use the in-game route back to the two-slot selector without auto-launching another edition.")
+    print("Rotation/background: rotate and background/resume at the selector and during the game, then repeat warm and cold startup and interrupt boot from a slot.")
+    print("Set every existing journey entry to passed=true with observed evidence; the managed ROM and supplied saves/games/*.lua payload must remain unchanged.")
     print("The harness will verify the actual candidate, managed ROM, supplied save files, logcat, and screen recording.")
     return record
 

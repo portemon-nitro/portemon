@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Define owned user-data roots for packaged desktop smoke processes."""
+"""Define owned user-data roots and silent audio for packaged desktop smoke processes."""
 
 from __future__ import annotations
 
@@ -19,14 +19,16 @@ def environment(platform: str, root: Path) -> dict[str, str]:
             "XDG_DATA_HOME": data,
             "XDG_CACHE_HOME": str(root / "cache"),
             "PORTEMON_SAVE_DIR": data,
+            "ALSOFT_DRIVERS": "null",
         }
     if platform == "macos":
-        return {"HOME": str(root / "home"), "PORTEMON_SAVE_DIR": data}
+        return {"HOME": str(root / "home"), "PORTEMON_SAVE_DIR": data, "ALSOFT_DRIVERS": "null"}
     return {
         "APPDATA": str(root / "roaming"),
         "LOCALAPPDATA": str(root / "local"),
         "USERPROFILE": str(root / "home"),
         "PORTEMON_SAVE_DIR": data,
+        "ALSOFT_DRIVERS": "null",
     }
 
 
