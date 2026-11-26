@@ -87,14 +87,19 @@ local function runProbe()
   assert(BuildInfo.commit == os.getenv("PORTEMON_SMOKE_COMMIT"), "wrong packaged commit")
 
   for _, path in ipairs({
+    "assets/fonts/galmuri/Galmuri9.ttf",
     "assets/fonts/galmuri/Galmuri11.ttf",
     "assets/fonts/galmuri/Galmuri11-Bold.ttf",
+    "assets/fonts/galmuri/LICENSE.txt",
+    "assets/fonts/mplus1p/MPLUS1p-Bold.ttf",
     "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
+    "assets/fonts/mplus1p/OFL.txt",
     "assets/audio/launcher/boot.ogg",
     "assets/audio/launcher/focus.ogg",
     "assets/audio/launcher/confirm.ogg",
     "assets/audio/launcher/back.ogg",
     "assets/audio/launcher/error.ogg",
+    "assets/logo.png",
     "libs/nds/src/love/shaders/map.glsl",
     "gen4/battle.lua",
     "data/scripts/overrides/common.pokecenter_pc.lua",
@@ -102,15 +107,30 @@ local function runProbe()
     assert(#readMember(path) > 0, "empty packaged member " .. path)
   end
 
-  local font = assert(love.filesystem.newFileData(readMember("assets/fonts/galmuri/Galmuri11.ttf"), "Galmuri11.ttf"))
-  local loadedFont = assert(love.graphics.newFont(font))
-  loadedFont:release()
+  for path, name in pairs({
+    ["assets/fonts/galmuri/Galmuri9.ttf"] = "Galmuri9.ttf",
+    ["assets/fonts/galmuri/Galmuri11.ttf"] = "Galmuri11.ttf",
+    ["assets/fonts/mplus1p/MPLUS1p-Bold.ttf"] = "MPLUS1p-Bold.ttf",
+  }) do
+    local font = assert(love.filesystem.newFileData(readMember(path), name))
+    local loadedFont = assert(love.graphics.newFont(font))
+    font:release()
+    loadedFont:release()
+  end
   if type(love.sound) == "table" and type(love.sound.newSoundData) == "function" then
     local cue = assert(love.filesystem.newFileData(readMember("assets/audio/launcher/boot.ogg"), "boot.ogg"))
     local decoded = assert(love.sound.newSoundData(cue))
     cue:release()
     decoded:release()
   end
+
+  local logoPath = "assets/logo.png"
+  local logoData = assert(love.filesystem.newFileData(readMember(logoPath), "logo.png"))
+  local logo = assert(love.graphics.newImage(logoData), "packaged boot logo must decode")
+  logoData:release()
+  local logoWidth, logoHeight = logo:getDimensions()
+  assert(logoWidth == 451 and logoHeight == 115, "packaged boot logo must be 451x115")
+  logo:release()
 
   local RepoFs = require("libs.storage.src.RepoFs")
   local source = RepoFs.new("outside-checkout", love.filesystem)

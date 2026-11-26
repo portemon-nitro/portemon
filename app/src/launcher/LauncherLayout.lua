@@ -5,11 +5,13 @@ local PixelScale = require("libs.ui.src.PixelScale")
 local LauncherLayout = {}
 
 local MARGIN = 8
-local HEADER_HEIGHT = 36
-local HEADER_TALL_HEIGHT = 40
-local SLOT_HEIGHT = 56
-local SLOT_GAP = 10
+local SLOT_HEIGHT = 46
+local SLOT_GAP = 8
+local ICON_COMPARTMENT = 46
+local FOCUS_CLEARANCE = 3
 local ACTION_HEIGHT = 32
+local PROMPT = "Press a button for game selection"
+local IMPORT_HINT = "Select to import ROM"
 
 local function rect(x, y, width, height)
   return { x = x, y = y, width = math.max(0, width), height = math.max(0, height) }
@@ -24,13 +26,33 @@ local function contains(shape, x, y)
     and y < shape.y + shape.height
 end
 
-local function textWidth(view, text, bold)
-  local fonts = view.fonts
-  local font = fonts and (bold and fonts.bold or fonts.body)
+local function fontFor(fonts, key)
+  return fonts ~= nil and fonts[key] or nil
+end
+
+local function fontHeight(fonts, key, fallback)
+  local font = fontFor(fonts, key)
+  if font ~= nil and type(font.getHeight) == "function" then
+    return font:getHeight()
+  end
+  return fallback
+end
+
+local function textWidth(fonts, key, text, fallback)
+  local font = fontFor(fonts, key)
   if font ~= nil and type(font.getWidth) == "function" then
     return font:getWidth(tostring(text))
   end
-  return #tostring(text) * 6
+  return #tostring(text) * fallback
+end
+
+local function wrapLines(fonts, key, text, width, fallback)
+  local font = fontFor(fonts, key)
+  if font ~= nil and type(font.getWrap) == "function" then
+    local _, lines = font:getWrap(tostring(text), math.max(1, width))
+    return math.max(1, #lines)
+  end
+  return math.max(1, math.ceil(textWidth(fonts, key, text, fallback) / math.max(1, width)))
 end
 
 local function graph(targets, order, cyclic)
@@ -81,11 +103,47 @@ function LauncherLayout.surface(bounds, ratio)
 end
 
 local function emptyPlan(width, height)
+  local header = rect(0, 0, width, math.min(height, 18))
   return {
     viewport = rect(0, 0, width, height),
+    header = header,
+    headerCells = { date = header, time = header, version = header, separators = {} },
     unavailable = true,
     graph = graph({}, {}),
   }
+end
+
+local function headerPlan(view, width)
+  local fonts = view.fonts
+  local lineHeight = math.max(fontHeight(fonts, "body", 12), fontHeight(fonts, "bold", 12))
+  local dateWidth = textWidth(fonts, "body", view.dateText or "", 12)
+  local timeWidth = textWidth(fonts, "body", view.timeText or "", 12)
+  local versionWidth = textWidth(fonts, "body", view.version or "", 12)
+  local padding = 8
+  local oneRow = dateWidth + timeWidth + versionWidth + padding * 6 + 2 <= width
+  local height = math.max(18, (oneRow and 1 or 2) * (lineHeight + 2))
+  local header = rect(0, 0, width, height)
+  local innerHeight = height - 4
+  local cells = { separators = {} }
+  if oneRow then
+    local dateCell = math.min(dateWidth + padding * 2, math.floor(width * 0.42))
+    local timeCell = math.min(timeWidth + padding * 2, math.floor(width * 0.28))
+    local y = header.y + 2
+    cells.date = rect(header.x, y, dateCell, innerHeight)
+    cells.separators[1] = header.x + dateCell
+    cells.time = rect(header.x + dateCell + 2, y, timeCell, innerHeight)
+    cells.separators[2] = header.x + dateCell + 2 + timeCell
+    cells.version = rect(header.x + dateCell + timeCell + 4, y, width - dateCell - timeCell - 4, innerHeight)
+  else
+    local rowHeight = math.floor((innerHeight - 2) / 2)
+    local dateCell = math.min(dateWidth + padding * 2, math.floor((width - 2) * 0.62))
+    local y = header.y + 2
+    cells.date = rect(header.x, y, dateCell, rowHeight)
+    cells.separators[1] = header.x + dateCell
+    cells.time = rect(header.x + dateCell + 2, y, width - dateCell - 2, rowHeight)
+    cells.version = rect(header.x, y + rowHeight + 2, width, rowHeight)
+  end
+  return header, cells
 end
 
 function LauncherLayout.loading(width, height, options)
@@ -93,23 +151,45 @@ function LauncherLayout.loading(width, height, options)
   options = options or {}
   local viewport = rect(0, 0, width, height)
   if width < 200 or height < 128 then
-    local plan = emptyPlan(width, height)
-    plan.promptRect = nil
-    return plan
+    return emptyPlan(width, height)
   end
-  local promptWidth = math.min(width - MARGIN * 2, textWidth(options, "Press a button for game selection"))
-  local promptHeight = 12
+  local fonts = options.fonts
+  local bodyHeight = fontHeight(fonts, "body", 12)
+  local promptHeight = fontHeight(fonts, "prompt", 12)
+  local promptWidth = math.min(width - MARGIN * 2, textWidth(fonts, "prompt", PROMPT, 6))
   local prompt = rect(width - MARGIN - promptWidth, height - MARGIN - promptHeight, promptWidth, promptHeight)
-  local plan = { viewport = viewport, content = rect(MARGIN, MARGIN, width - MARGIN * 2, height - MARGIN * 2) }
-  local errorRect = options.error ~= nil
-      and rect(MARGIN + 4, MARGIN + 96, width - MARGIN * 2 - 8, math.max(12, height - 150))
-    or nil
-  if options.selectionInterrupt == true then
+  local content = rect(MARGIN, MARGIN, width - MARGIN * 2, height - MARGIN * 2)
+  local neutral = options.selectionInterrupt == true
+  local title = tostring(options.gameLabel or options.title or "")
+  local titleWidth = neutral and content.width or content.width - 8
+  local titleHeight = wrapLines(fonts, "body", title, titleWidth, 6) * bodyHeight
+  local plan = { viewport = viewport, content = content }
+  if neutral then
+    plan.titleRect = rect(content.x, content.y, content.width, titleHeight)
+    plan.loadingStatusRect = rect(content.x, content.y, content.width, bodyHeight)
+    plan.indicatorRect = rect(content.x + math.floor((content.width - 50) / 2), content.y, 50, 8)
+    local blockHeight = titleHeight + 6 + bodyHeight + 8 + 8
+    local areaHeight = content.height - promptHeight - 8
+    local blockY = content.y + math.max(0, math.floor((areaHeight - blockHeight) / 2))
+    plan.titleRect.y = blockY
+    plan.loadingStatusRect.y = blockY + titleHeight + 6
+    plan.indicatorRect.y = plan.loadingStatusRect.y + bodyHeight + 8
+    local errorTop = plan.indicatorRect.y + plan.indicatorRect.height + 8
+    local errorLimit = math.min(content.y + content.height, prompt.y) - 8
+    local errorHeight = errorLimit - errorTop
+    plan.errorRect = options.error ~= nil
+        and errorHeight > 0
+        and rect(content.x + 4, errorTop, content.width - 8, errorHeight)
+      or nil
     plan.promptRect = prompt
-    plan.errorRect = errorRect
     plan.graph = graph({}, {})
     return plan
   end
+
+  plan.errorRect = options.error ~= nil
+      and rect(MARGIN + 4, MARGIN + 96, width - MARGIN * 2 - 8, math.max(12, height - 150))
+    or nil
+  plan.titleRect = rect(content.x + 4, content.y + 4, content.width - 8, titleHeight)
   local receipt = options.receipt ~= nil and rect(MARGIN + 4, MARGIN + 34, width - MARGIN * 2 - 8, 24) or nil
   local cancel = options.canCancel == true
       and rect(width - MARGIN - 96, height - MARGIN - ACTION_HEIGHT, 96, ACTION_HEIGHT)
@@ -117,17 +197,9 @@ function LauncherLayout.loading(width, height, options)
   local targets = cancel ~= nil and { cancel = { kind = "cancel", rect = cancel } } or {}
   plan.receiptRect = receipt
   plan.statusRect = receipt ~= nil and rect(MARGIN + 4, MARGIN + 62, width - MARGIN * 2 - 8, 32) or nil
-  plan.errorRect = errorRect
   plan.cancelRect = cancel
-  plan.promptRect = nil
   plan.graph = graph(targets, cancel ~= nil and { "cancel" } or {})
   return plan
-end
-
-local function headerHeight(view, width)
-  local versionWidth = textWidth(view, view.version or "", false) + 8
-  local clockWidth = textWidth(view, string.format("%s  %s", view.dateText or "", view.timeText or ""), true)
-  return clockWidth + versionWidth + 24 <= width and HEADER_HEIGHT or HEADER_TALL_HEIGHT
 end
 
 local function actionRow(y, width, targets, order)
@@ -146,12 +218,12 @@ function LauncherLayout.compute(view, width, height)
   if width < 200 or height < 160 or #view.games ~= 2 then
     return emptyPlan(width, height)
   end
-  local header = rect(0, 0, width, headerHeight(view, width))
+  local header, headerCells = headerPlan(view, width)
   local plan = {
     viewport = rect(0, 0, width, height),
     header = header,
+    headerCells = headerCells,
     content = rect(MARGIN, header.height + MARGIN, width - MARGIN * 2, height - header.height - MARGIN * 2),
-    narrowHeader = header.height == HEADER_TALL_HEIGHT,
   }
   local import = view.import
   if import ~= nil then
@@ -191,26 +263,62 @@ function LauncherLayout.compute(view, width, height)
     return plan
   end
 
-  local slotWidth = math.min(360, width - MARGIN * 2 - 8)
-  local slotX = math.floor((width - slotWidth) / 2)
+  local fonts = view.fonts
+  local bodyHeight = fontHeight(fonts, "body", 12)
+  local widestName = 0
+  local missingTitles, missingHints = 0, 0
+  for _, game in ipairs(view.games) do
+    widestName = math.max(widestName, textWidth(fonts, "body", game.label, 6))
+    if game.installed ~= true then
+      missingTitles = math.max(missingTitles, wrapLines(fonts, "body", game.label, 150, 6))
+      missingHints = math.max(missingHints, wrapLines(fonts, "prompt", IMPORT_HINT, 150, 6))
+    end
+  end
+  local wantedWidth = ICON_COMPARTMENT + 12 + widestName
+  local widthLimit = width - MARGIN * 2 - FOCUS_CLEARANCE * 2
+  local slotWidth = math.min(280, math.floor(width * 0.80), widthLimit)
+  if slotWidth < wantedWidth and widthLimit >= wantedWidth then
+    slotWidth = wantedWidth
+  end
+  local textWidthAvailable = slotWidth - ICON_COMPARTMENT - 8
+  local titleLines = 0
+  for _, game in ipairs(view.games) do
+    titleLines = math.max(titleLines, wrapLines(fonts, "body", game.label, textWidthAvailable, 6))
+  end
+  local requiredHeight = titleLines * bodyHeight + 12
+  if missingTitles > 0 then
+    requiredHeight = math.max(requiredHeight, (missingTitles + missingHints) * bodyHeight + 3 + 12)
+  end
+  local slotHeight = math.max(SLOT_HEIGHT, requiredHeight)
+  local groupHeight = slotHeight * 2 + SLOT_GAP
   local bodyTop = header.height + MARGIN
   local available = height - bodyTop - MARGIN
-  local slotHeight = math.min(64, math.max(SLOT_HEIGHT, math.floor((available - SLOT_GAP) / 2)))
-  local groupHeight = slotHeight * 2 + SLOT_GAP
+  if groupHeight > available then
+    return emptyPlan(width, height)
+  end
   local groupY = bodyTop + math.floor((available - groupHeight) / 2)
+  local slotX = math.floor((width - slotWidth) / 2)
   local slots, targets = {}, {}
   for index, game in ipairs(view.games) do
     assert(type(game.versionId) == "string" and game.versionId ~= "", "edition targets have semantic identities")
     local shape = rect(slotX, groupY + (index - 1) * (slotHeight + SLOT_GAP), slotWidth, slotHeight)
     local slot = { rect = shape }
-    local wellSize = math.min(36, slotHeight - 12)
-    slot.iconWell =
-      rect(slot.rect.x + 8, slot.rect.y + math.floor((slot.rect.height - wellSize) / 2), wellSize, wellSize)
-    slot.textRect =
-      rect(slot.rect.x + wellSize + 18, slot.rect.y + 4, slot.rect.width - wellSize - 26, slot.rect.height - 8)
-    slot.focusRect = rect(slot.rect.x - 3, slot.rect.y - 3, slot.rect.width + 6, slot.rect.height + 6)
+    local wellHeight = slotHeight - 2
+    slot.iconWell = rect(shape.x + 1, shape.y + 1, ICON_COMPARTMENT, wellHeight)
+    slot.textRect = rect(
+      slot.iconWell.x + ICON_COMPARTMENT + 4,
+      shape.y + 3,
+      shape.x + shape.width - 3 - (slot.iconWell.x + ICON_COMPARTMENT + 4),
+      slotHeight - 6
+    )
+    slot.focusRect = rect(
+      shape.x - FOCUS_CLEARANCE,
+      shape.y - FOCUS_CLEARANCE,
+      shape.width + FOCUS_CLEARANCE * 2,
+      shape.height + FOCUS_CLEARANCE * 2
+    )
     slots[game.versionId] = slot
-    targets[game.versionId] = { kind = game.versionId, rect = slot.rect }
+    targets[game.versionId] = { kind = game.versionId, rect = shape }
   end
   plan.slots = slots
   plan.graph = graph(targets, { view.games[1].versionId, view.games[2].versionId })

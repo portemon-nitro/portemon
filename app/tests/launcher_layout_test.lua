@@ -62,6 +62,27 @@ local function assertInside(inner, outer, what)
   )
 end
 
+local function assertDisjoint(inner, outer, what, otherWhat)
+  Assert.isTrue(
+    inner.y + inner.height <= outer.y
+      or outer.y + outer.height <= inner.y
+      or inner.x + inner.width <= outer.x
+      or outer.x + outer.width <= inner.x,
+    what .. " stays clear of " .. otherWhat
+  )
+end
+
+local function measuredFont(height, widthPerCharacter)
+  local font = { height = height, widthPerCharacter = widthPerCharacter }
+  function font:getHeight()
+    return self.height
+  end
+  function font:getWidth(text)
+    return #tostring(text) * self.widthPerCharacter
+  end
+  return font
+end
+
 local function assertRootPlan(layout, viewport)
   Assert.notNil(layout.header)
   assertInside(layout.header, viewport, "status bar")
@@ -217,6 +238,125 @@ function T.neutral_loading_has_a_prompt_but_operation_loading_owns_real_cancel()
   assertInside(operation.receiptRect, operation.viewport, "operation receipt")
   assertInside(operation.cancelRect, operation.viewport, "operation Cancel")
   Assert.notNil(operation.graph.targets.cancel)
+end
+
+function T.neutral_error_region_follows_the_centered_block_and_clears_the_prompt()
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  local cases = {
+    { width = 256, height = 192, body = 12, prompt = 10, label = "Pokémon SoulSilver" },
+    { width = 320, height = 240, body = 12, prompt = 10, label = "Pokémon HeartGold" },
+    {
+      width = 390,
+      height = 844,
+      body = 14,
+      prompt = 11,
+      label = "Pokémon SoulSilver with an unusually long edition title",
+    },
+  }
+  for _, case in ipairs(cases) do
+    local fonts = { body = measuredFont(case.body, 8), prompt = measuredFont(case.prompt, 6) }
+    local options = {
+      selectionInterrupt = true,
+      gameLabel = case.label,
+      error = "Cache read failed",
+      detail = "Card unreadable",
+      fonts = fonts,
+    }
+    local plan = LauncherLayout.loading(case.width, case.height, options)
+    local region = assert(plan.errorRect, "a neutral failure owns a measured diagnostic region")
+    assertInside(region, plan.content, "neutral diagnostic")
+    for _, part in ipairs({ plan.titleRect, plan.loadingStatusRect, plan.indicatorRect }) do
+      assertDisjoint(region, part, "neutral diagnostic", "the centered title/status/indicator block")
+    end
+    local blockBottom = plan.indicatorRect.y + plan.indicatorRect.height
+    Assert.isTrue(
+      region.y >= blockBottom and region.y - blockBottom <= 8,
+      "the diagnostic starts immediately below the finalized block"
+    )
+    Assert.isTrue(
+      region.y + region.height <= plan.promptRect.y,
+      "the diagnostic stays above the reserved bottom-right prompt"
+    )
+    Assert.isTrue(region.height >= case.body * 2, "the diagnostic region fits actionable copy")
+
+    options.error = nil
+    Assert.isNil(
+      LauncherLayout.loading(case.width, case.height, options).errorRect,
+      "a quiet loader reserves no diagnostic"
+    )
+  end
+
+  local operation = LauncherLayout.loading(256, 192, { selectionInterrupt = false, error = "Import failed" })
+  Assert.notNil(operation.errorRect, "operation loading keeps its own diagnostic region")
+  Assert.equal(operation.errorRect.y, 8 + 96, "operation diagnostic placement is unchanged")
+end
+
+function T.compact_cartridges_fit_full_edition_names_and_measured_status_rows()
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  local view = rootView("heartgold")
+  view.games[1].label = "Pokémon HeartGold"
+  view.games[2].label = "Pokémon SoulSilver"
+  view.fonts = {
+    body = measuredFont(10, 8),
+    bold = measuredFont(11, 9),
+    prompt = measuredFont(10, 6),
+  }
+  local layout = LauncherLayout.compute(view, 256, 192)
+  local slot = assert(layout.slots.heartgold)
+  Assert.isTrue(
+    slot.rect.width >= 196 and slot.rect.width <= 212,
+    "a native-width cartridge stays compact: " .. tostring(slot.rect.width)
+  )
+  Assert.isTrue(
+    slot.rect.height >= 44 and slot.rect.height <= 50,
+    "a native-width cartridge stays a shallow row: " .. tostring(slot.rect.height)
+  )
+  Assert.isTrue(
+    slot.iconWell.width >= 44 and slot.iconWell.width <= 48,
+    "the icon owns a distinct full-height compartment: " .. tostring(slot.iconWell.width)
+  )
+  Assert.isTrue(slot.iconWell.height >= slot.rect.height - 4, "the icon compartment fills the cartridge height")
+  Assert.isTrue(
+    view.fonts.body:getWidth(view.games[1].label) <= slot.textRect.width,
+    "the full edition name fits its measured text compartment"
+  )
+  Assert.isTrue(
+    view.fonts.body:getWidth(view.games[2].label) <= assert(layout.slots.soulsilver).textRect.width,
+    "both full edition names fit without shortening"
+  )
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    assertInside(layout.slots[versionId].focusRect, layout.viewport, versionId .. " focus clearance")
+  end
+  local wide = LauncherLayout.compute(view, 764, 575)
+  Assert.isTrue(wide.header.height <= 22, "a normal-width status strip is a compact row")
+  Assert.isTrue(wide.header.width == 764, "the status strip spans its viewport")
+end
+
+function T.status_cells_measure_date_and_time_with_the_painted_body_face()
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  local view = rootView()
+  view.version = "v1"
+  view.fonts = {
+    body = measuredFont(10, 4),
+    bold = measuredFont(14, 9),
+    prompt = measuredFont(10, 6),
+  }
+  local layout = LauncherLayout.compute(view, 256, 192)
+  local cells = layout.headerCells
+  Assert.equal(cells.date.width, view.fonts.body:getWidth(view.dateText) + 16, "the date cell measures the body face")
+  Assert.equal(cells.time.width, view.fonts.body:getWidth(view.timeText) + 16, "the time cell measures the body face")
+end
+
+function T.loading_prompt_geometry_uses_the_supplied_face_metrics()
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  local plan = LauncherLayout.loading(256, 192, {
+    selectionInterrupt = true,
+    fonts = { prompt = measuredFont(10, 6) },
+  })
+  local prompt = assert(plan.promptRect)
+  Assert.equal(prompt.height, 10, "the prompt reserves its actual font height")
+  Assert.equal(prompt.x + prompt.width, 248, "the prompt keeps the right inset")
+  Assert.equal(prompt.y + prompt.height, 184, "the prompt keeps the bottom inset")
 end
 
 function T.unusable_tiny_geometry_suspends_instead_of_fabricating_one_pixel_actions()

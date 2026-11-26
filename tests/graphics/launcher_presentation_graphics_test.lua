@@ -12,6 +12,10 @@ local GameVersion = require("romdump.src.source.GameVersion")
 
 local T = {}
 
+local BOOT_LOGO_WIDTH, BOOT_LOGO_HEIGHT = 451, 115
+local BOOT_LOGO_INK_WIDTH, BOOT_LOGO_INK_HEIGHT = 433, 107
+local BOOT_LOGO_LOGICAL_WIDTH = 151
+
 local function context(width, height, ratio, safeRect)
   safeRect = safeRect or { x = 0, y = 0, width = width, height = height }
   return DisplayContext.new({
@@ -102,6 +106,35 @@ local function physicalPoint(placement, logicalX, logicalY, ratio)
   return (placement.origin.x + logicalX * scale) * ratio, (placement.origin.y + logicalY * scale) * ratio
 end
 
+local function drawToPixels(scope, width, height, ratio, draw)
+  local canvas =
+    scope:own(love.graphics.newCanvas(width * ratio, height * ratio, { format = "rgba8", readable = true }))
+  love.graphics.push("all")
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.scale(ratio, ratio)
+  local originalOrigin = love.graphics.origin
+  local originalIntersectScissor = love.graphics.intersectScissor
+  if ratio ~= 1 then
+    love.graphics.origin = function()
+      originalOrigin()
+      love.graphics.scale(ratio, ratio)
+    end
+    love.graphics.intersectScissor = function(x, y, width, height)
+      originalIntersectScissor(x * ratio, y * ratio, width * ratio, height * ratio)
+    end
+  end
+  local drew, drawFailure = xpcall(draw, debug.traceback)
+  love.graphics.origin = originalOrigin
+  love.graphics.intersectScissor = originalIntersectScissor
+  if not drew then
+    error(drawFailure, 0)
+  end
+  love.graphics.setCanvas()
+  love.graphics.pop()
+  return scope:own(canvas:newImageData())
+end
+
 function T.real_framebuffer_geometry_covers_selector_import_boot_and_loading(scope)
   ManagedRomIconFixture.with(function(rom)
     for editionId, info in pairs(GameVersion.VERSIONS) do
@@ -132,35 +165,8 @@ function T.real_framebuffer_geometry_covers_selector_import_boot_and_loading(sco
     if outputDir ~= nil then
       os.execute("mkdir -p " .. string.format("%q", outputDir))
     end
-    local function capture(name, width, height, ratio, safeRect, draw)
-      local canvas =
-        scope:own(love.graphics.newCanvas(width * ratio, height * ratio, { format = "rgba8", readable = true }))
-      love.graphics.push("all")
-      love.graphics.setCanvas(canvas)
-      love.graphics.clear(0, 0, 0, 0)
-      love.graphics.scale(ratio, ratio)
-      local originalOrigin = love.graphics.origin
-      local originalIntersectScissor = love.graphics.intersectScissor
-      if ratio ~= 1 then
-        love.graphics.origin = function()
-          originalOrigin()
-          love.graphics.scale(ratio, ratio)
-        end
-        love.graphics.intersectScissor = function(x, y, width, height)
-          originalIntersectScissor(x * ratio, y * ratio, width * ratio, height * ratio)
-        end
-      end
-      local drew, drawFailure = xpcall(function()
-        draw()
-      end, debug.traceback)
-      love.graphics.origin = originalOrigin
-      love.graphics.intersectScissor = originalIntersectScissor
-      if not drew then
-        error(drawFailure, 0)
-      end
-      love.graphics.setCanvas()
-      love.graphics.pop()
-      local pixels = scope:own(canvas:newImageData())
+    local function capture(name, width, height, ratio, _, draw)
+      local pixels = drawToPixels(scope, width, height, ratio, draw)
       if outputDir ~= nil then
         local encoded = assert(pixels:encode("png"))
         local file = assert(io.open(outputDir .. "/" .. name .. ".png", "wb"))
@@ -565,6 +571,375 @@ function T.corrupt_optional_icon_is_blank_without_gating_managed_source(scope)
     renderer:dropGameIcon(rom.heartgold.cart.sha1)
     renderer:dropGameIcon(rom.heartgold.cart.sha1)
   end)
+end
+
+local function samplePixel(pixels, x, y)
+  local red, green, blue, alpha = pixels:getPixel(math.floor(x), math.floor(y))
+  return { r = red * 255, g = green * 255, b = blue * 255, a = alpha * 255 }
+end
+
+local function writeCapture(name, pixels)
+  local outputDir = os.getenv("PORTEMON_LAUNCHER_SCREENSHOT_DIR")
+  if outputDir == nil then
+    return
+  end
+  local encoded = assert(pixels:encode("png"))
+  local file = assert(io.open(outputDir .. "/" .. name .. ".png", "wb"))
+  file:write(encoded:getString())
+  file:close()
+  encoded:release()
+end
+
+function T.background_major_grid_uses_48_pixel_square_boundaries(scope)
+  local renderer = require("app.src.launcher.LauncherRenderer").new()
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local width, height = 256, 192
+  local pixels = drawToPixels(scope, width, height, 1, function()
+    renderer:_background(width, height)
+  end)
+  local function sameColor(actual, expected)
+    return actual.r == expected.r and actual.g == expected.g and actual.b == expected.b and actual.a == expected.a
+  end
+  local plain = samplePixel(pixels, 10, 1)
+  local fine = samplePixel(pixels, 10, 2)
+  local major = samplePixel(pixels, 10, 0)
+  Assert.isTrue(not sameColor(plain, fine), "fine horizontal lines remain")
+  Assert.isTrue(not sameColor(plain, major), "major boundaries use a distinct color")
+  Assert.isTrue(not sameColor(fine, major), "major and fine lines are distinct")
+  for y = 0, height - 1, 48 do
+    Assert.isTrue(sameColor(samplePixel(pixels, 10, y), major), "y=" .. y .. " is a major horizontal boundary")
+  end
+  for y = 2, height - 1, 2 do
+    if y % 48 ~= 0 then
+      Assert.isTrue(sameColor(samplePixel(pixels, 10, y), fine), "y=" .. y .. " keeps only the fine horizontal line")
+    end
+  end
+  for x = 0, width - 1, 48 do
+    Assert.isTrue(sameColor(samplePixel(pixels, x, 1), major), "x=" .. x .. " is a major vertical boundary")
+  end
+  for x = 1, width - 1 do
+    if x % 48 ~= 0 then
+      Assert.isTrue(sameColor(samplePixel(pixels, x, 1), plain), "x=" .. x .. " has no secondary vertical stripe")
+    end
+  end
+end
+
+function T.boot_frame_stays_white_with_centered_ink(scope)
+  local renderer = require("app.src.launcher.LauncherRenderer").new()
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local BootIntroState = require("app.src.launcher.BootIntroState")
+  for _, case in ipairs({
+    { width = 256, height = 192, ratio = 1 },
+    { width = 764, height = 575, ratio = 1 },
+    { width = 764, height = 575, ratio = 2 },
+    { width = 390, height = 844, ratio = 1 },
+    {
+      width = 385,
+      height = 287,
+      ratio = 3,
+      safeRect = { x = 18, y = 24, width = 349, height = 239 },
+    },
+  }) do
+    local safeRect = case.safeRect or { x = 0, y = 0, width = case.width, height = case.height }
+    local boot = BootIntroState.new({
+      renderer = renderer,
+      audio = audio(),
+      displayContext = context(case.width, case.height, case.ratio, case.safeRect),
+      width = case.width,
+      height = case.height,
+      safeRect = safeRect,
+      pixelRatio = case.ratio,
+    })
+    scope:own({
+      release = function()
+        boot:dispose()
+      end,
+    })
+    boot:update(0.2)
+    boot:draw()
+    boot:update(0.2)
+    local pixels = drawToPixels(scope, case.width, case.height, case.ratio, function()
+      boot:draw()
+    end)
+    writeCapture(string.format("boot-ink-%dx%d-ratio%d", case.width, case.height, case.ratio), pixels)
+    local left = math.ceil(safeRect.x * case.ratio) + 2
+    local top = math.ceil(safeRect.y * case.ratio) + 2
+    local right = math.floor((safeRect.x + safeRect.width) * case.ratio) - 3
+    local bottom = math.floor((safeRect.y + safeRect.height) * case.ratio) - 3
+    for _, point in ipairs({
+      { left, top },
+      { right, top },
+      { left, bottom },
+      { right, bottom },
+      { (left + right) / 2, top + 12 * case.ratio },
+    }) do
+      local sample = samplePixel(pixels, point[1], point[2])
+      Assert.isTrue(
+        sample.a > 0 and sample.r > 250 and sample.g > 250 and sample.b > 250,
+        "boot paints pure white away from its ink"
+      )
+    end
+    local minX, maxX, minY, maxY = math.huge, -math.huge, math.huge, -math.huge
+    local inkBottom = math.floor(top + safeRect.height * case.ratio * 0.7)
+    for y = top, inkBottom do
+      for x = left, right do
+        local sample = samplePixel(pixels, x, y)
+        if sample.a > 0 and (sample.r < 245 or sample.g < 245 or sample.b < 245) then
+          minX, maxX = math.min(minX, x), math.max(maxX, x)
+          minY, maxY = math.min(minY, y), math.max(maxY, y)
+        end
+      end
+    end
+    Assert.isTrue(minX < math.huge, "the boot logo reaches the framebuffer")
+    Assert.isTrue(maxY < inkBottom, "the boot logo stays clear of the selection prompt")
+    local logical = boot.surface.logicalViewport
+    local physicalScale = assert(boot.surface.placement.pixelScale)
+    local drawnWidth = math.min(BOOT_LOGO_LOGICAL_WIDTH, logical.width - 16)
+    local drawnHeight = drawnWidth * BOOT_LOGO_HEIGHT / BOOT_LOGO_WIDTH
+    Assert.isTrue(
+      math.abs(maxX - minX + 1 - drawnWidth * BOOT_LOGO_INK_WIDTH / BOOT_LOGO_WIDTH * physicalScale)
+        <= 8 * physicalScale,
+      "the logo ink keeps the measured wordmark extent"
+    )
+    Assert.isTrue(
+      math.abs(maxY - minY + 1 - drawnHeight * BOOT_LOGO_INK_HEIGHT / BOOT_LOGO_HEIGHT * physicalScale)
+        <= 8 * physicalScale,
+      "the logo keeps its native aspect ratio"
+    )
+    Assert.isTrue(
+      math.abs((minX + maxX) / 2 - (safeRect.x + safeRect.width / 2) * case.ratio) <= 6 * case.ratio,
+      "the boot logo is horizontally centered"
+    )
+    Assert.isTrue(
+      math.abs((minY + maxY) / 2 - (safeRect.y + safeRect.height / 2) * case.ratio) <= 10 * case.ratio,
+      "the boot logo is vertically centered"
+    )
+  end
+end
+
+function T.selector_chrome_owns_blue_segments_and_four_focus_corners(scope)
+  ManagedRomIconFixture.with(function(rom)
+    for editionId, info in pairs(GameVersion.VERSIONS) do
+      if editionId ~= "heartgold" and info.sha1 == rom.heartgold.cart.sha1 then
+        GameVersion.VERSIONS[editionId] = nil
+      end
+    end
+    installEdition(rom, "heartgold")
+    installEdition(rom, "soulsilver")
+    local renderer = require("app.src.launcher.LauncherRenderer").new()
+    scope:own({
+      release = function()
+        renderer:dispose()
+      end,
+    })
+    local state = selector(renderer, rom, { heartgold = true, soulsilver = true }, 256, 192, 1, nil)
+    scope:own({
+      release = function()
+        state:dispose()
+      end,
+    })
+    local header = assert(state:view().layout.header)
+    local pixels = drawToPixels(scope, 256, 192, 1, function()
+      state:draw()
+    end)
+    local function blueSample(y)
+      for x = header.x + 2, header.x + header.width - 3 do
+        local sample = samplePixel(pixels, x, y)
+        if sample.a > 0 and sample.b - sample.r >= 20 and sample.b - sample.g >= 10 then
+          return sample
+        end
+      end
+      return nil
+    end
+    local top = blueSample(header.y + 3)
+    local bottom = blueSample(header.y + header.height - 4)
+    Assert.notNil(top, "the status strip is a desaturated blue band")
+    Assert.notNil(bottom, "the status strip stays blue at its lower edge")
+    Assert.isTrue(math.abs(top.b - bottom.b) >= 8, "the status strip has a real vertical gradient")
+    local separators = 0
+    for y = header.y + 3, header.y + header.height - 4 do
+      for x = header.x + 3, header.x + header.width - 4 do
+        local sample = samplePixel(pixels, x, y)
+        if sample.r < 120 and sample.b - sample.r > 20 then
+          separators = separators + 1
+        end
+      end
+    end
+    Assert.isTrue(separators > 0, "the status strip has dark cell separators")
+
+    state:keypressed("down")
+    local view = state:view()
+    local focusRect = assert(view.layout.slots.soulsilver).focusRect
+    local placement = assert(view.presentation.panes[1].placement)
+    local focusedPixels = drawToPixels(scope, 256, 192, 1, function()
+      state:draw()
+    end)
+    for _, corner in ipairs({
+      { focusRect.x + 1, focusRect.y + 1 },
+      { focusRect.x + focusRect.width - 2, focusRect.y + 1 },
+      { focusRect.x + 1, focusRect.y + focusRect.height - 2 },
+      { focusRect.x + focusRect.width - 2, focusRect.y + focusRect.height - 2 },
+    }) do
+      local x, y = physicalPoint(placement, corner[1], corner[2], 1)
+      local found = false
+      for dx = -2, 2 do
+        for dy = -2, 2 do
+          local sample = samplePixel(focusedPixels, x + dx, y + dy)
+          if sample.a > 0 and sample.b - sample.r >= 30 and sample.b - sample.g >= 10 then
+            found = true
+          end
+        end
+      end
+      Assert.isTrue(found, "all four focus corners use the accent blue")
+    end
+  end)
+end
+
+function T.neutral_error_diagnostic_is_confined_to_the_measured_region(scope)
+  local renderer = require("app.src.launcher.LauncherRenderer").new()
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local Loading = require("app.src.launcher.LauncherLoadingPresentation")
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  for _, case in ipairs({ { width = 256, height = 192 }, { width = 320, height = 240 }, { width = 390, height = 844 } }) do
+    local safeRect = { x = 0, y = 0, width = case.width, height = case.height }
+    local loading = Loading.new({
+      renderer = renderer,
+      versionId = "soulsilver",
+      gameLabel = "Pokémon SoulSilver",
+      label = "Now loading...",
+      width = case.width,
+      height = case.height,
+      safeRect = safeRect,
+      pixelRatio = 1,
+      displayContext = context(case.width, case.height, 1, safeRect),
+      selectionInterrupt = true,
+      onCancel = function() end,
+    })
+    scope:own({
+      release = function()
+        loading:dispose()
+      end,
+    })
+    local surface = LauncherLayout.surface(safeRect, 1)
+    Assert.equal(surface.placement.pixelScale, 1, "the diagnostic evidence stays at logical density")
+    local layout = LauncherLayout.loading(surface.logicalViewport.width, surface.logicalViewport.height, {
+      selectionInterrupt = true,
+      gameLabel = "Pokémon SoulSilver",
+      error = "CARD READ FAILED",
+      fonts = renderer.fonts,
+    })
+    local region = assert(layout.errorRect, "a neutral failure reserves measured diagnostic geometry")
+    Assert.isTrue(
+      region.y >= layout.indicatorRect.y + layout.indicatorRect.height,
+      "the diagnostic region follows the centered indicator"
+    )
+    local function frame(message)
+      return drawToPixels(scope, case.width, case.height, 1, function()
+        loading:draw({ error = message })
+      end)
+    end
+    local first = frame("CARD READ FAILED")
+    local second = frame("SAVE DATA CORRUPTED")
+    local minX, minY, maxX, maxY = case.width, case.height, -1, -1
+    for y = 0, case.height - 1 do
+      for x = 0, case.width - 1 do
+        local firstRed, firstGreen, firstBlue, firstAlpha = first:getPixel(x, y)
+        local secondRed, secondGreen, secondBlue, secondAlpha = second:getPixel(x, y)
+        if
+          firstRed ~= secondRed
+          or firstGreen ~= secondGreen
+          or firstBlue ~= secondBlue
+          or firstAlpha ~= secondAlpha
+        then
+          minX, maxX = math.min(minX, x), math.max(maxX, x)
+          minY, maxY = math.min(minY, y), math.max(maxY, y)
+        end
+      end
+    end
+    Assert.isTrue(maxX >= minX and maxY >= minY, "distinct diagnostics paint distinct pixels")
+    Assert.isTrue(
+      minX >= region.x and minY >= region.y and maxX < region.x + region.width and maxY < region.y + region.height,
+      "all diagnostic pixels stay inside the measured region"
+    )
+    Assert.isTrue(maxY < layout.promptRect.y, "the reserved prompt is untouched by a diagnostic")
+  end
+end
+
+function T.loading_paint_fills_the_resolved_surface_at_integer_density(scope)
+  local renderer = require("app.src.launcher.LauncherRenderer").new()
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local Loading = require("app.src.launcher.LauncherLoadingPresentation")
+  local inset = { x = 18, y = 24, width = 700, height = 520 }
+  for _, case in ipairs({
+    { name = "wide", width = 764, height = 575, ratio = 1 },
+    { name = "inset", width = 1280, height = 960, ratio = 2, safeRect = inset },
+    {
+      name = "operation",
+      width = 1280,
+      height = 960,
+      ratio = 2,
+      safeRect = inset,
+      selectionInterrupt = false,
+      receipt = "SoulSilver.nds",
+      statusText = "Waiting for readers",
+      canCancel = true,
+    },
+  }) do
+    local safeRect = case.safeRect or { x = 0, y = 0, width = case.width, height = case.height }
+    local loading = Loading.new({
+      renderer = renderer,
+      versionId = "soulsilver",
+      gameLabel = "Pokémon SoulSilver",
+      label = "SoulSilver",
+      width = case.width,
+      height = case.height,
+      safeRect = safeRect,
+      pixelRatio = case.ratio,
+      displayContext = context(case.width, case.height, case.ratio, case.safeRect),
+      selectionInterrupt = case.selectionInterrupt ~= false,
+      receipt = case.receipt,
+      statusText = case.statusText,
+      canCancel = case.canCancel == true,
+      onCancel = function() end,
+    })
+    scope:own({
+      release = function()
+        loading:dispose()
+      end,
+    })
+    loading:update(0.2)
+    local pixels = drawToPixels(scope, case.width, case.height, case.ratio, function()
+      loading:draw()
+    end)
+    writeCapture("loading-placement-" .. case.name, pixels)
+    local left = math.ceil(safeRect.x * case.ratio) + 2
+    local top = math.ceil(safeRect.y * case.ratio) + 2
+    local right = math.floor((safeRect.x + safeRect.width) * case.ratio) - 3
+    local bottom = math.floor((safeRect.y + safeRect.height) * case.ratio) - 3
+    for _, point in ipairs({ { left, top }, { right, top }, { left, bottom }, { right, bottom } }) do
+      local sample = samplePixel(pixels, point[1], point[2])
+      Assert.isTrue(sample.a > 0, "the loader paints the full resolved usable rect")
+    end
+    if safeRect.x > 0 then
+      Assert.equal(samplePixel(pixels, 2, 2).a, 0, "the loader leaves pixels outside its placement untouched")
+    end
+  end
 end
 
 return GraphicsSmoke.suite(T)

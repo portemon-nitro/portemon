@@ -2,6 +2,7 @@
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local LauncherLayout = require("app.src.launcher.LauncherLayout")
 
 local LauncherLoadingPresentation = {}
@@ -12,7 +13,9 @@ local function copyRect(rect)
 end
 
 local function renderLoading(_, view, plan)
-  view.paintedReceiptToken = view.renderer:drawLoading(view, assert(plan.content.layout))
+  LogicalSurface.draw(love.graphics, assert(plan.panes[1].placement), function()
+    view.paintedReceiptToken = view.renderer:drawLoading(view, assert(plan.content.layout))
+  end)
 end
 
 local function resolveLoading(context, view)
@@ -20,6 +23,7 @@ local function resolveLoading(context, view)
   local surface = LauncherLayout.surface(usable, context.measurement.pixelRatio)
   local options = {
     selectionInterrupt = view.selectionInterrupt,
+    gameLabel = view.gameLabel,
     receipt = view.receipt,
     canCancel = view.canCancel,
     error = view.error,

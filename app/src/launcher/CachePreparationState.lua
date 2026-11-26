@@ -43,6 +43,7 @@ function CachePreparationState.new(options)
     assert(options.loading == nil, "quiescence owns no transferable boot presentation")
   else
     assert(type(options.versionId) == "string" and options.versionId ~= "")
+    assert(type(options.label) == "string" and options.label ~= "", "boot preparation requires its display title")
     assert(type(options.onFailure) == "function", "boot-source preparation requires its failure route")
   end
   local width = options.width or love.graphics.getDimensions()
@@ -53,8 +54,8 @@ function CachePreparationState.new(options)
     loading = LauncherLoadingPresentation.new({
       renderer = options.renderer,
       versionId = options.versionId,
-      gameLabel = options.pendingImportLabel or options.versionId or "Game",
-      label = options.kind == "quiescence" and "Preparing import" or options.label or options.versionId or "Game",
+      gameLabel = options.kind == "quiescence" and options.pendingImportLabel or options.label,
+      label = options.kind == "quiescence" and "Preparing import" or "Now loading...",
       width = width,
       height = height,
       safeRect = options.safeRect,

@@ -4,10 +4,12 @@
 
 local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
+local WindowConfig = require("game.src.WindowConfig")
 local FakeCache = require("tests.support.FakeCache")
 local PublishedSaveFixture = require("tests.support.PublishedSaveFixture")
 local ManagedRomIconFixture = require("tests.support.ManagedRomIconFixture")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local DisplayContext = require("libs.ui.src.DisplayContext")
 local RomArchive = require("romdump.src.source.RomArchive")
 local GameVersion = require("romdump.src.source.GameVersion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
@@ -16,6 +18,10 @@ local CacheArchive = require("romdump.src.build.CacheArchive")
 local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
 
 local T = {}
+
+local BOOT_LOGO_PATH = "assets/logo.png"
+local BOOT_LOGO_WIDTH, BOOT_LOGO_HEIGHT = 451, 115
+local BOOT_LOGO_LOGICAL_WIDTH = 151
 
 local function fakeFont()
   local font = { released = 0 }
@@ -32,22 +38,26 @@ local function fakeFont()
     end
     return #tostring(text) * 6, { tostring(text) }
   end
+  function font:setFilter(minimum, maximum)
+    self.filter = { minimum, maximum }
+  end
   function font:release()
     self.released = self.released + 1
   end
   return font
 end
 
-local function fakeImage()
-  local image = { released = 0 }
+local function fakeImage(path)
+  local logo = path == BOOT_LOGO_PATH
+  local image = { released = 0, path = path }
   function image:getWidth()
-    return 32
+    return logo and BOOT_LOGO_WIDTH or 32
   end
   function image:getHeight()
-    return 32
+    return logo and BOOT_LOGO_HEIGHT or 32
   end
   function image:getDimensions()
-    return 32, 32
+    return logo and BOOT_LOGO_WIDTH or 32, logo and BOOT_LOGO_HEIGHT or 32
   end
   function image:setFilter() end
   function image:release()
@@ -104,12 +114,15 @@ local function withLauncherHost(options, fn)
   local images = {}
   local imageDatas = {}
   local fileData = {}
+  local fontRequests = {}
   local printPositions = {}
+  local backgroundColors = {}
   local rectangles = {}
   local draws = {}
   local currentColor = { 1, 1, 1, 1 }
   local transform = { x = 0, y = 0, scaleX = 1, scaleY = 1 }
   local transforms = {}
+  local transformEnters = 0
   local function hostPoint(x, y)
     return transform.x + x * transform.scaleX, transform.y + y * transform.scaleY
   end
@@ -198,18 +211,27 @@ local function withLauncherHost(options, fn)
   graphics.getDPIScale = function()
     return hostPixelRatio
   end
-  graphics.setBackgroundColor = function() end
-  graphics.newFont = function()
+  graphics.setBackgroundColor = function(r, g, b, a)
+    backgroundColors[#backgroundColors + 1] = { r, g, b, a }
+  end
+  graphics.newFont = function(data, size, hinting, dpi)
     local font = fakeFont()
+    font.path = data ~= nil and data.path or nil
     fonts[#fonts + 1] = font
+    fontRequests[#fontRequests + 1] = {
+      path = font.path,
+      size = size,
+      hinting = hinting,
+      dpi = dpi,
+      font = font,
+    }
     return font
   end
   graphics.newImage = function(imageData)
     if options.failImageAt == #images + 1 then
       error("synthetic launcher image acquisition failure", 0)
     end
-    local image = fakeImage()
-    image.path = imageData.path
+    local image = fakeImage(imageData.path)
     images[#images + 1] = image
     return image
   end
@@ -217,15 +239,17 @@ local function withLauncherHost(options, fn)
     if type(data) == "number" then
       return original.imageData(data, format, bytes)
     end
-    local imageData = { path = data:getFilename(), releases = 0 }
+    local path = data:getFilename()
+    local logo = path == BOOT_LOGO_PATH
+    local imageData = { path = path, releases = 0 }
     function imageData:getWidth()
-      return 32
+      return logo and BOOT_LOGO_WIDTH or 32
     end
     function imageData:getHeight()
-      return 32
+      return logo and BOOT_LOGO_HEIGHT or 32
     end
     function imageData:getDimensions()
-      return 32, 32
+      return logo and BOOT_LOGO_WIDTH or 32, logo and BOOT_LOGO_HEIGHT or 32
     end
     function imageData:release()
       self.releases = self.releases + 1
@@ -242,12 +266,12 @@ local function withLauncherHost(options, fn)
   graphics.print = function(text, x, y)
     x, y = hostPoint(x, y)
     copy[#copy + 1] = tostring(text)
-    printPositions[#printPositions + 1] = { text = tostring(text), x = x, y = y }
+    printPositions[#printPositions + 1] = { text = tostring(text), x = x, y = y, scaleX = transform.scaleX }
   end
   graphics.printf = function(text, x, y)
     x, y = hostPoint(x, y)
     copy[#copy + 1] = tostring(text)
-    printPositions[#printPositions + 1] = { text = tostring(text), x = x, y = y }
+    printPositions[#printPositions + 1] = { text = tostring(text), x = x, y = y, scaleX = transform.scaleX }
   end
   graphics.rectangle = function(mode, x, y, width, height)
     x, y = hostPoint(x, y)
@@ -260,9 +284,18 @@ local function withLauncherHost(options, fn)
       color = { currentColor[1], currentColor[2], currentColor[3], currentColor[4] },
     }
   end
-  graphics.draw = function(image, x, y)
+  graphics.draw = function(image, x, y, rotation, scaleX, scaleY)
     x, y = hostPoint(x, y)
-    draws[#draws + 1] = { image = image, x = x, y = y }
+    draws[#draws + 1] = {
+      image = image,
+      path = image.path,
+      x = x,
+      y = y,
+      scaleX = scaleX or 1,
+      scaleY = scaleY or 1,
+      width = image:getWidth(),
+      height = image:getHeight(),
+    }
   end
   for _, name in ipairs({ "line", "polygon", "setScissor", "intersectScissor" }) do
     graphics[name] = function() end
@@ -279,6 +312,7 @@ local function withLauncherHost(options, fn)
     transform = assert(table.remove(transforms), "unbalanced graphics pop")
   end
   graphics.origin = function()
+    transformEnters = transformEnters + 1
     transform.x, transform.y = 0, 0
   end
   graphics.translate = function(x, y)
@@ -336,6 +370,28 @@ local function withLauncherHost(options, fn)
   LauncherAssets.read = function(path)
     if path == options.missingAsset then
       return nil
+    end
+    if options.syntheticFonts ~= nil and options.syntheticFonts[path] then
+      local real = original.assetRead(path)
+      if real ~= nil then
+        real:release()
+      else
+        local data = { path = path, releases = 0 }
+        function data:getFilename()
+          return self.path
+        end
+        function data:getSize()
+          return 0
+        end
+        function data:getString()
+          return ""
+        end
+        function data:release()
+          self.releases = self.releases + 1
+        end
+        fileData[#fileData + 1] = data
+        return data
+      end
     end
     local raw = assert(original.assetRead(path), "required launcher fixture asset is missing: " .. path)
     local data = { path = path, releases = 0, raw = raw }
@@ -430,11 +486,16 @@ local function withLauncherHost(options, fn)
     images = images,
     imageDatas = imageDatas,
     fileData = fileData,
+    fontRequests = fontRequests,
     printPositions = printPositions,
+    backgroundColors = backgroundColors,
     rectangles = rectangles,
     draws = draws,
     safeAreaReads = function()
       return safeAreaReads
+    end,
+    transformEnters = function()
+      return transformEnters
     end,
     metadataReads = function()
       return metadataReads
@@ -531,6 +592,49 @@ local function drawnText(result, first)
     copy[#copy + 1] = result.copy[index]
   end
   return table.concat(copy, "\n")
+end
+
+local function logoDraw(result)
+  for _, draw in ipairs(result.draws) do
+    if draw.path == BOOT_LOGO_PATH then
+      return draw
+    end
+  end
+  return nil
+end
+
+local function countByPath(list, path)
+  local count = 0
+  for _, item in ipairs(list) do
+    if item.path == path then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+local function occurrences(text, needle)
+  local count, from = 0, 1
+  while true do
+    local at = text:find(needle, from, true)
+    if at == nil then
+      return count
+    end
+    count = count + 1
+    from = at + #needle
+  end
+end
+
+local function drawnTitleCenter(result, first, title)
+  local width = #title * 6
+  local center
+  for index = first or 1, #result.printPositions do
+    local position = result.printPositions[index]
+    if position.text == title then
+      center = position.x + width * position.scaleX / 2
+    end
+  end
+  return center
 end
 
 local function candidateBackend()
@@ -992,7 +1096,20 @@ function T.boot_paints_before_discovery_and_overlaps_real_opening_preparation()
         local first = drawnText(host)
         Assert.equal(host.metadataReads(), 0, "candidate discovery waits for the first painted update")
         Assert.equal(record.sourceRequests, 0, "candidate discovery and source work wait for the first painted update")
-        Assert.isTrue(first:find("Portémon", 1, true) ~= nil and first:find("Nitro", 1, true) ~= nil)
+        Assert.isNil(first:find("Portémon", 1, true), "boot no longer prints the replaced wordmark")
+        Assert.isNil(first:find("Nitro", 1, true), "boot no longer prints the replaced wordmark")
+        local logo = assert(logoDraw(host), "boot paints the supplied logo")
+        local expectedScale = BOOT_LOGO_LOGICAL_WIDTH / BOOT_LOGO_WIDTH
+        Assert.isTrue(
+          math.abs(logo.scaleX - expectedScale) < 1e-9 and math.abs(logo.scaleY - expectedScale) < 1e-9,
+          "the logo keeps its measured wordmark width"
+        )
+        local safe = host.safeRect()
+        Assert.isTrue(
+          math.abs(logo.x + logo.width * logo.scaleX / 2 - (safe.x + safe.width / 2)) <= 1
+            and math.abs(logo.y + logo.height * logo.scaleY / 2 - (safe.y + safe.height / 2)) <= 1,
+          "the logo is centered in the usable logical bounds"
+        )
         Assert.isTrue(first:find("Press a button for game selection", 1, true) ~= nil)
         Assert.notNil(App._bootIntro)
         Assert.isTrue(App._bootIntro.painted)
@@ -1082,23 +1199,77 @@ function T.boot_paints_before_discovery_and_overlaps_real_opening_preparation()
     end
   )
 
-  withManagedLauncher({ installed = { heartgold = true }, candidate = true, backend = candidateBackend() }, function()
-    local service = scriptedService({
-      sourceStatus = "failed",
-      sourceDetail = { code = "ROM_SOURCE_REQUIRED", message = "repair HeartGold" },
-    })
+  withManagedLauncher(
+    { installed = { heartgold = true }, candidate = true, backend = candidateBackend() },
+    function(host)
+      local service = scriptedService({
+        sourceStatus = "failed",
+        sourceDetail = { code = "ROM_SOURCE_REQUIRED", message = "repair HeartGold" },
+      })
+      App.load({ dev = false })
+      App.service = service
+      App.draw()
+      App.update(1 / 60)
+      Assert.isNil(App._bootIntro, "terminal source failure does not wait out the animation")
+      Assert.deepEqual(
+        host.backgroundColors[#host.backgroundColors],
+        WindowConfig.BACKGROUND_COLOR,
+        "terminal boot failure restores the normal clear"
+      )
+      Assert.equal(App.state:view().mode, "error")
+      Assert.equal(App.state:view().focusedId, "heartgold")
+    end
+  )
+end
+
+function T.boot_host_clear_is_owned_by_the_overlay_lifetime()
+  withManagedLauncher({ installed = {} }, function(host)
     App.load({ dev = false })
-    App.service = service
+    Assert.deepEqual(
+      host.backgroundColors,
+      { WindowConfig.BACKGROUND_COLOR, { 1, 1, 1, 1 } },
+      "load installs the boot clear after the overlay exists"
+    )
     App.draw()
+    for _ = 1, 299 do
+      App.update(1 / 60)
+    end
+    Assert.notNil(App._bootIntro, "the five-second dwell still runs unchanged")
+    Assert.deepEqual(host.backgroundColors[#host.backgroundColors], { 1, 1, 1, 1 })
     App.update(1 / 60)
-    Assert.isNil(App._bootIntro, "terminal source failure does not wait out the animation")
-    Assert.equal(App.state:view().mode, "error")
-    Assert.equal(App.state:view().focusedId, "heartgold")
+    Assert.isNil(App._bootIntro, "the overlay ends after the same dwell")
+    Assert.equal(#App.state:view().games, 2, "natural completion still opens the selection")
+    Assert.deepEqual(
+      host.backgroundColors,
+      { WindowConfig.BACKGROUND_COLOR, { 1, 1, 1, 1 }, WindowConfig.BACKGROUND_COLOR },
+      "the overlay end restores the normal clear exactly once"
+    )
+    for _ = 1, 60 do
+      App.update(1 / 60)
+    end
+    Assert.equal(#host.backgroundColors, 3, "post-boot frames keep the normal clear")
   end)
+
+  withManagedLauncher(
+    { installed = { heartgold = true }, candidate = true, backend = candidateBackend() },
+    function(host)
+      local service = scriptedService()
+      App.load({ dev = false })
+      App.service = service
+      App.draw()
+      Assert.deepEqual(host.backgroundColors[#host.backgroundColors], { 1, 1, 1, 1 })
+      local before = #host.backgroundColors
+      App.gamepadpressed({}, "x")
+      Assert.isNil(App._bootIntro, "the interrupt still retires the overlay")
+      Assert.equal(#App.state:view().games, 2, "the interrupt still reaches the selection")
+      Assert.deepEqual(host.backgroundColors[#host.backgroundColors], WindowConfig.BACKGROUND_COLOR)
+      Assert.equal(#host.backgroundColors, before + 1, "the interrupt restores the normal clear once")
+    end
+  )
 end
 
 function T.boot_admission_requires_a_foreground_window_and_overlay()
-  withManagedLauncher({ installed = {} }, function()
+  withManagedLauncher({ installed = {} }, function(host)
     App.load({ dev = false })
     App.draw()
     local epoch, versionId = App.epoch, App.selectedVersionId
@@ -1116,7 +1287,15 @@ function T.boot_admission_requires_a_foreground_window_and_overlay()
     intro:focus(true)
     Assert.isTrue(App._admitOpening(epoch, versionId), "foreground admission still retires the overlay")
     Assert.isNil(App._bootIntro)
-    Assert.isTrue(App._admitOpening(epoch, versionId), "later title and attract reentry is not gated by the boot overlay")
+    Assert.deepEqual(
+      host.backgroundColors[#host.backgroundColors],
+      WindowConfig.BACKGROUND_COLOR,
+      "foreground admission restores the normal clear"
+    )
+    Assert.isTrue(
+      App._admitOpening(epoch, versionId),
+      "later title and attract reentry is not gated by the boot overlay"
+    )
   end)
 end
 
@@ -1345,7 +1524,9 @@ function T.receipt_barrier_and_commit_gates_have_one_import_owner()
     host.setHostSize(360, 640)
     local receiptFrame = #host.copy + 1
     App.draw()
-    Assert.isTrue(drawnText(host, receiptFrame):find("SoulSilver", 1, true) ~= nil)
+    local operationText = drawnText(host, receiptFrame)
+    Assert.isTrue(operationText:find("SoulSilver", 1, true) ~= nil)
+    Assert.isNil(operationText:find("Now loading...", 1, true), "an operation never borrows generic loading copy")
     Assert.notNil(App.state:paintedReceipt(), "the real operation draw returns its receipt token")
     local waitingView = App.state:view()
     Assert.equal(waitingView.import.receipt, "soulsilver.nds")
@@ -1636,6 +1817,27 @@ function T.launcher_resources_release_every_acquired_file_and_host_object()
     for _, imageData in ipairs(host.imageDatas) do
       Assert.equal(imageData.releases, 1)
     end
+    Assert.equal(countByPath(host.fileData, BOOT_LOGO_PATH), 1, "the boot logo FileData is acquired once")
+    Assert.equal(countByPath(host.imageDatas, BOOT_LOGO_PATH), 1, "the boot logo image data is decoded once")
+    Assert.equal(countByPath(host.images, BOOT_LOGO_PATH), 1, "the boot logo image is created once")
+    local cachedLogo
+    for _, image in ipairs(host.images) do
+      if image.path == BOOT_LOGO_PATH then
+        cachedLogo = image
+      end
+    end
+    cachedLogo = assert(cachedLogo, "the boot logo image is cached")
+    App.draw()
+    App.draw()
+    Assert.equal(countByPath(host.draws, BOOT_LOGO_PATH), 2, "each boot frame paints the logo")
+    Assert.equal(countByPath(host.fileData, BOOT_LOGO_PATH), 1, "drawing acquires no FileData")
+    Assert.equal(countByPath(host.imageDatas, BOOT_LOGO_PATH), 1, "drawing decodes no image data")
+    Assert.equal(countByPath(host.images, BOOT_LOGO_PATH), 1, "drawing creates no image")
+    for _, draw in ipairs(host.draws) do
+      if draw.path == BOOT_LOGO_PATH then
+        Assert.equal(draw.image, cachedLogo, "both frames use the cached logo image")
+      end
+    end
     App.quit()
     for index = 2, #host.fonts do
       Assert.equal(host.fonts[index].released, 1, "renderer fonts release once")
@@ -1645,6 +1847,213 @@ function T.launcher_resources_release_every_acquired_file_and_host_object()
     end
     for _, source in ipairs(host.audioSources) do
       Assert.equal(source.released, 1, "launcher Sources release once")
+    end
+  end)
+end
+
+function T.launcher_faces_are_acquired_with_an_explicit_pixel_policy()
+  withLauncherHost({
+    syntheticFonts = {
+      ["assets/fonts/mplus1p/MPLUS1p-Bold.ttf"] = true,
+      ["assets/fonts/galmuri/Galmuri9.ttf"] = true,
+    },
+  }, function(host)
+    App.load({ dev = false })
+    local byPath = {}
+    for _, request in ipairs(host.fontRequests) do
+      byPath[request.path] = request
+    end
+    local wordmark = assert(byPath["assets/fonts/mplus1p/MPLUS1p-Bold.ttf"], "smooth wordmark face is acquired")
+    Assert.equal(wordmark.size, 32, "the wordmark is authored at its larger size")
+    Assert.equal(wordmark.hinting, "normal", "the wordmark keeps smooth hinting")
+    Assert.equal(wordmark.dpi, 3, "the wordmark rasterizes above its logical size")
+    Assert.deepEqual(wordmark.font.filter, { "linear", "linear" }, "the smooth face is not nearest filtered")
+    local prompt = assert(byPath["assets/fonts/galmuri/Galmuri9.ttf"], "native prompt face is acquired")
+    Assert.equal(prompt.size, 10, "the prompt uses its native pixel size")
+    Assert.deepEqual(prompt.font.filter, { "nearest", "nearest" }, "the prompt stays a pixel face")
+  end)
+end
+
+function T.neutral_loading_centers_one_full_title_under_a_single_placement()
+  withManagedLauncher({ installed = { heartgold = true, soulsilver = true }, width = 764, height = 575 }, function(host)
+    App.load({ dev = false })
+    App.keypressed("return", "return", false)
+    App.keyreleased("return", "return")
+    App.service = scriptedService()
+    App._selectVersion("heartgold")
+    local first = #host.copy + 1
+    local origins = host.transformEnters()
+    App.draw()
+    Assert.equal(host.transformEnters() - origins, 1, "the loader paints through exactly one logical placement")
+    local text = drawnText(host, first)
+    Assert.equal(occurrences(text, "Pokémon HeartGold"), 1, "the full edition title appears once")
+    Assert.equal(occurrences(text, "Now loading..."), 1, "the neutral status appears once")
+    Assert.isNil(text:find("heartgold", 1, true), "the loader does not print a version identifier")
+    local center = drawnTitleCenter(host, first, "Pokémon HeartGold")
+    Assert.notNil(center, "the full title reaches the painted host boundary")
+    Assert.isTrue(math.abs(center - 764 / 2) <= 40, "the title block is centered in the usable surface")
+  end)
+end
+
+function T.neutral_error_diagnostic_stays_in_its_region_and_stops_loading_motion()
+  for _, case in ipairs({ { width = 256, height = 192 }, { width = 390, height = 844 } }) do
+    withLauncherHost({ width = case.width, height = case.height }, function(host)
+      local renderer = require("app.src.launcher.LauncherRenderer").new()
+      local captured
+      local drawLoading = renderer.drawLoading
+      function renderer:drawLoading(view, layout)
+        captured = layout
+        drawLoading(self, view, layout)
+      end
+      local safeRect = { x = 0, y = 0, width = case.width, height = case.height }
+      local displayContext = DisplayContext.new({
+        graphics = {
+          getDimensions = function()
+            return case.width, case.height
+          end,
+          getDPIScale = function()
+            return 1
+          end,
+        },
+        topologyProvider = function()
+          return { surfaces = { { id = "main", role = "world", rect = safeRect, safeRect = safeRect, touch = true } } }
+        end,
+      })
+      local Loading = require("app.src.launcher.LauncherLoadingPresentation")
+      local loading = Loading.new({
+        renderer = renderer,
+        versionId = "heartgold",
+        gameLabel = "Pokémon HeartGold",
+        label = "Now loading...",
+        width = case.width,
+        height = case.height,
+        safeRect = safeRect,
+        pixelRatio = 1,
+        displayContext = displayContext,
+        selectionInterrupt = true,
+        onCancel = function() end,
+      })
+      local first = #host.copy + 1
+      loading:draw({ label = "Preparation failed", error = "Cache read failed", detail = "Card unreadable" })
+      local text = drawnText(host, first)
+      Assert.isTrue(text:find("Cache read failed", 1, true) ~= nil, "the neutral diagnostic reaches the host")
+      Assert.isNil(text:find("Now loading...", 1, true), "generic status is suppressed while an error is visible")
+      local region = assert(captured and captured.errorRect, "the loader resolves a diagnostic region")
+      local diagnosticLines = 0
+      for _, position in ipairs(host.printPositions) do
+        if position.text:find("Cache read failed", 1, true) then
+          diagnosticLines = diagnosticLines + 1
+          Assert.isTrue(
+            position.x >= region.x and position.y >= region.y,
+            "diagnostic copy starts inside its measured region"
+          )
+          Assert.isTrue(
+            position.x + renderer.fonts.body:getWidth(position.text) * position.scaleX <= region.x + region.width
+              and position.y + renderer.fonts.body:getHeight() <= region.y + region.height,
+            "diagnostic copy ends inside its measured region"
+          )
+        end
+      end
+      Assert.equal(diagnosticLines, 1, "the diagnostic paints once")
+      Assert.isTrue(
+        captured.promptRect.y >= region.y + region.height,
+        "the bottom-right prompt stays clear of the diagnostic"
+      )
+      for _, shape in ipairs(host.rectangles) do
+        Assert.isFalse(
+          shape.width == 8 and shape.height == 8,
+          "loading squares stay suppressed while an error is visible"
+        )
+      end
+      loading:dispose()
+      renderer:dispose()
+    end)
+  end
+end
+
+function T.transferred_loader_recenters_after_resize_and_preserves_operation_status()
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  withManagedLauncher({
+    installed = { heartgold = true },
+    candidate = true,
+    backend = candidateBackend(),
+    width = 764,
+    height = 575,
+  }, function(host)
+    withStartupConsumers({}, function()
+      local service = scriptedService({ scenesReady = false })
+      App.load({ dev = false })
+      App.service = service
+      App.draw()
+      App.update(1 / 60)
+      advanceUntil(function()
+        return getmetatable(App.state).__index == StartupTitleState
+      end, "boot loader transfer")
+      advanceUntil(function()
+        return App._bootIntro == nil
+      end, "boot overlay completion")
+      local first = #host.copy + 1
+      local origins = host.transformEnters()
+      App.draw()
+      Assert.equal(host.transformEnters() - origins, 1, "the borrowed loader keeps one placement after transfer")
+      local text = drawnText(host, first)
+      Assert.equal(occurrences(text, "Pokémon HeartGold"), 1, "the transferred loader keeps the full title")
+      Assert.equal(occurrences(text, "Now loading..."), 1, "the transferred loader keeps the neutral status")
+
+      local safeRect = { x = 12, y = 18, width = 320, height = 560 }
+      host.setPixelRatio(2)
+      host.setHostSize(360, 640)
+      host.setSafeRect(safeRect)
+      App.resize(720, 1280)
+      first = #host.copy + 1
+      origins = host.transformEnters()
+      App.draw()
+      Assert.equal(host.transformEnters() - origins, 1, "a resized loader still paints through one placement")
+      text = drawnText(host, first)
+      Assert.equal(occurrences(text, "Pokémon HeartGold"), 1, "resize does not duplicate the title")
+      local center = drawnTitleCenter(host, first, "Pokémon HeartGold")
+      Assert.notNil(center, "the resized title reaches the host boundary")
+      Assert.isTrue(
+        math.abs(center - (safeRect.x + safeRect.width / 2)) <= 24,
+        "the resized title is centered in the new safe bounds"
+      )
+    end)
+  end)
+end
+
+function T.launcher_font_failure_releases_every_acquired_face_and_file()
+  withLauncherHost({ missingAsset = "assets/fonts/galmuri/Galmuri9.ttf" }, function(host)
+    local constructed = false
+    pcall(function()
+      require("app.src.launcher.LauncherRenderer").new()
+      constructed = true
+    end)
+    Assert.isFalse(constructed, "a missing required face fails renderer construction")
+    for _, data in ipairs(host.fileData) do
+      Assert.equal(data.releases, 1, "constructor FileData releases once: " .. data.path)
+    end
+    for index = 2, #host.fonts do
+      Assert.equal(host.fonts[index].released, 1, "every acquired face releases on rollback")
+    end
+  end)
+end
+
+function T.boot_logo_failure_releases_every_acquired_face_and_file()
+  withLauncherHost({ missingAsset = BOOT_LOGO_PATH }, function(host)
+    local constructed = false
+    pcall(function()
+      require("app.src.launcher.LauncherRenderer").new()
+      constructed = true
+    end)
+    Assert.isFalse(constructed, "a missing boot logo fails renderer construction")
+    for _, data in ipairs(host.fileData) do
+      Assert.equal(data.releases, 1, "constructor FileData releases once: " .. data.path)
+    end
+    for _, data in ipairs(host.imageDatas) do
+      Assert.equal(data.releases, 1, "decoded image data releases once on rollback")
+    end
+    for _, image in ipairs(host.images) do
+      Assert.equal(image.released, 1, "an acquired image releases on rollback")
     end
   end)
 end

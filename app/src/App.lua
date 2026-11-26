@@ -34,6 +34,9 @@ local DisplayContext = require("libs.ui.src.DisplayContext")
 -- decoded results, never the resident base bytes themselves.
 local ASSET_RUNTIME_IDLE_BYTES = 64 * 1024 * 1024
 
+-- App owns the outer host clear only while the boot overlay covers it.
+local BOOT_BACKGROUND_COLOR = { 1, 1, 1, 1 }
+
 ---@class App
 ---@field opts AppOptions
 ---@field state table<string, unknown>|nil
@@ -125,7 +128,16 @@ local function supported(versionId)
   return false
 end
 
+local EDITION_DISPLAY_NAMES = {
+  heartgold = "Pokémon HeartGold",
+  soulsilver = "Pokémon SoulSilver",
+}
+
 local function gameLabel(versionId)
+  local displayName = EDITION_DISPLAY_NAMES[versionId]
+  if displayName ~= nil then
+    return displayName
+  end
   local ok, info = pcall(GameVersion.info, versionId)
   if ok and type(info) == "table" then
     return info.label or info.displayName or versionId
@@ -260,6 +272,7 @@ function App._finishBootIntro(stopImmediately)
     return
   end
   App._bootIntro = nil
+  love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   if App.launcherAudio ~= nil then
     App.launcherAudio:fadeBoot(stopImmediately == true and 0 or 0.08)
   end
@@ -1593,6 +1606,7 @@ function App.load(opts)
     safeRect = App._safeRect,
     pixelRatio = App.pixelRatio,
   })
+  love.graphics.setBackgroundColor(unpack(BOOT_BACKGROUND_COLOR))
 end
 
 -- Replaces only the UI state. Source ownership is explicit: selection,

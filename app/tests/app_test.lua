@@ -1465,8 +1465,8 @@ function T.boot_existing_with_no_ready_version_shows_empty_selection()
       Assert.isNil(App.importer, "an empty library starts no importer until the player asks")
       Assert.equal(getmetatable(App.state).__index, GameSelectState)
       Assert.deepEqual(App.state:view().games, {
-        { versionId = "heartgold", label = "HeartGold", installed = false },
-        { versionId = "soulsilver", label = "SoulSilver", installed = false },
+        { versionId = "heartgold", label = "Pokémon HeartGold", installed = false },
+        { versionId = "soulsilver", label = "Pokémon SoulSilver", installed = false },
       }, "first boot always exposes both missing editions")
     end)
   end)

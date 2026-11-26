@@ -68,14 +68,22 @@ SOURCE_FILES = (
 )
 
 FONT_FILES = (
+    "assets/fonts/galmuri/Galmuri9.ttf",
     "assets/fonts/galmuri/Galmuri11.ttf",
     "assets/fonts/galmuri/Galmuri11-Bold.ttf",
     "assets/fonts/galmuri/LICENSE.txt",
+    "assets/fonts/mplus1p/MPLUS1p-Bold.ttf",
     "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
     "assets/fonts/mplus1p/OFL.txt",
 )
 
+LAUNCHER_FONT_FILES = (
+    "assets/fonts/mplus1p/MPLUS1p-Bold.ttf",
+    "assets/fonts/galmuri/Galmuri9.ttf",
+)
+
 LAUNCHER_ICON_FILES: tuple[str, ...] = ()
+BOOT_LOGO_FILE = "assets/logo.png"
 OBSOLETE_LAUNCHER_FILES = tuple(
     f"assets/ui/launcher/icons/{name}.png"
     for name in ("add-game", "back", "check", "close", "play", "warning")
@@ -125,6 +133,7 @@ def make_fixture(root: Path) -> None:
         shutil.copyfile(REPO_ROOT / relative, target)
     for relative in FONT_FILES + OBSOLETE_LAUNCHER_FILES + CUSTOM_BRANDING_FILES:
         write_file(root, relative, b"isolated packaging fixture\n")
+    shutil.copyfile(REPO_ROOT / BOOT_LOGO_FILE, root / BOOT_LOGO_FILE)
     for relative in AUDIO_FILES:
         write_file(root, relative, b"TEST FIXTURE; synthetic bytes; not release provenance\n")
     for relative in EXCLUDED_FILES:
@@ -520,6 +529,7 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
             "libs/nds/src/love/shaders/map.glsl",
             *FONT_FILES,
             *AUDIO_FILES,
+            BOOT_LOGO_FILE,
         }
         missing = sorted(required.difference(names))
         if missing:
@@ -897,7 +907,7 @@ class PackagingContractTest(unittest.TestCase):
                 self.assertIn("conf.lua", names)
                 self.assertNotIn("app/main.lua", names)
                 self.assertNotIn("app/conf.lua", names)
-                for relative in SOURCE_FILES[2:] + FONT_FILES + AUDIO_FILES:
+                for relative in SOURCE_FILES[2:] + FONT_FILES + AUDIO_FILES + (BOOT_LOGO_FILE,):
                     self.assertIn(relative, names)
                 self.assertEqual(
                     [name for name in names if name.startswith("assets/ui/launcher/icons/")],
@@ -1002,6 +1012,54 @@ class PackagingContractTest(unittest.TestCase):
                     self.assertIn(relative, result.stderr + result.stdout)
                     self.assertEqual(output.read_bytes(), previous_payload)
                     self.assertEqual(listing.read_bytes(), previous_listing)
+
+    def test_launcher_font_members_are_required_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "portemon.love"
+            listing = root / "listing.txt"
+            for relative in LAUNCHER_FONT_FILES:
+                with self.subTest(member=relative):
+                    make_fixture(root)
+                    for present in LAUNCHER_FONT_FILES:
+                        write_file(root, present, b"isolated packaging fixture\n")
+                    result = run_packer(root, output, listing)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    with zipfile.ZipFile(output) as archive:
+                        self.assertIn(relative, archive.namelist(), "the licensed font must join the payload")
+                    previous_payload = output.read_bytes()
+                    previous_listing = listing.read_bytes()
+
+                    (root / relative).unlink()
+
+                    result = run_packer(root, output, listing)
+
+                    self.assertNotEqual(result.returncode, 0, "a missing launcher font must fail the build")
+                    self.assertIn(relative, result.stderr + result.stdout)
+                    self.assertEqual(output.read_bytes(), previous_payload)
+                    self.assertEqual(listing.read_bytes(), previous_listing)
+
+    def test_boot_logo_member_is_required_before_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output = root / "portemon.love"
+            listing = root / "listing.txt"
+            make_fixture(root)
+            result = run_packer(root, output, listing)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with zipfile.ZipFile(output) as archive:
+                self.assertIn(BOOT_LOGO_FILE, archive.namelist(), "the boot logo must join the payload")
+            previous_payload = output.read_bytes()
+            previous_listing = listing.read_bytes()
+
+            (root / BOOT_LOGO_FILE).unlink()
+
+            result = run_packer(root, output, listing)
+
+            self.assertNotEqual(result.returncode, 0, "a missing boot logo must fail the build")
+            self.assertIn(BOOT_LOGO_FILE, result.stderr + result.stdout)
+            self.assertEqual(output.read_bytes(), previous_payload)
+            self.assertEqual(listing.read_bytes(), previous_listing)
 
     def test_missing_source_tree_or_aliased_listing_cannot_publish_a_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

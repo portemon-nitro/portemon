@@ -22,15 +22,18 @@ SOURCE_TREES = (
     "data/scripts/overrides",
 )
 FONT_FILES = (
+    "assets/fonts/galmuri/Galmuri9.ttf",
     "assets/fonts/galmuri/Galmuri11.ttf",
     "assets/fonts/galmuri/Galmuri11-Bold.ttf",
     "assets/fonts/galmuri/LICENSE.txt",
+    "assets/fonts/mplus1p/MPLUS1p-Bold.ttf",
     "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
     "assets/fonts/mplus1p/OFL.txt",
 )
 AUDIO_FILES = tuple(
     f"assets/audio/launcher/{name}.ogg" for name in ("boot", "focus", "confirm", "back", "error")
 ) + ("assets/audio/launcher/README.md",)
+BOOT_LOGO_FILE = "assets/logo.png"
 REQUIRED_FILES = (
     "app/main.lua",
     "app/conf.lua",
@@ -40,6 +43,7 @@ REQUIRED_FILES = (
     "gen4/battle.lua",
     *FONT_FILES,
     *AUDIO_FILES,
+    BOOT_LOGO_FILE,
 )
 SEMVER_IDENTIFIER = r"[0-9A-Za-z-]+"
 SEMVER_NUMBER = r"(?:0|[1-9][0-9]*)"

@@ -1,4 +1,4 @@
--- Process-owned ROM-independent launcher fonts, optional icons and primitive painter.
+-- Process-owned ROM-independent launcher fonts, boot artwork, optional icons and primitive painter.
 
 local LauncherAssets = require("app.src.launcher.LauncherAssets")
 local LauncherLayout = require("app.src.launcher.LauncherLayout")
@@ -8,67 +8,108 @@ local utf8 = rawget(_G, "utf8") --[[@as { len: fun(text: string): number|nil }?]
 
 ---@class LauncherRenderer
 ---@field fonts table<string, love.Font>
+---@field private bootLogo love.Image?
+---@field private bootLogoWidth number
+---@field private bootLogoHeight number
 ---@field private gameIcons table<string, love.Image>
 ---@field disposed boolean
 ---@field refreshGameIcon fun(self: LauncherRenderer, romSha1: string, saveRelativePngPath: string): boolean
 ---@field dropGameIcon fun(self: LauncherRenderer, romSha1: string)
 ---@field dispose fun(self: LauncherRenderer)
 
----@class LauncherFont: love.Font
----@field setHinting fun(self: LauncherFont, mode: love.HintingMode)
----@field setDPIScale fun(self: LauncherFont, scale: number)
-
 local LauncherRenderer = {}
 LauncherRenderer.__index = LauncherRenderer
 
+local WORDMARK_PATH = "assets/fonts/mplus1p/MPLUS1p-Bold.ttf"
+local BOOT_LOGO_PATH = "assets/logo.png"
+-- Measured from the native-resolution captured wordmark ink.
+local BOOT_LOGO_LOGICAL_WIDTH = 151
+local BOOT_LOGO_INSET = 8
+
+local function rgb(red, green, blue)
+  return { red / 255, green / 255, blue / 255, 1 }
+end
+
 local COLORS = {
-  background = { 0.961, 0.961, 0.961, 1 },
-  majorGrid = { 0.816, 0.827, 0.835, 1 },
-  minorGrid = { 0.902, 0.910, 0.914, 1 },
-  header = { 0.843, 0.859, 0.875, 1 },
-  headerLower = { 0.659, 0.686, 0.710, 1 },
-  face = { 0.965, 0.965, 0.953, 1 },
-  missingFace = { 0.906, 0.910, 0.914, 1 },
-  rim = { 0.392, 0.420, 0.439, 1 },
-  highlight = { 1, 1, 1, 1 },
-  lowerBevel = { 0.655, 0.678, 0.694, 1 },
-  text = { 0.145, 0.157, 0.165, 1 },
-  muted = { 0.365, 0.392, 0.412, 1 },
-  focus = { 0.769, 0.239, 0.478, 1 },
-  gold = { 0.769, 0.604, 0.282, 1 },
-  silver = { 0.502, 0.580, 0.671, 1 },
+  background = rgb(0xF7, 0xF7, 0xF7),
+  majorGrid = rgb(0xBF, 0xC3, 0xC6),
+  minorGrid = rgb(0xE9, 0xE9, 0xE9),
+  header = rgb(0x8B, 0xAA, 0xBD),
+  headerLower = rgb(0x64, 0x85, 0x9B),
+  headerGlint = rgb(0xC2, 0xD3, 0xDE),
+  headerRule = rgb(0x3C, 0x55, 0x68),
+  separatorDark = rgb(0x53, 0x6D, 0x80),
+  separatorLight = rgb(0xA6, 0xBD, 0xC9),
+  face = rgb(0xFC, 0xFC, 0xFC),
+  pressedFace = rgb(0xE8, 0xEA, 0xEB),
+  missingFace = rgb(0xF7, 0xF7, 0xF7),
+  rim = rgb(0x4D, 0x51, 0x54),
+  highlight = rgb(0xFF, 0xFF, 0xFF),
+  lowerBevel = rgb(0x8F, 0x93, 0x97),
+  iconTop = rgb(0xF4, 0xF4, 0xF4),
+  iconBottom = rgb(0xBF, 0xC2, 0xC5),
+  panelTop = rgb(0xFC, 0xFC, 0xFC),
+  panelBottom = rgb(0xE8, 0xEA, 0xEB),
+  panelLine = rgb(0xF5, 0xF6, 0xF6),
+  missingBottom = rgb(0xE3, 0xE5, 0xE6),
+  text = rgb(0x25, 0x28, 0x2B),
+  muted = rgb(0x77, 0x7C, 0x80),
+  focus = rgb(0x4A, 0x78, 0x98),
 }
 
 local function color(graphics, value)
   graphics.setColor(value[1], value[2], value[3], value[4] or 1)
 end
 
-local function loadFont(path, size)
+local function loadFont(path, size, hinting, dpi, filter)
   local data = assert(LauncherAssets.read(path), "required launcher font is missing: " .. path)
-  local ok, font = pcall(love.graphics.newFont, data, size)
+  local ok, font = pcall(love.graphics.newFont, data, size, hinting, dpi)
   data:release()
   if not ok then
     error(font, 0)
   end
-  if type(font.setFilter) == "function" then
-    font:setFilter("nearest", "nearest")
-  end
-  local configured = font --[[@as LauncherFont]]
-  if type(configured.setHinting) == "function" then
-    configured:setHinting("mono")
-  end
-  if type(configured.setDPIScale) == "function" then
-    configured:setDPIScale(1)
-  end
+  font:setFilter(filter, filter)
   return font
 end
 
+local function loadImage(path)
+  local data = assert(LauncherAssets.read(path), "required launcher image is missing: " .. path)
+  local ok, imageData = pcall(love.image.newImageData, data)
+  data:release()
+  if not ok then
+    error(imageData, 0)
+  end
+  local imageOk, image = pcall(love.graphics.newImage, imageData)
+  imageData:release()
+  if not imageOk then
+    error(image, 0)
+  end
+  image:setFilter("linear", "linear")
+  return image
+end
+
+local function bootLogoScale(width, height, imageWidth, imageHeight)
+  local fitWidth = math.max(1, width - BOOT_LOGO_INSET * 2)
+  local fitHeight = math.max(1, height - BOOT_LOGO_INSET * 2)
+  return math.min(BOOT_LOGO_LOGICAL_WIDTH / imageWidth, fitWidth / imageWidth, fitHeight / imageHeight)
+end
+
 function LauncherRenderer.new()
-  local self = setmetatable({ fonts = {}, gameIcons = {}, disposed = false }, LauncherRenderer)
+  local self = setmetatable({
+    fonts = {},
+    gameIcons = {},
+    bootLogoWidth = 0,
+    bootLogoHeight = 0,
+    disposed = false,
+  }, LauncherRenderer)
   local ok, failure = pcall(function()
-    self.fonts.body = loadFont("assets/fonts/galmuri/Galmuri11.ttf", 12)
-    self.fonts.bold = loadFont("assets/fonts/galmuri/Galmuri11-Bold.ttf", 12)
-    self.fonts.wordmark = loadFont("assets/fonts/mplus1p/MPLUS1p-Regular.ttf", 28)
+    self.fonts.body = loadFont("assets/fonts/galmuri/Galmuri11.ttf", 12, "mono", 1, "nearest")
+    self.fonts.bold = loadFont("assets/fonts/galmuri/Galmuri11-Bold.ttf", 12, "mono", 1, "nearest")
+    self.fonts.prompt = loadFont("assets/fonts/galmuri/Galmuri9.ttf", 10, "mono", 1, "nearest")
+    self.fonts.wordmark = loadFont(WORDMARK_PATH, 32, "normal", 3, "linear")
+    local image = loadImage(BOOT_LOGO_PATH)
+    self.bootLogo = image
+    self.bootLogoWidth, self.bootLogoHeight = image:getDimensions()
   end)
   if not ok then
     self:dispose()
@@ -77,20 +118,38 @@ function LauncherRenderer.new()
   return self
 end
 
+local function rampColor(top, bottom, fraction)
+  return {
+    top[1] + (bottom[1] - top[1]) * fraction,
+    top[2] + (bottom[2] - top[2]) * fraction,
+    top[3] + (bottom[3] - top[3]) * fraction,
+    1,
+  }
+end
+
+local function rampRows(graphics, rect, top, bottom, inset)
+  local rows = math.max(1, math.floor(rect.height - inset * 2))
+  for index = 0, rows - 1 do
+    local fraction = rows > 1 and math.min(1, math.floor(index * 8 / rows) / 7) or 0
+    color(graphics, rampColor(top, bottom, fraction))
+    graphics.rectangle("fill", rect.x + inset, rect.y + inset + index, rect.width - inset * 2, 1)
+  end
+end
+
 function LauncherRenderer:_background(width, height)
   local graphics = love.graphics
   color(graphics, COLORS.background)
   graphics.rectangle("fill", 0, 0, width, height)
   color(graphics, COLORS.minorGrid)
-  for y = 4, height - 1, 4 do
+  for y = 2, height - 1, 2 do
     graphics.rectangle("fill", 0, y, width, 1)
   end
   color(graphics, COLORS.majorGrid)
-  for x = 0, width - 1, 16 do
-    graphics.rectangle("fill", x, 0, 1, height)
-  end
-  for y = 0, height - 1, 16 do
+  for y = 0, height - 1, 48 do
     graphics.rectangle("fill", 0, y, width, 1)
+  end
+  for x = 0, width - 1, 48 do
+    graphics.rectangle("fill", x, 0, 1, height)
   end
 end
 
@@ -99,10 +158,10 @@ function LauncherRenderer:_bevel(rect, faceColor, pressed)
   color(graphics, pressed and COLORS.lowerBevel or COLORS.highlight)
   graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
   color(graphics, pressed and COLORS.highlight or COLORS.lowerBevel)
-  graphics.rectangle("fill", rect.x + rect.width - 2, rect.y + 2, 2, rect.height - 4)
-  graphics.rectangle("fill", rect.x + 2, rect.y + rect.height - 2, rect.width - 2, 2)
+  graphics.rectangle("fill", rect.x + rect.width - 1, rect.y + 1, 1, rect.height - 2)
+  graphics.rectangle("fill", rect.x + 1, rect.y + rect.height - 1, rect.width - 1, 1)
   color(graphics, faceColor)
-  graphics.rectangle("fill", rect.x + 2, rect.y + 2, rect.width - 4, rect.height - 4)
+  graphics.rectangle("fill", rect.x + 1, rect.y + 1, rect.width - 2, rect.height - 2)
   color(graphics, COLORS.rim)
   graphics.rectangle("line", rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1)
 end
@@ -110,13 +169,20 @@ end
 function LauncherRenderer:_focus(rect)
   local graphics = love.graphics
   local x, y, w, h = rect.x, rect.y, rect.width, rect.height
+  color(graphics, COLORS.highlight)
+  graphics.setLineWidth(4)
+  self:_focusCorners(graphics, x, y, w, h)
   color(graphics, COLORS.focus)
   graphics.setLineWidth(2)
-  graphics.line(x + 7, y, x, y, x, y + 7)
-  graphics.line(x + w - 7, y, x + w, y, x + w, y + 7)
-  graphics.line(x, y + h - 7, x, y + h, x + 7, y + h)
-  graphics.line(x + w - 7, y + h, x + w, y + h, x + w, y + h - 7)
+  self:_focusCorners(graphics, x, y, w, h)
   graphics.setLineWidth(1)
+end
+
+function LauncherRenderer:_focusCorners(graphics, x, y, w, h)
+  graphics.line(x + 8, y, x, y, x, y + 8)
+  graphics.line(x + w - 8, y, x + w, y, x + w, y + 8)
+  graphics.line(x, y + h - 8, x, y + h, x + 8, y + h)
+  graphics.line(x + w - 8, y + h, x + w, y + h, x + w, y + h - 8)
 end
 
 local function fitText(font, text, width)
@@ -148,7 +214,7 @@ function LauncherRenderer:drawButton(rect, label, _, visualState)
   visualState = visualState or {}
   local graphics = love.graphics
   local oldFont = graphics.getFont()
-  self:_bevel(rect, COLORS.face, visualState.pressed == true)
+  self:_bevel(rect, visualState.pressed == true and COLORS.pressedFace or COLORS.face, visualState.pressed == true)
   if visualState.focused then
     self:_focus(rect.focusRect or { x = rect.x - 3, y = rect.y - 3, width = rect.width + 6, height = rect.height + 6 })
   end
@@ -176,48 +242,56 @@ function LauncherRenderer:drawSelectionPrompt(layout, elapsed)
     return
   end
   local graphics = love.graphics
-  graphics.setFont(self.fonts.body)
+  local font = self.fonts.prompt
+  graphics.setFont(font)
   local pulse = (math.sin((elapsed or 0) * math.pi * 2 / 2.2) + 1) / 2
-  color(graphics, { 0.506 + pulse * 0.125, 0.525 + pulse * 0.125, 0.541 + pulse * 0.125, 1 })
+  color(graphics, { 0.468 + pulse * 0.012, 0.486 + pulse * 0.012, 0.502 + pulse * 0.012, 1 })
   local text = "Press a button for game selection"
   local prompt = layout.promptRect
-  local _, lines = graphics.getFont():getWrap(text, prompt.width)
-  local lineHeight = graphics.getFont():getHeight()
+  local _, lines = font:getWrap(text, prompt.width)
+  local lineHeight = font:getHeight()
   local y = prompt.y + prompt.height - #lines * lineHeight
   for _, line in ipairs(lines) do
-    local width = graphics.getFont():getWidth(line)
+    local width = font:getWidth(line)
     graphics.print(line, prompt.x + prompt.width - width, y)
     y = y + lineHeight
   end
 end
 
+local function drawCellText(graphics, font, text, cell, rightAligned)
+  local visible = rightAligned and fitText(font, text, math.max(0, cell.width - 12)) or text
+  local x = rightAligned and cell.x + cell.width - 6 - font:getWidth(visible) or cell.x + 6
+  graphics.print(visible, x, cell.y + math.floor((cell.height - font:getHeight()) / 2))
+end
+
 function LauncherRenderer:_header(view, layout)
   local graphics = love.graphics
-  local header = layout.header
-  self:_bevel(header, COLORS.header, false)
-  graphics.setFont(self.fonts.bold)
-  color(graphics, COLORS.text)
-  local clock = (view.dateText or "") .. "  " .. (view.timeText or "")
-  local lineHeight = graphics.getFont():getHeight()
-  if layout.narrowHeader then
-    graphics.print(clock, header.x + 8, header.y + 4)
-    graphics.setFont(self.fonts.body)
-    color(graphics, COLORS.muted)
-    graphics.print(
-      fitText(graphics.getFont(), tostring(view.version or ""), header.width - 16),
-      header.x + 8,
-      header.y + 4 + lineHeight
-    )
-  else
-    graphics.print(clock, header.x + 8, header.y + (header.height - lineHeight) / 2)
-    graphics.setFont(self.fonts.body)
-    color(graphics, COLORS.muted)
-    local version = fitText(graphics.getFont(), tostring(view.version or ""), math.max(0, header.width * 0.42))
-    graphics.print(
-      version,
-      header.x + header.width - 8 - graphics.getFont():getWidth(version),
-      header.y + (header.height - graphics.getFont():getHeight()) / 2
-    )
+  local header = assert(layout.header)
+  local cells = assert(layout.headerCells)
+  rampRows(graphics, header, COLORS.header, COLORS.headerLower, 1)
+  color(graphics, COLORS.headerGlint)
+  graphics.rectangle("fill", header.x, header.y, header.width, 1)
+  color(graphics, COLORS.headerRule)
+  graphics.rectangle("fill", header.x, header.y + header.height - 1, header.width, 1)
+  for _, x in ipairs(cells.separators) do
+    color(graphics, COLORS.separatorDark)
+    graphics.rectangle("fill", x, header.y + 2, 1, header.height - 4)
+    color(graphics, COLORS.separatorLight)
+    graphics.rectangle("fill", x + 1, header.y + 2, 1, header.height - 4)
+  end
+  graphics.setFont(self.fonts.body)
+  color(graphics, COLORS.highlight)
+  drawCellText(graphics, graphics.getFont(), view.dateText or "", cells.date, false)
+  drawCellText(graphics, graphics.getFont(), view.timeText or "", cells.time, false)
+  drawCellText(graphics, graphics.getFont(), tostring(view.version or ""), cells.version, true)
+end
+
+local function centeredLines(graphics, font, lines, rect)
+  local lineHeight = font:getHeight()
+  local y = rect.y + math.max(0, math.floor((rect.height - #lines * lineHeight) / 2))
+  for _, line in ipairs(lines) do
+    graphics.print(line, rect.x + math.max(0, math.floor((rect.width - font:getWidth(line)) / 2)), y)
+    y = y + lineHeight
   end
 end
 
@@ -225,32 +299,74 @@ function LauncherRenderer:_cartridge(view, game, slot)
   local graphics = love.graphics
   local installed = game.installed == true
   local pressed = view.pressedTarget == game.versionId
-  self:_bevel(slot.rect, installed and COLORS.face or COLORS.missingFace, pressed)
-  color(graphics, game.versionId == "heartgold" and COLORS.gold or COLORS.silver)
-  graphics.rectangle("fill", slot.rect.x + 2, slot.rect.y + 2, 4, slot.rect.height - 4)
+  local rect = slot.rect
   local well = slot.iconWell
-  color(graphics, COLORS.headerLower)
-  graphics.rectangle("fill", well.x, well.y, well.width, well.height)
-  color(graphics, COLORS.background)
-  graphics.rectangle("fill", well.x + 1, well.y + 1, well.width - 2, well.height - 2)
+  local text = slot.textRect
+  color(graphics, COLORS.rim)
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  color(graphics, pressed and COLORS.lowerBevel or COLORS.highlight)
+  graphics.rectangle("fill", rect.x + 1, rect.y + 1, rect.width - 2, 1)
+  graphics.rectangle("fill", rect.x + 1, rect.y + 1, 1, rect.height - 2)
+  color(graphics, pressed and COLORS.highlight or COLORS.lowerBevel)
+  graphics.rectangle("fill", rect.x + 1, rect.y + rect.height - 1, rect.width - 1, 1)
+  graphics.rectangle("fill", rect.x + rect.width - 1, rect.y + 1, 1, rect.height - 2)
+
+  rampRows(
+    graphics,
+    well,
+    installed and COLORS.iconTop or COLORS.missingFace,
+    installed and COLORS.iconBottom or COLORS.missingBottom,
+    0
+  )
+  color(graphics, COLORS.separatorDark)
+  graphics.rectangle("fill", well.x + well.width, well.y, 1, well.height)
+  color(graphics, COLORS.highlight)
+  graphics.rectangle("fill", well.x + well.width + 1, well.y, 1, well.height)
+  local panel = {
+    x = well.x + well.width + 2,
+    y = rect.y + 1,
+    width = rect.x + rect.width - 1 - (well.x + well.width + 2),
+    height = rect.height - 2,
+  }
+  rampRows(
+    graphics,
+    panel,
+    pressed and COLORS.panelBottom or COLORS.panelTop,
+    pressed and COLORS.panelTop or COLORS.panelBottom,
+    0
+  )
+  color(graphics, COLORS.panelLine)
+  for y = panel.y + 2, panel.y + panel.height - 2, 2 do
+    graphics.rectangle("fill", panel.x, y, panel.width, 1)
+  end
+
   local icon = installed and game.iconSha1 and self.gameIcons[game.iconSha1] or nil
   if icon ~= nil then
     graphics.draw(icon, well.x + math.floor((well.width - 32) / 2), well.y + math.floor((well.height - 32) / 2))
   end
-  graphics.setFont(self.fonts.bold)
+
+  graphics.setFont(self.fonts.body)
   color(graphics, installed and COLORS.text or COLORS.muted)
-  local text = slot.textRect
-  local title = fitText(graphics.getFont(), game.label, text.width)
-  local lineHeight = graphics.getFont():getHeight()
-  local titleY = text.y + (installed and math.floor((text.height - lineHeight) / 2) or 3)
-  graphics.print(title, text.x, titleY)
+  local _, lines = graphics.getFont():getWrap(tostring(game.label), text.width)
   if not installed then
+    graphics.setFont(self.fonts.prompt)
+    local _, hintLines = graphics.getFont():getWrap("Select to import ROM", text.width)
+    local titleHeight = #lines * self.fonts.body:getHeight()
+    local hintHeight = #hintLines * self.fonts.prompt:getHeight()
+    local top = text.y + math.max(0, math.floor((text.height - titleHeight - hintHeight - 3) / 2))
     graphics.setFont(self.fonts.body)
-    color(graphics, COLORS.muted)
-    local subtitle = fitText(graphics.getFont(), "Select to import ROM", text.width)
-    graphics.print(subtitle, text.x, titleY + lineHeight + 3)
+    centeredLines(graphics, self.fonts.body, lines, { x = text.x, y = top, width = text.width, height = titleHeight })
+    graphics.setFont(self.fonts.prompt)
+    centeredLines(
+      graphics,
+      self.fonts.prompt,
+      hintLines,
+      { x = text.x, y = top + titleHeight + 3, width = text.width, height = hintHeight }
+    )
+  else
+    centeredLines(graphics, self.fonts.body, lines, text)
   end
-  if view.action == game.versionId then
+  if view.action == game.versionId or (view.mode == "selection" and view.focusedId == game.versionId) then
     self:_focus(slot.focusRect)
   end
 end
@@ -264,6 +380,28 @@ function LauncherRenderer:_selection(view, layout)
   for _, game in ipairs(view.games) do
     self:_cartridge(view, game, assert(layout.slots[game.versionId]))
   end
+end
+
+local function drawDiagnostic(graphics, view, layout)
+  if layout.errorRect == nil then
+    return false
+  end
+  color(graphics, COLORS.muted)
+  local message = tostring(view.error or "")
+  if view.detail ~= nil then
+    message = message .. "\n" .. tostring(view.detail)
+  end
+  local font = graphics.getFont()
+  local _, lines = font:getWrap(message, layout.errorRect.width)
+  local y = layout.errorRect.y
+  for _, line in ipairs(lines) do
+    if y + font:getHeight() > layout.errorRect.y + layout.errorRect.height then
+      break
+    end
+    graphics.print(line, layout.errorRect.x, y)
+    y = y + font:getHeight()
+  end
+  return true
 end
 
 function LauncherRenderer:_operation(view, layout)
@@ -309,41 +447,36 @@ function LauncherRenderer:_operation(view, layout)
       layout.receiptRect.x,
       layout.receiptRect.y + 4
     )
-    color(graphics, COLORS.muted)
-    local status = operation.statusText or (operation.mode == "receipt" and "Waiting for readers" or "Working")
-    graphics.print(
-      fitText(graphics.getFont(), status, layout.statusRect.width),
-      layout.statusRect.x,
-      layout.statusRect.y + 4
-    )
-    if operation.progress ~= nil then
-      local track = layout.statusRect
-      color(graphics, COLORS.headerLower)
-      graphics.rectangle("fill", track.x, track.y + 22, track.width, 4)
-      color(graphics, COLORS.header)
-      graphics.rectangle(
-        "fill",
-        track.x,
-        track.y + 22,
-        math.floor(track.width * math.max(0, math.min(1, operation.progress))),
-        4
+    if operation.error == nil then
+      color(graphics, COLORS.muted)
+      local status = operation.statusText or (operation.mode == "receipt" and "Waiting for readers" or "Working")
+      graphics.print(
+        fitText(graphics.getFont(), status, layout.statusRect.width),
+        layout.statusRect.x,
+        layout.statusRect.y + 4
       )
-    else
-      self:drawLoadingSquares(layout.statusRect.x, layout.statusRect.y + 20, operation.elapsed or 0)
+      if operation.progress ~= nil then
+        local track = layout.statusRect
+        color(graphics, COLORS.headerLower)
+        graphics.rectangle("fill", track.x, track.y + 22, track.width, 4)
+        color(graphics, COLORS.header)
+        graphics.rectangle(
+          "fill",
+          track.x,
+          track.y + 22,
+          math.floor(track.width * math.max(0, math.min(1, operation.progress))),
+          4
+        )
+      else
+        self:drawLoadingSquares(layout.statusRect.x, layout.statusRect.y + 20, operation.elapsed or 0)
+      end
     end
   elseif layout.errorRect ~= nil then
-    color(graphics, COLORS.muted)
-    local message = operation.error and (operation.error.message or operation.error.code)
-      or tostring(operation.error or "Import failed")
-    local _, lines = graphics.getFont():getWrap(message, layout.errorRect.width)
-    local y = layout.errorRect.y
-    for _, line in ipairs(lines) do
-      if y + graphics.getFont():getHeight() > layout.errorRect.y + layout.errorRect.height then
-        break
-      end
-      graphics.print(line, layout.errorRect.x, y)
-      y = y + graphics.getFont():getHeight()
-    end
+    drawDiagnostic(
+      graphics,
+      { error = operation.error and (operation.error.message or operation.error.code) or operation.error },
+      layout
+    )
   end
   for targetId, target in pairs(layout.graph.targets) do
     local label = targetId == "choose-rom" and "Choose ROM"
@@ -387,17 +520,22 @@ function LauncherRenderer:drawBoot(view, surface)
     return
   end
   LogicalSurface.draw(love.graphics, surface.placement, function()
-    local width, height = surface.logicalViewport.width, surface.logicalViewport.height
-    self:_background(width, height)
     local graphics = love.graphics
-    graphics.setFont(self.fonts.wordmark)
+    local width, height = surface.logicalViewport.width, surface.logicalViewport.height
+    color(graphics, COLORS.highlight)
+    graphics.rectangle("fill", 0, 0, width, height)
     local alpha = math.min(1, (view.elapsed or 0) / 0.18)
-    color(graphics, { COLORS.text[1], COLORS.text[2], COLORS.text[3], alpha })
-    local lineHeight = graphics.getFont():getHeight()
-    local top = math.floor((height - lineHeight * 2) / 2)
-    for index, line in ipairs({ "Portémon", "Nitro" }) do
-      graphics.print(line, math.floor((width - graphics.getFont():getWidth(line)) / 2), top + (index - 1) * lineHeight)
-    end
+    local scale = bootLogoScale(width, height, self.bootLogoWidth, self.bootLogoHeight)
+    local drawnWidth, drawnHeight = self.bootLogoWidth * scale, self.bootLogoHeight * scale
+    graphics.setColor(1, 1, 1, alpha)
+    graphics.draw(
+      self.bootLogo,
+      math.floor((width - drawnWidth) / 2),
+      math.floor((height - drawnHeight) / 2),
+      0,
+      scale,
+      scale
+    )
     local layout = LauncherLayout.loading(width, height, { selectionInterrupt = true, fonts = self.fonts })
     self:drawSelectionPrompt(layout, view.elapsed)
   end)
@@ -430,23 +568,22 @@ function LauncherRenderer:drawLoading(view, layout)
   if layout.unavailable then
     return
   end
-  if view.header == true then
-    self:_header(view, layout)
-  end
-  local content = layout.content
-  graphics.setFont(self.fonts.bold)
-  color(graphics, COLORS.text)
-  local titleY = content.y + math.max(4, math.floor((content.height - 76) / 2))
-  graphics.print(fitText(graphics.getFont(), view.gameLabel or "", content.width - 8), content.x + 4, titleY)
   graphics.setFont(self.fonts.body)
-  color(graphics, COLORS.muted)
-  graphics.print(
-    fitText(graphics.getFont(), view.label or "Starting game", content.width - 8),
-    content.x + 4,
-    titleY + 18
-  )
-  self:drawLoadingSquares(content.x + 4, titleY + 40, view.elapsed)
+  local _, titleLines = graphics.getFont():getWrap(tostring(view.gameLabel or ""), assert(layout.titleRect).width)
+  centeredLines(graphics, self.fonts.body, titleLines, layout.titleRect)
+
   if view.selectionInterrupt == true then
+    if view.error == nil then
+      color(graphics, COLORS.muted)
+      local status = tostring(view.label or "Now loading...")
+      graphics.setFont(self.fonts.body)
+      centeredLines(graphics, self.fonts.body, { status }, assert(layout.loadingStatusRect))
+      self:drawLoadingSquares(assert(layout.indicatorRect).x, layout.indicatorRect.y, view.elapsed)
+    else
+      self:drawSelectionPrompt(layout, view.elapsed)
+      drawDiagnostic(graphics, view, layout)
+      return nil
+    end
     self:drawSelectionPrompt(layout, view.elapsed)
   elseif layout.receiptRect ~= nil then
     color(graphics, COLORS.text)
@@ -455,31 +592,19 @@ function LauncherRenderer:drawLoading(view, layout)
       layout.receiptRect.x,
       layout.receiptRect.y + 4
     )
-    color(graphics, COLORS.muted)
-    if layout.statusRect ~= nil then
+    if view.error == nil then
+      color(graphics, COLORS.muted)
       graphics.print(
-        fitText(graphics.getFont(), view.label or "Waiting for readers", layout.statusRect.width),
+        fitText(graphics.getFont(), tostring(view.label or "Waiting for readers"), layout.statusRect.width),
         layout.statusRect.x,
         layout.statusRect.y + 4
       )
       self:drawLoadingSquares(layout.statusRect.x, layout.statusRect.y + 22, view.elapsed)
+    else
+      drawDiagnostic(graphics, view, layout)
     end
-  end
-  if layout.errorRect ~= nil then
-    local message = tostring(view.error or "")
-    if view.detail ~= nil then
-      message = message .. "\n" .. tostring(view.detail)
-    end
-    color(graphics, COLORS.muted)
-    local _, lines = graphics.getFont():getWrap(message, layout.errorRect.width)
-    local y = layout.errorRect.y
-    for _, line in ipairs(lines) do
-      if y + graphics.getFont():getHeight() > layout.errorRect.y + layout.errorRect.height then
-        break
-      end
-      graphics.print(line, layout.errorRect.x, y)
-      y = y + graphics.getFont():getHeight()
-    end
+  else
+    drawDiagnostic(graphics, view, layout)
   end
   if layout.cancelRect ~= nil then
     self:drawButton(layout.cancelRect, "Cancel", nil, { focused = view.action == "cancel" })
@@ -538,6 +663,10 @@ function LauncherRenderer:dispose()
   self.disposed = true
   local fonts, gameIcons = self.fonts, self.gameIcons
   self.fonts, self.gameIcons = {}, {}
+  if self.bootLogo ~= nil then
+    self.bootLogo:release()
+    self.bootLogo = nil
+  end
   for _, image in pairs(gameIcons) do
     image:release()
   end
