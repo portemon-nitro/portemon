@@ -12,7 +12,9 @@
 -- cache.zip.bak holding the previous canonical archive, so a failed rotation
 -- always leaves one recoverable snapshot. Bounds are checked before a record is
 -- emitted; a cut beyond them is a typed persistence failure, never a truncated
--- archive.
+-- archive. Ordinary hydration trusts successful publication: native mount/read
+-- and manifest/path/size checks reject unusable candidates without a second Lua
+-- checksum traversal. Explicit derived-cache audit owns semantic validation.
 
 local BinaryView = require("libs.codec.src.BinaryView")
 local Errors = require("libs.errors.src.Errors")
@@ -1039,31 +1041,25 @@ end
 
 -- Mount one candidate archive in its own namespace. Both the archive name and
 -- the mount point are the minted identity, so no other hydration in this
--- process can serve from, or mount over, this namespace. The mounted FileData
--- stays rooted by the caller until that namespace is released.
----@param bytes string
+-- process can serve from, or mount over, this namespace. The caller retains
+-- ownership of the input Data until that namespace is released.
+---@param compressed love.FileData
 ---@return string? namespace
----@return love.FileData? mountedArchive
 ---@return string? archiveName
-local function mountArchive(bytes)
+local function mountArchive(compressed)
   local fs = loveApi().filesystem
   local namespace = nextMountIdentity(fs)
   local archiveName = namespace .. ".zip"
-  local fileData = fs.newFileData(bytes, archiveName)
-  if fileData == nil then
+  if not fs.mount(compressed, archiveName, namespace) then
     return nil
   end
-  if not fs.mount(fileData, namespace) then
-    fileData:release()
-    return nil
-  end
-  return namespace, fileData, archiveName
+  return namespace, archiveName
 end
 
--- Read one candidate snapshot exactly once: mount the compressed archive in a
--- private namespace, validate the manifest, then hydrate every declared member
--- and confirm its checked size and CRC while consuming that buffer. Any
--- failure discards the whole candidate so no partial bytes can reach live
+-- Read one candidate snapshot exactly once: read the compressed archive as
+-- native Data, mount it in a private namespace, validate the manifest, then
+-- hydrate every declared member and check its size while consuming that buffer.
+-- Any failure discards the whole candidate so no partial bytes can reach live
 -- state. Without an explicit file name the recoverable archive is read: the
 -- canonical snapshot when it exists, otherwise the backup a failed rotation
 -- left behind. An orphan temporary is never a candidate.
@@ -1086,32 +1082,31 @@ function CacheArchive.open(versionId, expectedIdentity, fileName)
   if not exists(path) then
     return nil, Errors.new(ARCHIVE_CODES.UNREADABLE, "no snapshot archive is present", { path = path })
   end
-  ---@type string?
-  local bytes, readError = fs.read(path)
-  if bytes == nil then
+  local compressed, readError = fs.read("data", path)
+  if compressed == nil then
     return nil,
       Errors.new(ARCHIVE_CODES.UNREADABLE, "the snapshot archive could not be read", {
         path = path,
         cause = tostring(readError),
       })
   end
-  local namespace, mountedArchive, archiveName = mountArchive(bytes)
-  bytes = nil
-  if namespace == nil or mountedArchive == nil or archiveName == nil then
+  ---@cast compressed love.FileData
+  local namespace, archiveName = mountArchive(compressed)
+  if namespace == nil or archiveName == nil then
+    compressed:release()
     return nil, Errors.new(ARCHIVE_CODES.UNREADABLE, "the snapshot archive could not be mounted", { path = path })
   end
-  local mounted = mountedArchive
   local unmounted = false
-  -- The platform names a mounted FileData archive by its archive name, not by
-  -- the mount point, and it keeps reading through that FileData: release the
-  -- namespace first and drop the backing only once the platform confirms it.
+  -- The platform names a mounted Data archive by its archive name, not by the
+  -- mount point, and it keeps reading through that Data: release the namespace
+  -- first and drop the backing only once the platform confirms it.
   local function unmount()
     if unmounted then
       return
     end
     unmounted = true
     assert(loveApi().filesystem.unmount(archiveName), "the snapshot archive mount could not be released")
-    mounted:release()
+    compressed:release()
   end
 
   local indexText = fs.read(namespace .. "/" .. CacheArchive.INDEX_MEMBER)
@@ -1156,37 +1151,36 @@ function CacheArchive.open(versionId, expectedIdentity, fileName)
   end
 
   local entries = {}
+  ---@param failure Errors.Error
+  ---@return nil
+  ---@return Errors.Error
+  local function rejectCandidate(failure)
+    for position = #entries, 1, -1 do
+      entries[position].data:release()
+      entries[position] = nil
+    end
+    unmount()
+    return nil, failure
+  end
+
   for position, entry in ipairs(index.entries) do
     assert(type(entry) == "table", "validated manifest entry must be a record")
     local member = fs.read("data", namespace .. "/" .. entry.path)
     if member == nil then
-      unmount()
-      return nil,
-        Errors.new(ARCHIVE_CODES.UNREADABLE, "a declared snapshot member is missing", {
-          path = entry.path,
-        })
+      return rejectCandidate(Errors.new(ARCHIVE_CODES.UNREADABLE, "a declared snapshot member is missing", {
+        path = entry.path,
+      }))
     end
     assert(type(member) == "userdata", "a hydrated member must be Data")
     ---@cast member love.FileData
     local size = member:getSize()
     if size ~= entry.uncompressedSize then
-      unmount()
-      return nil,
-        Errors.new(ARCHIVE_CODES.UNREADABLE, "a snapshot member contradicts its checked size", {
-          path = entry.path,
-          size = size,
-          expected = entry.uncompressedSize,
-        })
-    end
-    local crc = Zip32.crc32(BinaryView.fromData(member, entry.path))
-    if crc ~= entry.unsignedCrc32 then
-      unmount()
-      return nil,
-        Errors.new(ARCHIVE_CODES.UNREADABLE, "a snapshot member contradicts its checked CRC", {
-          path = entry.path,
-          unsignedCrc32 = crc,
-          expected = entry.unsignedCrc32,
-        })
+      member:release()
+      return rejectCandidate(Errors.new(ARCHIVE_CODES.UNREADABLE, "a snapshot member contradicts its checked size", {
+        path = entry.path,
+        size = size,
+        expected = entry.uncompressedSize,
+      }))
     end
     entries[position] = { path = entry.path, data = member, size = size }
   end
