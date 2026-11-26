@@ -74,6 +74,10 @@ end
 ---@field initialCursor integer?
 ---@field cancellable boolean?
 ---@field cancelValue unknown
+---@field kind "multichoice"? the source multichoice window the presentation lays out
+---@field tileX integer? source tile column the window anchors on
+---@field tileY integer? source tile row the window anchors on
+---@field anchorRight boolean? whether the window grows toward the left screen edge
 
 ---@class FieldMenuController.Item
 ---@field text unknown

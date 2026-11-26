@@ -149,7 +149,6 @@ function ScriptActorWorld:setEventDefaultFacing(objectEventId, direction)
   return write(self._manager, objectEventId, direction) == true
 end
 
-
 -- The field camera target actor (pinned HGSS object id 241); nil when the
 -- session has no camera target.
 ---@return string|nil

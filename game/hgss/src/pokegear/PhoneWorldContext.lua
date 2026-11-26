@@ -778,10 +778,7 @@ function PhoneWorldContext:trainerDefeated(trainerNo)
   assert(type(trainerNo) == "number" and trainerNo % 1 == 0, "trainer defeats read a native trainer number")
   local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
   local events = self._owners.flags
-  assert(
-    type(events) == "table" and type(events.isFlagSet) == "function",
-    "trainer defeats read the live event state"
-  )
+  assert(type(events) == "table" and type(events.isFlagSet) == "function", "trainer defeats read the live event state")
   local isFlagSet = events.isFlagSet --[[@as fun(state: table<string, unknown>, flag: integer): boolean]]
   return isFlagSet(events, RuntimeValues.trainerFlagId(trainerNo)) == true
 end
@@ -796,15 +793,12 @@ function PhoneWorldContext:rematchGroupUnlocked(rematchNo)
     "rematch groups read a native rematch number"
   )
   local events = self._owners.flags
-  assert(
-    type(events) == "table" and type(events.isFlagSet) == "function",
-    "rematch groups read the live event state"
-  )
+  assert(type(events) == "table" and type(events.isFlagSet) == "function", "rematch groups read the live event state")
   local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
   local flagBase = FieldScriptSymbols.flagsByName.FLAG_UNK_97B
   assert(type(flagBase) == "number", "rematch groups read the source group flag base")
   local isFlagSet = events.isFlagSet --[[@as fun(state: table<string, unknown>, flag: integer): boolean]]
-  return isFlagSet(events, flagBase + rematchNo) == true
+  return isFlagSet(events, flagBase + rematchNo --[[@as integer]]) == true
 end
 
 -- Reads the player's text speed option behind call text typing: the

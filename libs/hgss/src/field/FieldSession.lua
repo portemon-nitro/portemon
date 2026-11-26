@@ -164,6 +164,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field gymMechanism FieldSession.GymMechanism? completed-step claim of the active gym mechanism; absent sessions claim no mechanism step
 ---@field private overworld table<string, unknown>|nil
+---@field roamerTransitions FieldSession.RoamerTransitions? connection-form roamer transition publication; absent sessions move no roamer
 ---@field incomingCalls FieldSession.IncomingCalls? ambient incoming-call collaborator; absent sessions offer no phone opportunity
 ---@field private fieldCallHandle table<string, unknown>? private foreground call handle this field session steps and releases
 ---@field childResumePending boolean
@@ -1217,6 +1218,7 @@ end
 ---@field naming boolean
 ---@field party boolean
 ---@field mart boolean
+---@field bank boolean the Mom bank amount screen owns the lane
 ---@field kurt boolean
 ---@field pc boolean
 ---@field pokegear boolean

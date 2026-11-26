@@ -224,6 +224,7 @@ local function requireService(run, name)
       { scriptId = run.instance.scriptId }
     )
   end
+  ---@cast service -nil
   return service
 end
 
@@ -3571,8 +3572,8 @@ HANDLERS.bag_get_quantity = handleBagGetQuantity
 -- each handler evaluates its ScriptGetVar operands, calls exactly one named
 -- Day Care operation, writes the buffered display text the following message
 -- reads, and publishes its source output in the same tick. The main chunk is
--- at LuaJIT's 200-local budget, so these handlers live in a block and stay
--- anonymous closures of the two helpers below.
+-- at LuaJIT's 200-local budget, so these handlers live in a block and close
+-- over the two helpers below.
 do
   local function daycareFor(run)
     return requireService(run, "daycare")
@@ -3586,52 +3587,52 @@ do
     end
     run.instance.textArgs[slot] = { text = "literal_text", value = text }
   end
-  HANDLERS.daycare_mon_nicknames = function(_, run)
+  function HANDLERS.daycare_mon_nicknames(_, run)
     for slot, text in pairs(daycareFor(run):storedNicknames()) do
       writeCareBuffer(run, slot, text)
     end
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_state = function(node, run)
+  function HANDLERS.daycare_state(node, run)
     semanticsFor(run).writeRef(node.result, daycareFor(run):state(), run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.count_alive_mons_and_pc = function(node, run)
+  function HANDLERS.count_alive_mons_and_pc(node, run)
     local mons = monsFor(run)
     semanticsFor(run).writeRef(node.result, mons:countAliveMons() + mons:storedMonCount(), run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_retrieve_mon = function(node, run)
+  function HANDLERS.daycare_retrieve_mon(node, run)
     local withdrawn = daycareFor(run):withdraw(evalField(node, run, "slot"))
     writeCareBuffer(run, 0, withdrawn.nickname)
     semanticsFor(run).writeRef(node.result, withdrawn.species, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_withdraw_cost = function(node, run)
+  function HANDLERS.daycare_withdraw_cost(node, run)
     local cost = daycareFor(run):withdrawCost(evalField(node, run, "slot"))
     writeCareBuffer(run, 0, cost.nickname)
     writeCareBuffer(run, 1, cost.bufferedPrice)
     semanticsFor(run).writeRef(node.result, cost.price, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_growth = function(node, run)
+  function HANDLERS.daycare_growth(node, run)
     local growth = daycareFor(run):growth(evalField(node, run, "slot"))
     writeCareBuffer(run, 0, growth.nickname)
     writeCareBuffer(run, 1, growth.bufferedGrowth)
     semanticsFor(run).writeRef(node.result, growth.growth, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_tail_mon = function(node, run)
+  function HANDLERS.daycare_tail_mon(node, run)
     local tail = daycareFor(run):tailMon()
     writeCareBuffer(run, 0, tail.nickname)
     semanticsFor(run).writeRef(node.result, tail.species, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_deposit = function(node, run)
+  function HANDLERS.daycare_deposit(node, run)
     daycareFor(run):deposit(evalField(node, run, "slot"))
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_mon_stats = function(node, run)
+  function HANDLERS.daycare_mon_stats(node, run)
     local stats = daycareFor(run):monStats(evalField(node, run, "slot"))
     if stats ~= nil then
       writeCareBuffer(run, evalField(node, run, "nicknameBuffer"), stats.nickname)
@@ -3640,45 +3641,45 @@ do
     end
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_sanitize_mon = function(node, run)
+  function HANDLERS.daycare_sanitize_mon(node, run)
     local result = daycareFor(run):sanitizeMon(evalField(node, run, "slot"))
     semanticsFor(run).writeRef(node.result, result, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_update_objects = function(_, run)
+  function HANDLERS.daycare_update_objects(_, run)
     daycareFor(run):updateYardObjects()
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_reset_egg = function(_, run)
+  function HANDLERS.daycare_reset_egg(_, run)
     daycareFor(run):resetEgg()
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_give_egg = function(_, run)
+  function HANDLERS.daycare_give_egg(_, run)
     daycareFor(run):receiveEgg()
     return Runtime.OUTCOME_CONTINUE
   end
   -- The source hatch scene blocks the script until the care application, the
   -- hatch receipt, the optional nickname question and the field restore all
   -- finished; only then does the next source command run.
-  HANDLERS.egg_hatch_anim = function(_, run)
+  function HANDLERS.egg_hatch_anim(_, run)
     requireForeground(run, "egg_hatch_anim")
     return blockOnTask(run, "egg_hatch", {})
   end
-  HANDLERS.give_togepi_egg = function(_, run)
+  function HANDLERS.give_togepi_egg(_, run)
     daycareFor(run):giveTogepiEgg()
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.mon_is_from_togepi_egg = function(node, run)
+  function HANDLERS.mon_is_from_togepi_egg(node, run)
     local slot = evalField(node, run, "slot")
     local mon = requireService(run, "mons"):partyMon(slot)
     semanticsFor(run).writeRef(node.result, daycareFor(run):isTogepiGift(mon) and 1 or 0, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_compatibility = function(node, run)
+  function HANDLERS.daycare_compatibility(node, run)
     semanticsFor(run).writeRef(node.result, daycareFor(run):compatibilityCategory(), run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.daycare_check_egg = function(node, run)
+  function HANDLERS.daycare_check_egg(node, run)
     semanticsFor(run).writeRef(node.result, daycareFor(run):hasEgg() and 1 or 0, run)
     return Runtime.OUTCOME_CONTINUE
   end
@@ -3759,7 +3760,7 @@ end
 -- script on the exchange application, and ScrCmd_NPCTradeEnd releases the
 -- parked context. GiveLoanMon hands the loaned record out in the same tick and
 -- CheckReturnLoanMon writes the source priority code. The main chunk is at
--- LuaJIT's local budget, so these handlers are anonymous closures in a block.
+-- LuaJIT's local budget, so these handlers live in a block.
 do
   local PARKED_TRADE_KEY = "__npc_trade"
 
@@ -3777,7 +3778,7 @@ do
     return tradeId --[[@as integer]]
   end
 
-  HANDLERS.npc_trade_load = function(node, run)
+  function HANDLERS.npc_trade_load(node, run)
     local tradeId = node.tradeId
     if type(tradeId) ~= "number" or tradeId % 1 ~= 0 then
       Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "the NPC trade identity must be a byte", {
@@ -3792,27 +3793,27 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
 
-  HANDLERS.npc_trade_offered_species = function(node, run)
+  function HANDLERS.npc_trade_offered_species(node, run)
     local identity = requireService(run, "npcTrade"):tradeIdentity(parkedTrade(run))
     local species = requireService(run, "mons"):catalog():species(identity.offeredSpecies)
     semanticsFor(run).writeRef(node.result, species.nativeId, run)
     return Runtime.OUTCOME_CONTINUE
   end
 
-  HANDLERS.npc_trade_requested_species = function(node, run)
+  function HANDLERS.npc_trade_requested_species(node, run)
     local identity = requireService(run, "npcTrade"):tradeIdentity(parkedTrade(run))
     local species = requireService(run, "mons"):catalog():species(identity.requestedSpecies)
     semanticsFor(run).writeRef(node.result, species.nativeId, run)
     return Runtime.OUTCOME_CONTINUE
   end
 
-  HANDLERS.npc_trade_unused_flag = function(node, run)
+  function HANDLERS.npc_trade_unused_flag(node, run)
     local identity = requireService(run, "npcTrade"):tradeIdentity(parkedTrade(run))
     semanticsFor(run).writeRef(node.result, identity.unusedFlag, run)
     return Runtime.OUTCOME_CONTINUE
   end
 
-  HANDLERS.npc_trade_exec = function(node, run)
+  function HANDLERS.npc_trade_exec(node, run)
     requireForeground(run, "npc_trade_exec")
     local tradeId = parkedTrade(run)
     local slot = evalField(node, run, "slot")
@@ -3825,19 +3826,19 @@ do
     return blockOnTask(run, "npc_trade", { tradeId = tradeId, slot = slot })
   end
 
-  HANDLERS.npc_trade_end = function(_, run)
+  function HANDLERS.npc_trade_end(_, run)
     local tradeId = parkedTrade(run)
     assert(type(tradeId) == "number", "a parked NPC trade context resolved")
     run.instance.locals[PARKED_TRADE_KEY] = nil
     return Runtime.OUTCOME_CONTINUE
   end
 
-  HANDLERS.give_loan_mon = function(node, run)
+  function HANDLERS.give_loan_mon(node, run)
     requireService(run, "npcTrade"):giveLoan({ tradeId = node.tradeId, level = node.level, mapId = node.mapId })
     return Runtime.OUTCOME_CONTINUE
   end
 
-  HANDLERS.check_return_loan_mon = function(node, run)
+  function HANDLERS.check_return_loan_mon(node, run)
     local result = requireService(run, "npcTrade"):checkReturn(node.tradeId, evalField(node, run, "slot"))
     semanticsFor(run).writeRef(node.result, result, run)
     return Runtime.OUTCOME_CONTINUE
@@ -3888,7 +3889,7 @@ do
   -- ScriptGetVar, prospective move through ScriptGetVar. Page 0 opens the plain
   -- Summary; page 1 opens the learn/forget page, whose MOVE_NONE prospective
   -- move is the deletion picker.
-  HANDLERS.pokemon_summary_screen = function(node, run)
+  function HANDLERS.pokemon_summary_screen(node, run)
     requireForeground(run, "pokemon_summary_screen")
     requireService(run, "pokemonCare")
     local mode = node.mode
@@ -3928,7 +3929,7 @@ do
   -- ScrCmd_GetMoveSelection: mode 1 answers the picker's move row (4 is the
   -- source cancellation row) and mode 0 the final party slot; the parked
   -- answer is consumed here.
-  HANDLERS.get_move_selection = function(node, run)
+  function HANDLERS.get_move_selection(node, run)
     local instance = assert(run.instance, "the application commands run on a script instance")
     local answer = parked(run, SUMMARY_KEY, "Summary application")
     instance.locals[SUMMARY_KEY] = nil
@@ -3954,7 +3955,7 @@ do
   end
 
   -- ScrCmd_OpenLearnForgetMove: the deletion picker over one party slot.
-  HANDLERS.open_learn_forget_move = function(node, run)
+  function HANDLERS.open_learn_forget_move(node, run)
     requireForeground(run, "open_learn_forget_move")
     requireService(run, "pokemonCare")
     local slot = partySlot(run, evalField(node, run, "slot"), "the deletion picker")
@@ -3963,7 +3964,7 @@ do
 
   -- ScrCmd_GetLearnForgetMoveResult: the picker's move row, with the source
   -- cancellation row 4 reported as 255, consumed once.
-  HANDLERS.get_learn_forget_move_result = function(node, run)
+  function HANDLERS.get_learn_forget_move_result(node, run)
     local instance = assert(run.instance, "the application commands run on a script instance")
     local answer = parked(run, SUMMARY_KEY, "Summary application")
     instance.locals[SUMMARY_KEY] = nil
@@ -3982,7 +3983,7 @@ do
 
   -- ScrCmd_MonHasRelearnableMoves: the source's eligible level-up query in the
   -- same tick, output variable first.
-  HANDLERS.mon_has_relearnable_moves = function(node, run)
+  function HANDLERS.mon_has_relearnable_moves(node, run)
     local slot = partySlot(run, evalField(node, run, "slot"), "the relearn query")
     local eligible = requireService(run, "moveTutor"):hasRelearnableMoves(slot)
     semanticsFor(run).writeRef(node.result, eligible and 1 or 0, run)
@@ -3990,7 +3991,7 @@ do
   end
 
   -- ScrCmd_MoveRelearnerInit: the level-up reminder over one party slot.
-  HANDLERS.move_relearner_init = function(node, run)
+  function HANDLERS.move_relearner_init(node, run)
     requireForeground(run, "move_relearner_init")
     requireService(run, "pokemonCare")
     local slot = partySlot(run, evalField(node, run, "slot"), "the move reminder")
@@ -3998,7 +3999,7 @@ do
   end
 
   -- ScrCmd_MoveTutorInit: the same application for one offered move.
-  HANDLERS.move_tutor_init = function(node, run)
+  function HANDLERS.move_tutor_init(node, run)
     requireForeground(run, "move_tutor_init")
     requireService(run, "pokemonCare")
     local slot = partySlot(run, evalField(node, run, "slot"), "the move tutor lesson")
@@ -4014,7 +4015,7 @@ do
 
   -- ScrCmd_MoveRelearnerGetResult: 0 when the application published a move,
   -- 255 when it was cancelled or refused; consumed once.
-  HANDLERS.move_relearner_get_result = function(node, run)
+  function HANDLERS.move_relearner_get_result(node, run)
     local instance = assert(run.instance, "the application commands run on a script instance")
     local answer = parked(run, RELEARNER_KEY, "reminder application")
     instance.locals[RELEARNER_KEY] = nil
@@ -4042,7 +4043,7 @@ do
     return value --[[@as integer]]
   end
 
-  HANDLERS.tutor_move_page_count = function(node, run)
+  function HANDLERS.tutor_move_page_count(node, run)
     local slot = partySlot(run, evalField(node, run, "slot"), "the tutor list")
     local tutorNpc = tutorSelector(run, evalField(node, run, "tutorNpc"), "the tutor list")
     local pages = requireService(run, "moveTutor"):tutorPageCount(slot, tutorNpc)
@@ -4053,7 +4054,7 @@ do
   -- ScrCmd_MoveTutorChooseMove opens the generated list at ScriptMenu_Create's
   -- own tile origin and blocks on it: its result pointer carries the source's
   -- pending answer until the row commits.
-  HANDLERS.tutor_choose_move = function(node, run)
+  function HANDLERS.tutor_choose_move(node, run)
     requireForeground(run, "tutor_choose_move")
     local service = requireService(run, "moveTutor")
     local slot = partySlot(run, evalField(node, run, "slot"), "the tutor list")
@@ -4095,7 +4096,7 @@ do
 
   -- ScrCmd_TutorMoveTeachInSlot: the selected move lands in the answered row
   -- with its base PP and no PP Ups.
-  HANDLERS.tutor_move_teach = function(node, run)
+  function HANDLERS.tutor_move_teach(node, run)
     local slot = partySlot(run, evalField(node, run, "slot"), "the tutor lesson")
     local moveSlot = evalField(node, run, "moveSlot")
     if type(moveSlot) ~= "number" or moveSlot % 1 ~= 0 or moveSlot < 0 or moveSlot > 3 then
@@ -4111,7 +4112,7 @@ do
 
   -- ScrCmd_TutorMoveGetPrice: the inventory price of the selected move. A move
   -- the inventory does not offer is an attributed fault, never a zero price.
-  HANDLERS.tutor_move_price = function(node, run)
+  function HANDLERS.tutor_move_price(node, run)
     local move = evalField(node, run, "move")
     local row = requireService(run, "moveTutor"):tutorPrice(move)
     if row == nil then
@@ -4120,12 +4121,13 @@ do
         move = move,
       })
     end
+    ---@cast row -nil
     semanticsFor(run).writeRef(node.result, row.cost, run)
     return Runtime.OUTCOME_CONTINUE
   end
 
   -- ScrCmd_MonCanLearnHeadbuttFromTutor: the Headbutt tutor's own offer list.
-  HANDLERS.headbutt_tutor_eligible = function(node, run)
+  function HANDLERS.headbutt_tutor_eligible(node, run)
     local slot = partySlot(run, evalField(node, run, "slot"), "the Headbutt lesson")
     local eligible = requireService(run, "moveTutor"):canLearnHeadbutt(slot)
     semanticsFor(run).writeRef(node.result, eligible and 1 or 0, run)
@@ -4519,12 +4521,12 @@ end
 -- is an attributed fault, never a silent no-op; the points window shares the
 -- same owner because it paints the same balance. The main chunk is at LuaJIT's
 -- local budget, so the handlers are published inline.
-HANDLERS.battle_points_read = function(node, run)
+function HANDLERS.battle_points_read(node, run)
   local wallet = requireService(run, "battlePoints") --[[@as ScriptBattlePointsService]]
   semanticsFor(run).writeRef(node.result, wallet:balance(), run)
   return Runtime.OUTCOME_CONTINUE
 end
-HANDLERS.battle_points_change = function(node, run)
+function HANDLERS.battle_points_change(node, run)
   local amount = semanticsFor(run).evaluateValue(node.amount, run)
   local wallet = requireService(run, "battlePoints") --[[@as ScriptBattlePointsService]]
   if node.action == "give" then
@@ -4534,7 +4536,7 @@ HANDLERS.battle_points_change = function(node, run)
   end
   return Runtime.OUTCOME_CONTINUE
 end
-HANDLERS.battle_points_check = function(node, run)
+function HANDLERS.battle_points_check(node, run)
   local amount = semanticsFor(run).evaluateValue(node.amount, run)
   local wallet = requireService(run, "battlePoints") --[[@as ScriptBattlePointsService]]
   local affordable = wallet:hasEnough(amount)
@@ -4594,7 +4596,7 @@ end
 ---@field balance fun(self: ScriptAthletePointsService): integer
 ---@field give fun(self: ScriptAthletePointsService, amount: integer): boolean
 ---@field take fun(self: ScriptAthletePointsService, amount: integer): boolean
-HANDLERS.athlete_points_change = function(node, run)
+function HANDLERS.athlete_points_change(node, run)
   local amount = semanticsFor(run).evaluateValue(node.amount, run)
   local wallet = requireService(run, "athletePoints") --[[@as ScriptAthletePointsService]]
   if node.action == "give" then
@@ -4604,7 +4606,7 @@ HANDLERS.athlete_points_change = function(node, run)
   end
   return Runtime.OUTCOME_CONTINUE
 end
-HANDLERS.athlete_points_check = function(node, run)
+function HANDLERS.athlete_points_check(node, run)
   local amount = semanticsFor(run).evaluateValue(node.amount, run)
   local wallet = requireService(run, "athletePoints") --[[@as ScriptAthletePointsService]]
   local affordable = wallet:balance() >= amount
@@ -4622,7 +4624,7 @@ end
 ---@field wallet fun(self: ScriptBankService): integer
 ---@field isFull fun(self: ScriptBankService, kind: string): boolean
 do
-  HANDLERS.savings_box = function(node, run)
+  function HANDLERS.savings_box(node, run)
     local bank = requireService(run, "bank") --[[@as ScriptBankService]]
     local box = assert(bank.savingsBox, "the bank service carries the savings window")
     if node.action == "show" then
@@ -4636,18 +4638,18 @@ do
     end
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.bank_transaction = function(node, run)
+  function HANDLERS.bank_transaction(node, run)
     requireForeground(run, "bank_transaction")
     return blockOnTask(run, "bank_transaction", { mode = node.mode }, node.result)
   end
-  HANDLERS.bank_balance_check = function(node, run)
+  function HANDLERS.bank_balance_check(node, run)
     local amount = semanticsFor(run).evaluateValue(node.amount, run)
     local bank = requireService(run, "bank") --[[@as ScriptBankService]]
     local savings = bank:savings()
     semanticsFor(run).writeRef(node.result, savings >= amount and 1 or 0, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.bank_overflow_check = function(node, run)
+  function HANDLERS.bank_overflow_check(node, run)
     local bank = requireService(run, "bank") --[[@as ScriptBankService]]
     local full = bank:isFull(node.action == 0 and "bank" or "wallet")
     semanticsFor(run).writeRef(node.result, full and 1 or 0, run)
@@ -4656,7 +4658,7 @@ do
 end
 -- ScrCmd_ShowPointsBox/HidePointsBox/UpdatePointsBox: the type selector is a
 -- raw source byte, so it reaches the owner as the value the lowering read.
-HANDLERS.points_box = function(node, run)
+function HANDLERS.points_box(node, run)
   local wallet = requireService(run, "battlePoints") --[[@as ScriptBattlePointsService]]
   if node.action == "show" then
     local tileX = semanticsFor(run).evaluateValue(node.tileX, run)
@@ -4710,7 +4712,7 @@ do
     writeNpcBuffer(run, wholeSlot, size.whole)
     writeNpcBuffer(run, fractionSlot, size.fraction)
   end
-  HANDLERS.size_record_compare = function(node, run)
+  function HANDLERS.size_record_compare(node, run)
     local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
     local comparison = npcFor(run):sizeCompare(slot0)
     if comparison == "equal" then
@@ -4721,53 +4723,53 @@ do
     semanticsFor(run).writeRef(node.result, comparison == "larger" and 2 or 0, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.size_record_update = function(node, run)
+  function HANDLERS.size_record_update(node, run)
     npcFor(run):sizeRecordUpdate(semanticsFor(run).evaluateValue(node.slot, run))
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.buffer_mon_size = function(node, run)
+  function HANDLERS.buffer_mon_size(node, run)
     local wholeSlot = semanticsFor(run).evaluateValue(node.wholeBuffer, run)
     local fractionSlot = semanticsFor(run).evaluateValue(node.fractionBuffer, run)
     local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
     writeSizeBuffers(run, wholeSlot, fractionSlot, npcFor(run):monSizeText(slot0))
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.buffer_record_size = function(node, run)
+  function HANDLERS.buffer_record_size(node, run)
     local wholeSlot = semanticsFor(run).evaluateValue(node.wholeBuffer, run)
     local fractionSlot = semanticsFor(run).evaluateValue(node.fractionBuffer, run)
     local speciesId = semanticsFor(run).evaluateValue(node.species, run)
     writeSizeBuffers(run, wholeSlot, fractionSlot, npcFor(run):recordSizeText(speciesId))
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.mon_has_ribbon = function(node, run)
+  function HANDLERS.mon_has_ribbon(node, run)
     local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
     local ribbonId = semanticsFor(run).evaluateValue(node.ribbon, run)
     local has = npcFor(run):monHasRibbon(slot0, ribbonId)
     semanticsFor(run).writeRef(node.result, has and 1 or 0, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.buffer_ribbon_name = function(node, run)
+  function HANDLERS.buffer_ribbon_name(node, run)
     local ribbonId = semanticsFor(run).evaluateValue(node.ribbon, run)
     writeNpcBuffer(run, node.buffer, npcFor(run):ribbonName(ribbonId))
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.ev_total = function(node, run)
+  function HANDLERS.ev_total(node, run)
     local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
     semanticsFor(run).writeRef(node.result, npcFor(run):evTotal(slot0), run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.kenya_check = function(node, run)
+  function HANDLERS.kenya_check(node, run)
     local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
     local held = npcFor(run):kenyaCheck(slot0, node.exact ~= 0)
     semanticsFor(run).writeRef(node.result, held and 1 or 0, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.kenya_check_party = function(node, run)
+  function HANDLERS.kenya_check_party(node, run)
     local found = npcFor(run):kenyaCheckPartyOrMailbox()
     semanticsFor(run).writeRef(node.result, found and 1 or 0, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.stat_judge = function(node, run)
+  function HANDLERS.stat_judge(node, run)
     local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
     local judge = npcFor(run):statJudge(slot0)
     local semantics = semanticsFor(run)
@@ -4776,21 +4778,21 @@ do
     semantics.writeRef(node.highest, judge.highest, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.buffer_stat_name = function(node, run)
+  function HANDLERS.buffer_stat_name(node, run)
     local statId = semanticsFor(run).evaluateValue(node.stat, run)
     writeNpcBuffer(run, node.buffer, npcFor(run):statName(statId))
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.buffer_type_name = function(node, run)
+  function HANDLERS.buffer_type_name(node, run)
     local typeId = semanticsFor(run).evaluateValue(node.type, run)
     writeNpcBuffer(run, node.buffer, npcFor(run):typeName(typeId))
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.count_fossils = function(node, run)
+  function HANDLERS.count_fossils(node, run)
     semanticsFor(run).writeRef(node.result, npcFor(run):fossilCount(), run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.fossil_minimum_amount = function(node, run)
+  function HANDLERS.fossil_minimum_amount(node, run)
     local semantics = semanticsFor(run)
     local needed = semantics.evaluateValue(node.amount, run)
     local itemId, index = npcFor(run):fossilForAmount(needed)
@@ -4798,13 +4800,13 @@ do
     semantics.writeRef(node.index, index, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.fossil_species = function(node, run)
+  function HANDLERS.fossil_species(node, run)
     local semantics = semanticsFor(run)
     local itemId = semantics.evaluateValue(node.item, run)
     semantics.writeRef(node.result, npcFor(run):fossilSpecies(itemId), run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.hidden_power_type = function(node, run)
+  function HANDLERS.hidden_power_type(node, run)
     local slot0 = semanticsFor(run).evaluateValue(node.slot, run)
     semanticsFor(run).writeRef(node.result, npcFor(run):hiddenPowerType(slot0), run)
     return Runtime.OUTCOME_CONTINUE
@@ -4824,15 +4826,15 @@ do
   local function lotteryFor(run)
     return requireService(run, "lottery") --[[@as ScriptLotteryService]]
   end
-  HANDLERS.loto_id_get = function(node, run)
+  function HANDLERS.loto_id_get(node, run)
     semanticsFor(run).writeRef(node.result, lotteryFor(run):lotoId(), run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.loto_id_set = function(_, run)
+  function HANDLERS.loto_id_set(_, run)
     lotteryFor(run):rollLotoId()
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.loto_id_search = function(node, run)
+  function HANDLERS.loto_id_search(node, run)
     local semantics = semanticsFor(run)
     local lotoId = semantics.evaluateValue(node.id, run)
     local result = lotteryFor(run):searchLotoId(lotoId)
@@ -4841,7 +4843,7 @@ do
     semantics.writeRef(node.kind, result.kind, run)
     return Runtime.OUTCOME_CONTINUE
   end
-  HANDLERS.get_var_4041 = function(node, run)
+  function HANDLERS.get_var_4041(node, run)
     semanticsFor(run).writeRef(node.result, lotteryFor(run):var4041(), run)
     return Runtime.OUTCOME_CONTINUE
   end

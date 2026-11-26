@@ -70,6 +70,7 @@ end
 
 ---@param value unknown
 ---@param what string
+---@param min integer? the smallest accepted value, zero when absent
 ---@return integer
 local function checkInteger(value, what, min)
   if not isInteger(value) or value < (min or 0) then

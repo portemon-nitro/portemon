@@ -99,7 +99,7 @@ function FieldMonPictureWindow:show(args)
     pageId = assert(portrait.pageId, "picture selectors carry their generated page"),
     frame = { x = frame.x, y = frame.y, width = frame.width, height = frame.height },
   }
-  return self:status()
+  return assert(self:status(), "a shown picture window publishes its open record")
 end
 
 -- Closes the open picture. Closing an already-closed window is the source's

@@ -160,7 +160,8 @@ local function sourceTile(value, axis)
   return (value % 0x100) --[[@as integer]]
 end
 
----@return integer held money, integer deposited savings
+---@return integer money the held wallet
+---@return integer savings Mom's deposited savings
 function FieldSavingsBox:_liveBalances()
   local profile = self._profile
   if type(profile) ~= "table" then
@@ -182,7 +183,8 @@ function FieldSavingsBox:_liveBalances()
   if type(savings) ~= "number" then
     Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the savings box requires the live phone state", {})
   end
-  return money --[[@as integer]], savings --[[@as integer]]
+  return money, --[[@as integer]]
+    savings --[[@as integer]]
 end
 
 ---@param template table<string, unknown>

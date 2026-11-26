@@ -62,12 +62,7 @@ local function checkRect(value, what, bounds, extra)
   if value.width <= 0 or value.height <= 0 then
     fail(BankAssetSchema.ERROR.LAYOUT_INVALID, what .. " must cover at least one pixel", { what = what })
   end
-  if
-    value.x < 0
-    or value.y < 0
-    or value.x + value.width > bounds.width
-    or value.y + value.height > bounds.height
-  then
+  if value.x < 0 or value.y < 0 or value.x + value.width > bounds.width or value.y + value.height > bounds.height then
     fail(BankAssetSchema.ERROR.LAYOUT_INVALID, what .. " leaves the bottom display", { what = what })
   end
 end
@@ -262,6 +257,7 @@ function BankAssetSchema.check(manifest)
   error(err, 0)
 end
 
+---@param manifest table<string, unknown> the compiled keypad bundle
 ---@return string[]
 function BankAssetSchema.referencedPaths(manifest)
   local paths = {}

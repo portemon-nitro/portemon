@@ -55,8 +55,7 @@ end
 local function speciesKey(speciesId, context)
   local key = MonSources.speciesKeys[speciesId]
   if key == nil then
-    return nil,
-      sourceError("POKEMON_CARE_BAD_SPECIES", "unknown species identity " .. tostring(speciesId), context)
+    return nil, sourceError("POKEMON_CARE_BAD_SPECIES", "unknown species identity " .. tostring(speciesId), context)
   end
   return key
 end
@@ -392,14 +391,7 @@ local function readTrades(romFs, dependencies)
     end
     local otIndex = tradeId + TRADE_MESSAGES.otNameOffset
     local otName, otNameErr = tradeName(
-      UiAssetHelpers.messageTokens(
-        bank,
-        TRADE_MESSAGES.memberId,
-        otIndex,
-        role .. "-ot-name",
-        "trade",
-        uiSourceError
-      ),
+      UiAssetHelpers.messageTokens(bank, TRADE_MESSAGES.memberId, otIndex, role .. "-ot-name", "trade", uiSourceError),
       role .. "-ot-name",
       TRADE_MESSAGES.memberId,
       otIndex

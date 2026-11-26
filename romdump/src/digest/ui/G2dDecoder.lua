@@ -11,7 +11,6 @@
 local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local Rgb555 = require("libs.codec.src.Rgb555")
-local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
 
 local G2dDecoder = {}
 

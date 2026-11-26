@@ -810,7 +810,7 @@ end
 ---@param expectedParts integer
 ---@return fun(definition: table<string, unknown>, kind: string): boolean
 local function validLegendSceneDefinition(expectedParts)
-  return function(definition, kind)
+  local function validate(definition, kind)
     if definition == nil or type(definition.parts) ~= "table" or #definition.parts ~= expectedParts then
       return false
     end
@@ -843,6 +843,7 @@ local function validLegendSceneDefinition(expectedParts)
     assert(kind ~= nil, "legend scene validation names its kind")
     return true
   end
+  return validate
 end
 
 -- The Arceus montage: the source's closed timeline, its own layers and one

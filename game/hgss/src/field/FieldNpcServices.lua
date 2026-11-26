@@ -553,7 +553,11 @@ end
 function FieldNpcServices:hiddenPowerType(slot0)
   local mon = self:_mon(checkSlot(slot0, "the Hidden Power query"))
   local species = assert(mon.species, "admitted mons carry their species")
-  if mon.isEgg ~= true and HIDDEN_POWER_REFUSED[species --[[@as string]]] == true then
+  if
+    mon.isEgg ~= true and HIDDEN_POWER_REFUSED[
+      species --[[@as string]]
+    ] == true
+  then
     return HIDDEN_POWER_REFUSED_VALUE
   end
   return hiddenPowerType(mon)

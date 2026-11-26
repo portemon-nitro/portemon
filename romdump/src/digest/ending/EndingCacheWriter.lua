@@ -35,10 +35,7 @@ local function validateBundle(bundle)
   then
     Errors.raise(EndingCacheWriter.ERROR.BUNDLE_INVALID, "bundle provenance is invalid", {})
   end
-  if
-    provenance.cacheFormat ~= EndingAssetCache.FORMAT
-    or provenance.schema ~= EndingAssetCache.SCHEMA
-  then
+  if provenance.cacheFormat ~= EndingAssetCache.FORMAT or provenance.schema ~= EndingAssetCache.SCHEMA then
     Errors.raise(EndingCacheWriter.ERROR.BUNDLE_INVALID, "bundle provenance names another schema", {})
   end
   for _, name in ipairs(SECTIONS) do
@@ -51,7 +48,6 @@ end
 ---@param bundle table<string, unknown>
 ---@return table<string, unknown> the published index record
 local function indexFor(bundle)
-  local sections = assert(bundle.sections --[[@as table<string, unknown>]])
   local paths = {}
   for _, name in ipairs(SECTIONS) do
     paths[name] = EndingAssetCache.DIR .. "/" .. name .. ".lua"

@@ -150,14 +150,7 @@ function NpcTradeRenderer:_drawLayer(layer, status)
   local centerY = assert(status.bgZoomCenterY, "the affine layer reads the scene's reference point")
   lg.push("all")
   lg.setScissor(0, 0, NpcTradeRenderer.REFERENCE_WIDTH, NpcTradeRenderer.REFERENCE_HEIGHT)
-  lg.draw(
-    image,
-    centerX - centerX * zoom,
-    centerY - centerY * zoom + status.bgScrollY,
-    0,
-    zoom,
-    zoom
-  )
+  lg.draw(image, centerX - centerX * zoom, centerY - centerY * zoom + status.bgScrollY, 0, zoom, zoom)
   lg.pop()
 end
 
@@ -192,8 +185,12 @@ function NpcTradeRenderer:_sequences()
   local sprites = assert(self._manifest.sprites, "the trade manifest carries its sprite sheets") --[[@as table]]
   local sheet = assert(sprites.effect, "the trade manifest carries its effect sheet") --[[@as table]]
   local bySequence = {}
-  for _, sequence in ipairs(assert(sheet.sequences, "the effect sheet carries its sequences") --[[@as table[] ]]) do
-    bySequence[assert(sequence.sequence --[[@as integer]])] = sequence
+  for _, sequence in
+    ipairs(assert(sheet.sequences, "the effect sheet carries its sequences") --[[@as table[] ]])
+  do
+    bySequence[
+      assert(sequence.sequence --[[@as integer]])
+    ] = sequence
   end
   return bySequence
 end
@@ -227,9 +224,8 @@ end
 -- no height offset.
 ---@param subject string "outgoing" or "incoming"
 ---@param phase string the snapshot's scene
----@param picture table<string, unknown>
 ---@return table<string, unknown>? record { image, quad, height }
-function NpcTradeRenderer:_pictureRecord(subject, phase, picture)
+function NpcTradeRenderer:_pictureRecord(subject, phase)
   local records = self._pictures
   if records == nil then
     return nil
@@ -263,14 +259,14 @@ function NpcTradeRenderer:_drawPictures(status)
   lg.setColor(1, 1, 1, 1)
   for _, picture in ipairs(status.pictures) do
     if picture.visible then
-      local record = self:_pictureRecord(picture.subject, status.phase, picture)
+      local record = self:_pictureRecord(picture.subject, status.phase)
       if record ~= nil then
         -- The picture's source anchor is its centre (NNS_G2dDrawSpriteFast
         -- with xCenter - 40), so the frame draws around it.
         local width = assert(record.width --[[@as integer]])
         local height = assert(record.heightPixels --[[@as integer]])
         local x = picture.x - width / 2
-        local y = picture.y - height / 2 + (record.height --[[@as integer]])
+        local y = picture.y - height / 2 + record.height --[[@as integer]]
         lg.draw(record.image --[[@as table]], record.quad --[[@as table]], x, y)
       end
     end

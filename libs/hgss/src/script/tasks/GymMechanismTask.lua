@@ -49,7 +49,7 @@ local function requireMechanism(ctx, action)
   return assert(services.gymMechanism, "gymMechanism service is unavailable")
 end
 
----@param spec { action: string, selector: integer?, switchNumber: integer?, useLastInteracted: boolean?, lastInteractedActor: string?, kind: integer? }
+---@param spec { action: string, selector: integer?, switchNumber: integer?, useLastInteracted: boolean?, lastInteractedActor: string?, kind: integer?, choice: integer? }
 ---@param ctx table<string, unknown>
 ---@return table<string, unknown> state
 function GymMechanismTask.create(spec, ctx)

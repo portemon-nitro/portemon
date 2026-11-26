@@ -112,9 +112,8 @@ end
 -- The prepared bundle's frame count for one surface, or zero when no bundle is
 -- composed: nothing is printed or faded, so nothing has to be waited for.
 ---@param method string
----@param frames integer
 ---@return integer
-function GameClearState:_presentationFrames(method, frames)
+function GameClearState:_presentationFrames(method)
   local presentation = self._presentation
   if presentation == nil or type(presentation[method]) ~= "function" then
     return 0
@@ -191,7 +190,7 @@ function GameClearState:step(input)
     -- the player acknowledges it. A headless composition has no frames to
     -- play, so the acknowledgement alone advances the sequence.
     self._timer = self._timer + 1
-    local frames = self:_presentationFrames("congratulationsFrames", 0)
+    local frames = self:_presentationFrames("congratulationsFrames")
     if self._timer > frames and (pressedStart(input) or pressedAction(input) or touched(input)) then
       self._phase = "saving"
       return "publish"
@@ -200,7 +199,7 @@ function GameClearState:step(input)
   end
   if phase == "save_status" then
     self._timer = self._timer + 1
-    if self._timer >= self:_presentationFrames("saveStatusFrames", 0) then
+    if self._timer >= self:_presentationFrames("saveStatusFrames") then
       self._phase = "save_se"
       self._timer = 0
       self:_play("SEQ_SE_DP_SAVE")

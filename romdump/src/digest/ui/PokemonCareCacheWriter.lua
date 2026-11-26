@@ -22,7 +22,11 @@ PokemonCareCacheWriter.ERROR = {
 ---@param referenced fun(manifest: table<string, unknown>): string[]
 local function validateBundle(bundle, namespace, validate, referenced)
   if type(bundle) ~= "table" or type(bundle.manifest) ~= "table" or type(bundle.assets) ~= "table" then
-    Errors.raise(PokemonCareCacheWriter.ERROR.BUNDLE_INVALID, namespace .. " bundle carries its manifest and assets", {})
+    Errors.raise(
+      PokemonCareCacheWriter.ERROR.BUNDLE_INVALID,
+      namespace .. " bundle carries its manifest and assets",
+      {}
+    )
   end
   local ok, err = pcall(validate, bundle.manifest)
   if not ok then
@@ -125,18 +129,8 @@ end
 function PokemonCareCacheWriter.stage(artifact, catalog, hatch, trade, reminder, marker)
   assert(artifact and artifact.stageFs, "care staging requires a PreparedArtifact")
   assert(type(marker) == "string" and marker ~= "", "care staging requires its completion marker")
-  validateBundle(
-    hatch,
-    "hatch",
-    PokemonCareAssetSchema.assertHatchManifest,
-    PokemonCareCache.referencedHatchPaths
-  )
-  validateBundle(
-    trade,
-    "trade",
-    PokemonCareAssetSchema.assertTradeManifest,
-    PokemonCareCache.tradeStagedPaths
-  )
+  validateBundle(hatch, "hatch", PokemonCareAssetSchema.assertHatchManifest, PokemonCareCache.referencedHatchPaths)
+  validateBundle(trade, "trade", PokemonCareAssetSchema.assertTradeManifest, PokemonCareCache.tradeStagedPaths)
   validateBundle(
     reminder,
     "reminder",

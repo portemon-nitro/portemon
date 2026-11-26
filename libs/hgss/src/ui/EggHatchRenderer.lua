@@ -51,8 +51,8 @@ local HATCH_TEXT_PALETTE = {
 
 -- The focus-indicator primitive indexes the window palette by slot, so the
 -- indicator trio spreads over the sixteen-window slots the source frame uses.
----@param palette { foreground: table, shadow: table, background: table }
----@return table<integer, table>
+---@param palette { foreground: { r: integer, g: integer, b: integer, a: integer? }, shadow: { r: integer, g: integer, b: integer, a: integer? }, background: { r: integer, g: integer, b: integer, a: integer? } }
+---@return table<integer, { r: integer, g: integer, b: integer, a: integer? }>
 local function focusPalette(palette)
   local slots = {}
   for slot = 0, 15 do
@@ -154,7 +154,7 @@ function EggHatchRenderer:updateFixed()
   SplParticleSimulation.advance(self._sims[variant], nil)
 end
 
----@return boolean whether any particle emitter is still running
+---@return boolean whether a particle emitter is still running
 function EggHatchRenderer:particlesRunning()
   local variant = self._variant
   if variant == nil then
@@ -179,7 +179,8 @@ end
 function EggHatchRenderer:lineText(key, name)
   local messages = assert(self._manifest.messages, "the hatch manifest carries its lines") --[[@as table]]
   local line = assert(messages[key], "the hatch manifest carries " .. key) --[[@as table]]
-  return (assert(line.text) --[[@as string]]):gsub("{name}", name)
+  local text = (assert(line.text) --[[@as string]]):gsub("{name}", name)
+  return text
 end
 
 ---@param key string
@@ -280,15 +281,16 @@ function EggHatchRenderer:draw(status, name)
   local variant = self._variant
   if variant ~= nil then
     local slotImages = self._images
+    local function resolveParticleTexture(runtime, _, child)
+      local path = (child or runtime.record).textureImage
+      local image = slotImages[path]
+      assert(image ~= nil, "the hatch particle texture is not realized: " .. tostring(path))
+      return image
+    end
     SplParticleDraw.draw(lg, self._sims[variant], {
       centerX = EGG_X,
       centerY = EGG_Y,
-      resolveTexture = function(runtime, _, child)
-        local path = (child or runtime.record).textureImage
-        local image = slotImages[path]
-        assert(image ~= nil, "the hatch particle texture is not realized: " .. tostring(path))
-        return image
-      end,
+      resolveTexture = resolveParticleTexture,
     })
   end
 

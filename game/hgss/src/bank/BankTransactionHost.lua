@@ -11,9 +11,6 @@ local Errors = require("libs.errors.src.Errors")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local ScriptErrors = require("libs.script.src.errors")
 
-local BankTransactionHost = {}
-BankTransactionHost.__index = BankTransactionHost
-
 -- include/constants/player_data.h MAX_MONEY: both the wallet and Mom's savings
 -- saturate here, so the capacity of the destination bounds one transfer.
 local MAX_MONEY = PlayerData.MAX_MONEY
@@ -47,6 +44,8 @@ local MODE_WITHDRAW = 1
 ---@field private _nextId integer
 ---@field private _active BankTransactionHost.Active?
 ---@field private _disposed boolean
+local BankTransactionHost = {}
+BankTransactionHost.__index = BankTransactionHost
 
 ---@param opts table<string, unknown>
 ---@return BankTransactionHost
@@ -55,7 +54,10 @@ function BankTransactionHost.new(opts)
   local profile = assert(opts.profile, "bank host requires the canonical profile")
   assert(type(profile.money) == "number", "bank host requires the live wallet")
   local state = assert(opts.pokegearState, "bank host requires the live phone state")
-  assert(type(state.readPhone) == "function" and type(state.prepare) == "function", "bank host requires the phone state")
+  assert(
+    type(state.readPhone) == "function" and type(state.prepare) == "function",
+    "bank host requires the phone state"
+  )
   assert(type(state.revision) == "function", "bank host requires the phone revision")
   local createScreen = assert(opts.createScreen, "bank host requires the amount screen factory")
   assert(type(createScreen) == "function", "bank host amount screen factory must be callable")
@@ -106,10 +108,9 @@ local function maxAmountFor(mode, money, savings)
   return math.min(savings, capacity)
 end
 
----@param self BankTransactionHost
 ---@param handle table<string, unknown>
 ---@return BankTransactionHost.Active
-local function activeFor(self, handle)
+function BankTransactionHost:_activeFor(handle)
   local active = assert(self._active, "no script bank transfer is open")
   assert(handle == active.handle, "bank handle is stale or belongs to another task")
   return active
@@ -127,10 +128,9 @@ local function failTransfer(code, message, context)
   Errors.raise(code, message, context --[[@as Errors.Context]])
 end
 
----@param self BankTransactionHost
 ---@param active BankTransactionHost.Active
 ---@param amount integer
-local function publishTransfer(self, active, amount)
+function BankTransactionHost:_publishTransfer(active, amount)
   local money = self:_liveMoney()
   if money ~= active.money then
     failTransfer(ScriptErrors.SCRIPT_BANK_TRANSFER_STALE, "the saved wallet moved while the amount screen was open", {
@@ -159,13 +159,12 @@ local function publishTransfer(self, active, amount)
   assert(nextMoney >= 0 and nextMoney <= MAX_MONEY, "the transfer keeps the wallet in range")
   assert(nextSavings >= 0 and nextSavings <= MAX_MONEY, "the transfer keeps the savings in range")
   local current = self._pokegearState:readPhone()
-  local mom = assert(type(current) == "table" and current.mom, "the phone state carries Mom's savings")
-  local prepared = self._pokegearState:prepare(
-    active.revision,
-    function(edit)
-      edit:setMom({ balance = nextSavings, purchases = mom.purchases, gifts = mom.gifts })
-    end
-  )
+  assert(type(current) == "table" and type(current.mom) == "table", "the phone state carries Mom's savings")
+  ---@cast current -nil
+  local mom = current.mom --[[@as { balance: integer, purchases: table<string, boolean>, gifts: table<string, unknown>[] }]]
+  local prepared = self._pokegearState:prepare(active.revision, function(edit)
+    edit:setMom({ balance = nextSavings, purchases = mom.purchases, gifts = mom.gifts })
+  end)
   if not prepared.isCurrent then
     failTransfer(ScriptErrors.SCRIPT_BANK_TRANSFER_STALE, "the savings candidate is stale after the amount screen", {
       mode = active.mode,
@@ -288,7 +287,7 @@ end
 ---@param handle table<string, unknown>
 ---@param uiEvents table[]
 function BankTransactionHost:step(handle, uiEvents)
-  local active = activeFor(self, handle)
+  local active = self:_activeFor(handle)
   assert(type(uiEvents) == "table", "bank host consumes scheduler UI events")
   if active.result ~= nil then
     return
@@ -303,7 +302,7 @@ function BankTransactionHost:step(handle, uiEvents)
     -- A cancelled or zero entry moves nothing and reports the source cancel.
     active.result = { kind = "completed", amount = 0 }
   else
-    publishTransfer(self, active, amount)
+    self:_publishTransfer(active, amount)
     active.result = { kind = "completed", amount = amount }
   end
   active.screen:dispose()
@@ -317,7 +316,7 @@ end
 ---@param handle table<string, unknown>
 ---@return { kind: string, amount: integer }?
 function BankTransactionHost:result(handle)
-  local active = activeFor(self, handle)
+  local active = self:_activeFor(handle)
   if active.result == nil or active.resultTaken then
     return nil
   end
@@ -338,7 +337,7 @@ end
 
 ---@param handle table<string, unknown>
 function BankTransactionHost:close(handle)
-  local active = activeFor(self, handle)
+  local active = self:_activeFor(handle)
   if active.screen ~= nil then
     active.screen:cancelPointerCapture()
     active.screen:dispose()

@@ -10,7 +10,6 @@
 -- xOffsets the compiled manifest carries) and msg_0196's button labels.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
-local NativeDisplay = require("libs.ui.src.NativeDisplay")
 
 local BankInterface = {}
 BankInterface.__index = BankInterface
@@ -108,7 +107,6 @@ function BankInterface:plan(status)
   local timing = assert(manifest.timing, "the presentation carries its timing")
   local digits = assert(status.digits, "the status carries the entered digit cells")
   local cells = assert(status.digitCells, "the status carries its digit anchors")
-  local cursor = assert(status.cursor, "the status carries the selected cell")
 
   local glyphs = {}
   for index = 1, math.min(timing.maxDigits, #digits) do
@@ -139,7 +137,8 @@ function BankInterface:plan(status)
     cursorRect = cell and { x = cell.x, y = cell.y, width = cell.width, height = cell.height } or nil
   elseif type(gridKey) == "number" then
     local position = grid.dpad[gridKey + 1]
-    cursorRect = position and { x = position.x - 8, y = position.y - 8, width = cursorFrame.width, height = cursorFrame.height }
+    cursorRect = position
+        and { x = position.x - 8, y = position.y - 8, width = cursorFrame.width, height = cursorFrame.height }
       or nil
   end
 
@@ -164,7 +163,12 @@ function BankInterface:plan(status)
     },
     underline = {
       image = sprites.underline.image,
-      source = { x = sprites.underline.x, y = sprites.underline.y, width = sprites.underline.width, height = sprites.underline.height },
+      source = {
+        x = sprites.underline.x,
+        y = sprites.underline.y,
+        width = sprites.underline.width,
+        height = sprites.underline.height,
+      },
       dest = {
         x = assert(status.cursorCell, "the status carries its cursor anchor").x,
         y = assert(status.cursorCell, "the status carries its cursor anchor").y,
@@ -181,9 +185,8 @@ function BankInterface:plan(status)
   }
 end
 
--- The published status this plan was built from, exposed for the draw site's
--- label measurements.
----@param status table<string, unknown>
+-- One keypad cell's rectangle, exposed for the draw site's label measurements.
+---@param key integer the pressed grid cell
 ---@return { x: integer, y: integer, width: integer, height: integer }
 function BankInterface:labelRect(key)
   local grid = assert(self._manifest.keys, "the presentation carries its key geometry")
@@ -242,13 +245,8 @@ function BankInterface.draw(plan, images)
   for _, glyph in ipairs(plan.glyphs) do
     local image = images(glyph.image)
     if image ~= nil then
-      local quad = lg.newQuad(
-        glyph.source.x,
-        glyph.source.y,
-        glyph.source.width,
-        glyph.source.height,
-        image:getDimensions()
-      )
+      local quad =
+        lg.newQuad(glyph.source.x, glyph.source.y, glyph.source.width, glyph.source.height, image:getDimensions())
       lg.draw(image, quad, glyph.dest.x, glyph.dest.y)
       quad:release()
     end

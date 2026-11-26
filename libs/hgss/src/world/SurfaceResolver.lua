@@ -70,11 +70,12 @@ end
 ---@param self SurfaceResolver
 ---@param opts table<string, unknown>
 ---@param current table<string, unknown>
----@param candidates table[]
----@return table|nil
+---@param candidates { id: integer }[]
+---@return { id: integer }?
 local function continuousSeamRecord(self, opts, current, candidates)
   local crossing = assert(opts.crossing, "seam resolution requires a crossing")
-  if self.terrain:contains(current.id, crossing.fromX, crossing.fromZ)
+  if
+    self.terrain:contains(current.id, crossing.fromX, crossing.fromZ)
     and self.terrain:contains(current.id, (crossing.fromX + crossing.toX) / 2, (crossing.fromZ + crossing.toZ) / 2)
   then
     return nil
@@ -92,7 +93,8 @@ local function continuousSeamRecord(self, opts, current, candidates)
   local edgeX = (crossing.fromX + crossing.toX) / 2
   local edgeZ = (crossing.fromZ + crossing.toZ) / 2
   for _, plate in ipairs(candidates) do
-    if plate.id ~= current.id
+    if
+      plate.id ~= current.id
       and self.terrain:contains(plate.id, edgeX, edgeZ)
       and self.terrain:contains(plate.id, opts.localX, opts.localZ)
     then

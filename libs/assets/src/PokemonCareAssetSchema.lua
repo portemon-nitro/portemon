@@ -66,7 +66,7 @@ local TRADE_CONTEST_FIELDS = { cool = true, beauty = true, cute = true, smart = 
 
 ---@param value unknown
 ---@param what string
----@return table
+---@return table<string, unknown>
 local function requireRecord(value, what)
   if type(value) ~= "table" then
     fail(CATALOG_ERROR, what .. " must be a record", {})
@@ -88,7 +88,7 @@ end
 ---@param value unknown
 ---@param what string
 ---@param count integer?
----@return table
+---@return unknown[]
 local function requireArray(value, what, count)
   if not Validate.isArray(value) or (count ~= nil and #value ~= count) then
     fail(
@@ -279,7 +279,7 @@ end
 -- staged image with its source extent and duration.
 ---@param value unknown
 ---@param what string
----@return table
+---@return { frames: { image: string, width: integer, height: integer, durationTicks: integer }[] }
 local function requireFrameGroup(value, what)
   local group = requireRecord(value, what)
   SchemaCheck.checkKeys(group, HATCH_GROUP_FIELDS, {}, HATCH_ERROR, what)
@@ -336,8 +336,13 @@ function PokemonCareAssetSchema.assertHatchManifest(manifest)
 
   local messages = requireRecord(manifest.messages, "messages")
   assert(type(messages) == "table")
-  SchemaCheck.checkKeys(messages, { hatched = true, nicknameQuestion = true, yes = true, no = true }, context,
-    HATCH_ERROR, "messages")
+  SchemaCheck.checkKeys(
+    messages,
+    { hatched = true, nicknameQuestion = true, yes = true, no = true },
+    context,
+    HATCH_ERROR,
+    "messages"
+  )
   for _, key in ipairs(MESSAGE_KEYS) do
     local line = requireRecord(messages[key], "messages." .. key)
     assert(type(line) == "table")
@@ -382,7 +387,7 @@ end
 -- the scenes animate with their per-frame timings, and the four bank-179 lines
 -- the exchange prints. Images name staged paths; nothing here carries source
 -- member indices or raw ROM bytes.
-local TRADE_FIELDS = {
+local TRADE_MANIFEST_FIELDS = {
   schema = true,
   window = true,
   scenes = true,
@@ -417,7 +422,7 @@ local TRADE_SPRITE_FRAME_FIELDS = { image = true, width = true, height = true, d
 
 ---@param value unknown
 ---@param what string
----@return table
+---@return { sequence: integer, frames: { image: string?, width: integer?, height: integer?, durationTicks: integer, blank: boolean? }[] }
 local function requireTradeSpriteSequence(value, what)
   local record = requireRecord(value, what)
   assert(type(record) == "table")
@@ -470,7 +475,13 @@ end
 local function requireTradePictures(value)
   local record = requireRecord(value, "pictures")
   assert(type(record) == "table")
-  SchemaCheck.checkKeys(record, { baseY = true, sentTileX = true, receivedTileX = true, heights = true }, {}, TRADE_ERROR, "pictures")
+  SchemaCheck.checkKeys(
+    record,
+    { baseY = true, sentTileX = true, receivedTileX = true, heights = true },
+    {},
+    TRADE_ERROR,
+    "pictures"
+  )
   requireInteger(record.baseY, "pictures.baseY")
   requireInteger(record.sentTileX, "pictures.sentTileX")
   requireInteger(record.receivedTileX, "pictures.receivedTileX")
@@ -491,7 +502,7 @@ end
 
 ---@param value unknown
 ---@param what string
----@return table
+---@return { sequences: { sequence: integer, frames: { image: string?, width: integer?, height: integer?, durationTicks: integer, blank: boolean? }[] }[] }
 local function requireTradeSpriteSheet(value, what)
   local record = requireRecord(value, what)
   assert(type(record) == "table")
@@ -515,7 +526,7 @@ end
 
 ---@param value unknown
 ---@param what string
----@return table
+---@return { image: string, width: integer, height: integer }
 local function requireTradeImage(value, what)
   local record = requireRecord(value, what)
   assert(type(record) == "table")
@@ -526,8 +537,6 @@ local function requireTradeImage(value, what)
   return record
 end
 
----@param manifest unknown
----@return boolean
 -- The move reminder / singleton tutor presentation: the source's two screens
 -- and its button tile sheet, the source window rectangles in pixels, and the
 -- compiled message lines the application prints.
@@ -629,7 +638,7 @@ end
 function PokemonCareAssetSchema.assertTradeManifest(manifest)
   local context = {}
   requireRecord(manifest, "trade manifest")
-  SchemaCheck.checkKeys(manifest, TRADE_FIELDS, context, TRADE_ERROR, "trade manifest")
+  SchemaCheck.checkKeys(manifest, TRADE_MANIFEST_FIELDS, context, TRADE_ERROR, "trade manifest")
   if manifest.schema ~= PokemonCareAssetSchema.TRADE_SCHEMA then
     fail(TRADE_ERROR, "trade manifest schema is not current", {})
   end

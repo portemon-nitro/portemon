@@ -96,31 +96,85 @@ function PokemonCarePresentationResources:_releaseLeaseInterests(lease)
   lease._assets = nil
 end
 
+-- The mon portraits a trade scene draws, per detached subject: the generated
+-- page that carries the subject's own selector, its first frame rectangle, and
+-- the source's front picture height for that selector. The height only depends
+-- on species, form and gender, so shiny selectors share the plain entry.
+---@param manifest table<string, unknown> trade manifest
+---@param request table<string, unknown> trade request
+---@return table<string, table<string, unknown>> pictures
+---@return string[] pagePaths
+function PokemonCarePresentationResources:_tradePictures(manifest, request)
+  local portraits = self._cacheFs:loadLua(MonCache.portraitManifestPath())
+  assert(type(portraits) == "table" and type(portraits.entries) == "table", "the mon portrait family is published")
+  local entries = portraits.entries --[[@as table<string, table<string, unknown>>]]
+  local heights = assert(assert(manifest.pictures, "the trade manifest carries its pictures") --[[@as table]]).heights
+  local pictures = {}
+  local pages = {}
+  for _, subjectKey in ipairs({ "outgoing", "incoming" }) do
+    local subject = assert(request[subjectKey], "the trade request carries both subjects") --[[@as table]]
+    local selector = MonCache.portraitSelector(subject.speciesKey, subject.form, subject.gender, subject.shiny)
+    local entry = assert(entries[selector], "the mon portrait family carries the trade picture " .. tostring(selector)) --[[@as table]]
+    local frame = assert(assert(entry.frames)[1], "a portrait entry carries its first frame") --[[@as table]]
+    local plain = MonCache.portraitSelector(subject.speciesKey, subject.form, subject.gender, false)
+    local height = assert(heights[plain], "the trade manifest carries the picture height for " .. tostring(plain)) --[[@as integer]]
+    local page = MonCache.portraitPagePath(assert(entry.pageId, "a portrait entry names its page") --[[@as integer]])
+    pictures[subjectKey] = {
+      page = page,
+      frame = { x = frame.x, y = frame.y, width = frame.width, height = frame.height },
+      height = height,
+    }
+    pages[#pages + 1] = page
+  end
+  return pictures, pages
+end
+
+-- The reminder's main-screen picture: the generated portrait page carrying the
+-- subject's own selector and that entry's first frame. The scene draws it as
+-- the source's centred Pokémon picture over the main screen's own surface.
+---@param request table<string, unknown>
+---@return { page: string, frame: { x: integer, y: integer, width: integer, height: integer } }
+---@return string page path
+function PokemonCarePresentationResources:_reminderPicture(request)
+  local subject = assert(request.subject, "the reminder request carries its subject") --[[@as table]]
+  local portraits = self._cacheFs:loadLua(MonCache.portraitManifestPath())
+  assert(type(portraits) == "table" and type(portraits.entries) == "table", "the mon portrait family is published")
+  local entries = portraits.entries --[[@as table<string, table<string, unknown>>]]
+  local selector = MonCache.portraitSelector(subject.speciesKey, subject.form, subject.gender, subject.shiny)
+  local entry = assert(entries[selector], "the mon portrait family carries the reminder picture " .. tostring(selector))
+  local frame = assert(assert(entry.frames)[1], "a portrait entry carries its first frame") --[[@as table]]
+  local page = MonCache.portraitPagePath(assert(entry.pageId, "a portrait entry names its page") --[[@as integer]])
+  return {
+    page = page,
+    frame = { x = frame.x, y = frame.y, width = frame.width, height = frame.height },
+  },
+    page
+end
+
 -- The scripted Summary kinds commit the summary family beside the reminder's
 -- own art: the child screen and the reminder's replacement Summary draw from the
 -- family the field already publishes, never from a second definition.
----@param owner PokemonCarePresentationResources
 ---@param lease table<string, unknown>
 ---@param request table<string, unknown>
 ---@return boolean, string?
-local function prepareScriptedManifests(owner, lease, request)
+function PokemonCarePresentationResources:_prepareScriptedManifests(lease, request)
   if lease._assets ~= nil then
     return true, nil
   end
-  local ok, manifest = pcall(SummaryCache.loadManifest, owner._cacheFs)
+  local ok, manifest = pcall(SummaryCache.loadManifest, self._cacheFs)
   if not ok or type(manifest) ~= "table" then
     return false, "the summary family is unavailable: " .. tostring(manifest)
   end
   local assets = { manifest = manifest }
   local paths = {}
   if request.kind == PokemonCareInterface.KINDS.move_relearner then
-    local reminderOk, reminder = pcall(PokemonCareCache.loadReminderManifest, owner._cacheFs)
+    local reminderOk, reminder = pcall(PokemonCareCache.loadReminderManifest, self._cacheFs)
     if not reminderOk or type(reminder) ~= "table" then
       return false, "the reminder presentation manifest is unavailable: " .. tostring(reminder)
     end
     assets.reminder = reminder
     lease._reminderManifest = reminder
-    local picture, page = reminderPicture(owner._cacheFs, request)
+    local picture, page = self:_reminderPicture(request)
     lease._picture = picture
     paths[#paths + 1] = page
     for _, path in ipairs(PokemonCareCache.referencedReminderPaths(reminder)) do
@@ -128,7 +182,7 @@ local function prepareScriptedManifests(owner, lease, request)
     end
   end
   lease._assets = assets
-  local pool = owner._imagePool
+  local pool = self._imagePool
   for _, path in ipairs(paths) do
     local requested, token = pcall(pool.request, pool, path, POOLED_SAMPLER, "demand")
     if not requested then
@@ -140,11 +194,10 @@ local function prepareScriptedManifests(owner, lease, request)
   return true, nil
 end
 
----@param owner PokemonCarePresentationResources
 ---@param lease table<string, unknown>
 ---@param request table<string, unknown>
 ---@return table<string, unknown> preparation outcome
-local function prepareLease(owner, lease, request)
+function PokemonCarePresentationResources:_prepareLease(lease, request)
   if lease._presentation ~= nil then
     return { kind = "ready", presentation = lease._presentation, assets = lease._assets }
   end
@@ -152,46 +205,46 @@ local function prepareLease(owner, lease, request)
   local scripted = request.kind == PokemonCareInterface.KINDS.move_relearner
     or request.kind == PokemonCareInterface.KINDS.summary_application
   if scripted then
-    local prepared, failure = prepareScriptedManifests(owner, lease, request)
+    local prepared, failure = self:_prepareScriptedManifests(lease, request)
     if not prepared then
-      owner:_releaseLeaseInterests(lease)
+      self:_releaseLeaseInterests(lease)
       return { kind = "failed", error = failure }
     end
   elseif lease._manifest == nil then
     local loader = trade and PokemonCareCache.loadTradeManifest or PokemonCareCache.loadHatchManifest
-    local ok, manifest = pcall(loader, owner._cacheFs)
+    local ok, manifest = pcall(loader, self._cacheFs)
     if not ok or type(manifest) ~= "table" then
-      owner:_releaseLeaseInterests(lease)
+      self:_releaseLeaseInterests(lease)
       return { kind = "failed", error = "the care presentation manifest is unavailable: " .. tostring(manifest) }
     end
     lease._manifest = manifest
     local paths = trade and PokemonCareCache.referencedTradePaths(manifest)
       or PokemonCareCache.referencedHatchPaths(manifest)
     if trade then
-      local pictures, pages = tradePictures(owner._cacheFs, manifest, request)
+      local pictures, pages = self:_tradePictures(manifest, request)
       lease._pictures = pictures
       for _, page in ipairs(pages) do
         paths[#paths + 1] = page
       end
     end
-    local pool = owner._imagePool
+    local pool = self._imagePool
     for _, path in ipairs(paths) do
       local requested, token = pcall(pool.request, pool, path, POOLED_SAMPLER, "demand")
       if not requested then
-        owner:_releaseLeaseInterests(lease)
+        self:_releaseLeaseInterests(lease)
         return { kind = "failed", error = "care image request failed: " .. tostring(token) }
       end
       lease._tokens[path] = token
       lease._pendingTokens[#lease._pendingTokens + 1] = token
     end
   end
-  local pool = owner._imagePool
+  local pool = self._imagePool
   local images = {}
   for path, token in pairs(lease._tokens) do
     if lease._acquired[path] == nil then
       local status, failure = pool:poll(token)
       if status == "failed" then
-        owner:_releaseLeaseInterests(lease)
+        self:_releaseLeaseInterests(lease)
         return { kind = "failed", error = "hatch image is missing: " .. tostring(failure or path) }
       end
       if status ~= "ready" then
@@ -199,7 +252,7 @@ local function prepareLease(owner, lease, request)
       end
       local acquiredOk, acquired = pcall(pool.acquire, pool, token)
       if not acquiredOk then
-        owner:_releaseLeaseInterests(lease)
+        self:_releaseLeaseInterests(lease)
         return { kind = "failed", error = "hatch image acquire failed: " .. tostring(acquired) }
       end
       lease._acquired[path] = acquired
@@ -220,18 +273,18 @@ local function prepareLease(owner, lease, request)
     end
     local reminderManifest = assert(lease._reminderManifest, "the reminder lease carries its own family")
     local built, renderer = pcall(MoveRelearnerRenderer.new, {
-      graphics = owner._graphics,
+      graphics = self._graphics,
       manifest = reminderManifest,
       images = images,
       picture = assert(lease._picture, "the reminder lease carries its subject picture"),
-      measureDisplay = assert(owner._measureDisplay, "the reminder renders its two source screens"),
-      text = owner._text,
-      window = owner._window,
-      fontDef = owner._fontDef,
-      frameIndex = owner._frameIndex,
+      measureDisplay = assert(self._measureDisplay, "the reminder renders its two source screens"),
+      text = self._text,
+      window = self._window,
+      fontDef = self._fontDef,
+      frameIndex = self._frameIndex,
     })
     if not built then
-      owner:_releaseLeaseInterests(lease)
+      self:_releaseLeaseInterests(lease)
       return { kind = "failed", error = "care renderer failed: " .. tostring(renderer) }
     end
     local presentation = { renderer = renderer, images = images, manifest = reminderManifest, name = request.nickname }
@@ -240,19 +293,19 @@ local function prepareLease(owner, lease, request)
   end
   local manifest = assert(lease._manifest, "prepared leases resolve their manifest before commit")
   local rendererOptions = {
-    graphics = owner._graphics,
-    cacheFs = owner._cacheFs,
+    graphics = self._graphics,
+    cacheFs = self._cacheFs,
     manifest = manifest,
     images = images,
     pictures = lease._pictures,
-    text = owner._text,
-    window = owner._window,
-    fontDef = owner._fontDef,
-    frameIndex = owner._frameIndex,
+    text = self._text,
+    window = self._window,
+    fontDef = self._fontDef,
+    frameIndex = self._frameIndex,
   }
   local rendererOk, renderer = pcall(trade and NpcTradeRenderer.new or EggHatchRenderer.new, rendererOptions)
   if not rendererOk then
-    owner:_releaseLeaseInterests(lease)
+    self:_releaseLeaseInterests(lease)
     return { kind = "failed", error = "care renderer failed: " .. tostring(renderer) }
   end
   local presentation = {
@@ -263,66 +316,6 @@ local function prepareLease(owner, lease, request)
   }
   lease._presentation = presentation
   return { kind = "ready", presentation = presentation }
-end
-
--- The mon portraits a trade scene draws, per detached subject: the generated
--- page that carries the subject's own selector, its first frame rectangle, and
--- the source's front picture height for that selector. The height only depends
--- on species, form and gender, so shiny selectors share the plain entry.
----@param cacheFs table<string, unknown>
----@param manifest table<string, unknown> trade manifest
----@param request table<string, unknown> trade request
----@return table<string, table<string, unknown>> pictures
----@return string[] pagePaths
-local function tradePictures(cacheFs, manifest, request)
-  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
-  local entries = assert(type(portraits) == "table" and portraits.entries, "the mon portrait family is published")
-  local heights = assert(assert(manifest.pictures, "the trade manifest carries its pictures") --[[@as table]]).heights
-  local pictures = {}
-  local pages = {}
-  for _, subjectKey in ipairs({ "outgoing", "incoming" }) do
-    local subject = assert(request[subjectKey], "the trade request carries both subjects") --[[@as table]]
-    local selector = MonCache.portraitSelector(subject.speciesKey, subject.form, subject.gender, subject.shiny)
-    local entry = assert(
-      entries[selector],
-      "the mon portrait family carries the trade picture " .. tostring(selector)
-    ) --[[@as table]]
-    local frame = assert(assert(entry.frames)[1], "a portrait entry carries its first frame") --[[@as table]]
-    local plain = MonCache.portraitSelector(subject.speciesKey, subject.form, subject.gender, false)
-    local height = assert(
-      heights[plain],
-      "the trade manifest carries the picture height for " .. tostring(plain)
-    ) --[[@as integer]]
-    local page = MonCache.portraitPagePath(assert(entry.pageId, "a portrait entry names its page") --[[@as integer]])
-    pictures[subjectKey] = {
-      page = page,
-      frame = { x = frame.x, y = frame.y, width = frame.width, height = frame.height },
-      height = height,
-    }
-    pages[#pages + 1] = page
-  end
-  return pictures, pages
-end
-
--- The reminder's main-screen picture: the generated portrait page carrying the
--- subject's own selector and that entry's first frame. The scene draws it as
--- the source's centred Pokémon picture over the main screen's own surface.
----@param cacheFs table<string, unknown>
----@param request table<string, unknown>
----@return { page: string, frame: { x: integer, y: integer, width: integer, height: integer } }
----@return string page path
-local function reminderPicture(cacheFs, request)
-  local subject = assert(request.subject, "the reminder request carries its subject") --[[@as table]]
-  local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
-  local entries = assert(type(portraits) == "table" and portraits.entries, "the mon portrait family is published")
-  local selector = MonCache.portraitSelector(subject.speciesKey, subject.form, subject.gender, subject.shiny)
-  local entry = assert(entries[selector], "the mon portrait family carries the reminder picture " .. tostring(selector))
-  local frame = assert(assert(entry.frames)[1], "a portrait entry carries its first frame") --[[@as table]]
-  local page = MonCache.portraitPagePath(assert(entry.pageId, "a portrait entry names its page") --[[@as integer]])
-  return {
-    page = page,
-    frame = { x = frame.x, y = frame.y, width = frame.width, height = frame.height },
-  }, page
 end
 
 -- Acquires the one active per-open lease. A second concurrent acquire is a
@@ -345,13 +338,12 @@ function PokemonCarePresentationResources:acquire(request)
     _pendingTokens = {},
     _acquired = {},
     _presentation = nil,
-    _assets = nil,
   }
   function lease:prepare()
     if self._released then
       return { kind = "failed", error = "care lease is released" }
     end
-    local ok, outcome = pcall(prepareLease, owner, self, self._request)
+    local ok, outcome = pcall(PokemonCarePresentationResources._prepareLease, owner, self, self._request)
     if not ok then
       owner:_releaseLeaseInterests(self)
       return { kind = "failed", error = tostring(outcome) }
@@ -362,19 +354,27 @@ function PokemonCarePresentationResources:acquire(request)
     return self._presentation
   end
   function lease:release()
-    if self._released then
-      return
-    end
-    self._released = true
-    if not owner._released then
-      owner:_releaseLeaseInterests(self)
-    end
-    if owner._lease == self then
-      owner._lease = nil
-    end
+    owner:_releaseLease(self)
   end
   self._lease = lease
   return lease
+end
+
+-- Releases one lease exactly once: a released child frees the owner for the
+-- next application, and a child released after the field lifetime only drops
+-- its own state.
+---@param lease table<string, unknown>
+function PokemonCarePresentationResources:_releaseLease(lease)
+  if lease._released then
+    return
+  end
+  lease._released = true
+  if not self._released then
+    self:_releaseLeaseInterests(lease)
+  end
+  if self._lease == lease then
+    self._lease = nil
+  end
 end
 
 -- Idempotent release of the field lifetime: invalidates the active lease and

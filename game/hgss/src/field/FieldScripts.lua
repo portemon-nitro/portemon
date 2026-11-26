@@ -252,7 +252,7 @@ local MoneyService = {}
 MoneyService.__index = MoneyService
 
 ---@param amount unknown
-local function checkSourceAmount(amount)
+local function checkMoneyAmount(amount)
   assert(
     type(amount) == "number" and amount % 1 == 0 and amount >= 0,
     "a source money amount must be a non-negative integer"
@@ -268,20 +268,20 @@ end
 
 ---@param amount integer
 function MoneyService:add(amount)
-  checkSourceAmount(amount)
+  checkMoneyAmount(amount)
   self._profile.money = math.min(PlayerData.MAX_MONEY, self._profile.money + amount)
 end
 
 ---@param amount integer
 function MoneyService:subtract(amount)
-  checkSourceAmount(amount)
+  checkMoneyAmount(amount)
   self._profile.money = math.max(0, self._profile.money - amount)
 end
 
 ---@param amount integer
 ---@return boolean
 function MoneyService:hasEnough(amount)
-  checkSourceAmount(amount)
+  checkMoneyAmount(amount)
   local money = self._profile.money --[[@as integer]]
   return money >= amount
 end
@@ -835,21 +835,19 @@ function FieldScripts.new(opts)
   -- saved Battle Points and the saved Athlete Points.
   local coinsWallet = nil
   if opts.profile ~= nil then
-    coinsWallet = {
-      balance = function()
-        return PlayerData.coinBalance(opts.profile --[[@as table<string, unknown>]])
-      end,
-    }
+    local function coinBalance()
+      return PlayerData.coinBalance(opts.profile --[[@as table<string, unknown>]])
+    end
+    coinsWallet = { balance = coinBalance }
   end
   local athletePointsService = nil
   local athleteWallet = nil
   if opts.athletePoints ~= nil then
     athletePointsService = AthletePointsService.new(opts.athletePoints)
-    athleteWallet = {
-      balance = function()
-        return athletePointsService --[[@as AthletePointsService]]:balance()
-      end,
-    }
+    local function athleteBalance()
+      return athletePointsService --[[@as AthletePointsService]]:balance()
+    end
+    athleteWallet = { balance = athleteBalance }
   end
   local pointsBox = FieldPointsBox.new({
     messages = opts.messageProvider,
@@ -885,41 +883,49 @@ function FieldScripts.new(opts)
   end
   local npcServices = nil
   if opts.mons ~= nil then
+    local function npcDexHeight(species)
+      local heights = opts.dexHeights
+      if type(heights) ~= "function" then
+        return nil
+      end
+      return heights(species)
+    end
+    local function npcMessageText(bankId, messageId)
+      return scopedMessageText(opts.messageProvider, bankId, messageId)
+    end
+    local function isMailItem(itemKey)
+      if opts.itemCatalog == nil then
+        return itemKey:find("MAIL", 1, true) ~= nil
+      end
+      local catalog = assert(opts.itemCatalog, "the item pocket query needs the shared item catalog")
+      local ok, item = pcall(catalog.item, catalog, itemKey)
+      if not ok or type(item) ~= "table" then
+        return false
+      end
+      return item.pocket == "mail"
+    end
+    local function summaryRibbonEntries()
+      local manifest = generatedSummary()
+      return assert(manifest.ribbons and manifest.ribbons.entries, "the summary family carries ribbons")
+    end
+    local function summaryRibbonName(entry)
+      local manifest = generatedSummary()
+      local labels = assert(manifest.text and manifest.text.labels, "the summary family carries text labels")
+      local text = labels[assert(entry.name, "ribbon entries carry their name row")]
+      assert(type(text) == "string" and text ~= "", "the ribbon name resolves display text")
+      return text
+    end
     npcServices = FieldNpcServices.new({
       mons = opts.mons,
       npcTrade = opts.npcTrade,
       mailbox = opts.mailbox,
       bag = opts.items,
       world = worldState,
-      dexHeight = function(species)
-        local heights = opts.dexHeights
-        if type(heights) ~= "function" then
-          return nil
-        end
-        return heights(species)
-      end,
-      resolveText = function(bankId, messageId)
-        return scopedMessageText(opts.messageProvider, bankId, messageId)
-      end,
-      isMailItem = function(itemKey)
-        if opts.itemCatalog == nil then
-          return itemKey:find("MAIL", 1, true) ~= nil
-        end
-        local catalog = opts.itemCatalog
-        local ok, item = pcall(catalog.item, catalog, itemKey)
-        return ok and type(item) == "table" and item.pocket == "mail"
-      end,
-      ribbonEntries = function()
-        local manifest = generatedSummary()
-        return assert(manifest.ribbons and manifest.ribbons.entries, "the summary family carries ribbons")
-      end,
-      ribbonNameFor = function(entry)
-        local manifest = generatedSummary()
-        local labels = assert(manifest.text and manifest.text.labels, "the summary family carries text labels")
-        local text = labels[assert(entry.name, "ribbon entries carry their name row")]
-        assert(type(text) == "string" and text ~= "", "the ribbon name resolves display text")
-        return text
-      end,
+      dexHeight = npcDexHeight,
+      resolveText = npcMessageText,
+      isMailItem = isMailItem,
+      ribbonEntries = summaryRibbonEntries,
+      ribbonNameFor = summaryRibbonName,
     })
   end
 

@@ -31,6 +31,8 @@ local FieldMoveAftermath = require("game.hgss.src.field.FieldMoveAftermath")
 ---@field starterChoice table<string, unknown>? the modal starter-choice surface the blocking task opens and closes
 ---@field partySelection table<string, unknown>? the modal script-party surface the blocking selection task opens and closes
 ---@field mart table<string, unknown>? the script-owned mart child host
+---@field bank table<string, unknown>? the script-owned Mom bank transfer host
+---@field athletePoints table<string, unknown>? the saved Athlete Point wallet
 ---@field travel table<string, unknown>? the durable travel owner for spawn updates
 ---@field fieldMoves table<string, unknown>? the field-move runtime for task execution
 ---@field monNaming table<string, unknown> the script-owned Pokemon Naming Screen host
@@ -129,15 +131,16 @@ end
 ---@param catalog table<string, unknown>?
 ---@return fun(species: string): integer?
 function FieldScriptComposition.dexHeights(catalog)
+  local function missingHeight(_)
+    return nil
+  end
   if type(catalog) ~= "table" then
-    return function()
-      return nil
-    end
+    return missingHeight
   end
   local profiles = catalog.measurementProfiles
   local base = type(profiles) == "table" and profiles.base or nil
   local measurements = type(base) == "table" and base.measurements or nil
-  return function(species)
+  local function dexHeight(species)
     if type(measurements) ~= "table" then
       return nil
     end
@@ -151,6 +154,7 @@ function FieldScriptComposition.dexHeights(catalog)
     end
     return height --[[@as integer]]
   end
+  return dexHeight
 end
 
 -- Builds the compiled phonebook index behind contact-number resolution:
@@ -803,6 +807,18 @@ function FieldScriptComposition.compose(runtime, options)
     end
     return true
   end
+  local function createNativeRoamer(_, slot)
+    return runtime:createNativeRoamer(slot)
+  end
+  local function showMonPicture(_, args)
+    return runtime.monPicture:show(args)
+  end
+  local function closeMonPicture(_)
+    return runtime.monPicture:close()
+  end
+  local function monPictureStatus(_)
+    return runtime.monPicture:status()
+  end
   local scripts = FieldScripts.new({
     cacheFs = options.cacheFs,
     overrideFs = runtime.overrideFs,
@@ -889,20 +905,12 @@ function FieldScriptComposition.compose(runtime, options)
     easyChatScriptHost = assert(runtime.easyChatScriptHost, "word scripts require the script-owned editor host"),
     battle = options.battle,
     roamers = {
-      create = function(_, slot)
-        return runtime:createNativeRoamer(slot)
-      end,
+      create = createNativeRoamer,
     },
     monPicture = {
-      show = function(_, args)
-        return runtime.monPicture:show(args)
-      end,
-      close = function(_)
-        return runtime.monPicture:close()
-      end,
-      status = function(_)
-        return runtime.monPicture:status()
-      end,
+      show = showMonPicture,
+      close = closeMonPicture,
+      status = monPictureStatus,
     },
     overworld = runtime.overworld,
     propAnimations = runtime.propAnimations,

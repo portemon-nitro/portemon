@@ -321,7 +321,10 @@ local function assertTradeSubject(value, what)
     type(typed.species) == "number" and typed.species % 1 == 0 and typed.species >= 1,
     "a care trade " .. what .. " carries its native species identity"
   )
-  assert(type(typed.form) == "number" and typed.form % 1 == 0 and typed.form >= 0, "a care trade " .. what .. " carries its form")
+  assert(
+    type(typed.form) == "number" and typed.form % 1 == 0 and typed.form >= 0,
+    "a care trade " .. what .. " carries its form"
+  )
   assert(type(typed.nickname) == "string" and typed.nickname ~= "", "a care trade " .. what .. " carries its name")
   assert(
     type(typed.speciesKey) == "string" and typed.speciesKey ~= "",
@@ -418,10 +421,7 @@ function PokemonCareInterface.assertTradeStatus(status)
     assert(type(picture) == "table", where .. " is a record")
     local record = picture --[[@as table<string, unknown>]]
     for key in pairs(record) do
-      assert(
-        key == "subject" or key == "visible" or key == "x" or key == "y",
-        where .. " carries " .. tostring(key)
-      )
+      assert(key == "subject" or key == "visible" or key == "x" or key == "y", where .. " carries " .. tostring(key))
     end
     assert(record.subject == "outgoing" or record.subject == "incoming", where .. " names its subject")
     assert(type(record.visible) == "boolean", where .. " carries its visible flag")
@@ -445,7 +445,14 @@ function PokemonCareInterface.assertTradeStatus(status)
     local balloon = typed.balloon --[[@as table<string, unknown>]]
     for key in pairs(balloon) do
       assert(
-        key == "x" or key == "y" or key == "z" or key == "rotX" or key == "rotY" or key == "rotZ" or key == "scale" or key == "alpha",
+        key == "x"
+          or key == "y"
+          or key == "z"
+          or key == "rotX"
+          or key == "rotY"
+          or key == "rotZ"
+          or key == "scale"
+          or key == "alpha",
         "care trade balloon carries " .. tostring(key)
       )
     end
@@ -467,8 +474,13 @@ function PokemonCareInterface.assertTradeStatus(status)
     local camera = typed.camera --[[@as table<string, unknown>]]
     for key in pairs(camera) do
       assert(
-        key == "angleX" or key == "angleY" or key == "distance" or key == "fov" or key == "perspectiveType"
-          or key == "near" or key == "far",
+        key == "angleX"
+          or key == "angleY"
+          or key == "distance"
+          or key == "fov"
+          or key == "perspectiveType"
+          or key == "near"
+          or key == "far",
         "care trade camera carries " .. tostring(key)
       )
     end
@@ -490,7 +502,10 @@ function PokemonCareInterface.assertTradeStatus(status)
       assert(type(camera[key]) == "number", "care trade camera carries a numeric " .. key)
     end
     assert(assert(camera.distance --[[@as number]]) > 0, "care trade camera distance is positive")
-    assert(assert(camera.far --[[@as number]]) > assert(camera.near --[[@as number]]), "care trade camera clips outside in")
+    assert(
+      assert(camera.far --[[@as number]]) > assert(camera.near --[[@as number]]),
+      "care trade camera clips outside in"
+    )
   end
   for _, key in ipairs({ "done", "presentationReady" }) do
     assert(type(typed[key]) == "boolean", "care trade status carries a boolean " .. key)
@@ -559,10 +574,7 @@ end
 ---@param slot unknown
 ---@param what string
 local function assertPartySubject(slot, what)
-  assert(
-    type(slot) == "number" and slot % 1 == 0 and slot >= 0 and slot <= 5,
-    what .. " names a party slot in 0..5"
-  )
+  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0 and slot <= 5, what .. " names a party slot in 0..5")
 end
 
 ---@param moves unknown
@@ -586,8 +598,14 @@ function PokemonCareInterface.assertRelearnerRequest(request)
   local typed = request --[[@as table<string, unknown>]]
   for key in pairs(typed) do
     assert(
-      key == "kind" or key == "mode" or key == "slot" or key == "revision" or key == "nickname"
-        or key == "moves" or key == "known" or key == "subject",
+      key == "kind"
+        or key == "mode"
+        or key == "slot"
+        or key == "revision"
+        or key == "nickname"
+        or key == "moves"
+        or key == "known"
+        or key == "subject",
       "care reminder request carries an unknown field " .. tostring(key)
     )
   end
@@ -607,7 +625,9 @@ function PokemonCareInterface.assertRelearnerRequest(request)
   assertMoveKeys(typed.known, "care reminder known moves")
   local subject = assert(typed.subject, "care reminder request carries its subject")
   assert(type(subject) == "table", "a care reminder subject is a record")
-  for key in pairs(subject --[[@as table<string, unknown>]]) do
+  for key in
+    pairs(subject --[[@as table<string, unknown>]])
+  do
     assert(
       key == "speciesKey" or key == "form" or key == "gender" or key == "shiny",
       "a care reminder subject carries " .. tostring(key)
@@ -656,10 +676,7 @@ function PokemonCareInterface.assertSummaryRequest(request)
       type(typed.moveToLearn) == "string" and typed.moveToLearn ~= "",
       "a replacement picker previews a named move"
     )
-    assert(
-      typed.mode == PokemonCareInterface.SUMMARY_MODES.move_picker,
-      "preview rows belong to the move picker"
-    )
+    assert(typed.mode == PokemonCareInterface.SUMMARY_MODES.move_picker, "preview rows belong to the move picker")
   end
   return typed --[[@as PokemonCareSummaryRequest]]
 end

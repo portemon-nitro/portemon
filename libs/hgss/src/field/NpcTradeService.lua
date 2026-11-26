@@ -94,10 +94,8 @@ function NpcTradeService.new(opts)
   assert(type(identity) == "table", "the NPC trade service requires the current identity")
   assert(type(opts.mapSectionOf) == "function", "the NPC trade service resolves loan map sections")
   assert(type(opts.date) == "function", "the NPC trade service reads today's date")
-  local languageId = assert(
-    HgssMonService.LANGUAGES[identity.language],
-    "the current language resolves for the trade records"
-  )
+  local languageId =
+    assert(HgssMonService.LANGUAGES[identity.language], "the current language resolves for the trade records")
   assert(type(languageId) == "number", "the current language resolves to its native identity")
   local gameId = assert(HgssMonService.GAMES[identity.game], "the current game resolves for the trade records")
   assert(type(gameId) == "number", "the current game resolves to its native identity")

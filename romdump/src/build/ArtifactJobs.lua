@@ -470,7 +470,7 @@ local function scriptSessionFor(context, generationKey, producerFingerprint)
   return plan, session
 end
 
----@param compile fun(): table<string, unknown>?, unknown
+---@param compile fun(): (table<string, unknown>?, unknown?)
 ---@param label string
 ---@return table<string, unknown>
 local function compileOrRaise(compile, label)
@@ -1471,6 +1471,12 @@ local function validateEnding(check)
   return EndingAssetCache.isReady(check.cacheFs, check.marker)
 end
 
+local function dependenciesEnding(key)
+  assert(key == "global", "ending family only has the global job")
+  local EndingAssetCompiler = require("romdump.src.digest.ending.EndingAssetCompiler")
+  return EndingAssetCompiler.dependencies(), true
+end
+
 local function validateFieldEffects(check)
   local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
   return FieldEffectAssetCache.isReady(check.cacheFs, check.marker)
@@ -2225,11 +2231,7 @@ DESCRIPTORS = {
   -- the registration, showcase and credit-roll message banks.
   ending = {
     size = "normal",
-    dependencies = function(key)
-      assert(key == "global", "ending family only has the global job")
-      local EndingAssetCompiler = require("romdump.src.digest.ending.EndingAssetCompiler")
-      return EndingAssetCompiler.dependencies(), true
-    end,
+    dependencies = dependenciesEnding,
     execute = executeEnding,
     validate = validateEnding,
   },

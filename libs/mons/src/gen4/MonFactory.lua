@@ -327,9 +327,10 @@ function MonFactory:createBredEgg(request)
     location = request.location,
     date = request.date,
   })
-  for _, assignment in ipairs(Breeding.inheritedIvs({ parents = parents, lc = function()
+  local function drawLc()
     return self._rng:nextU16()
-  end })) do
+  end
+  for _, assignment in ipairs(Breeding.inheritedIvs({ parents = parents, lc = drawLc })) do
     local parent = assert(parents[assignment.slot], "the inherited stat names its parent")
     mon.ivs[assignment.stat] = parent.ivs[assignment.stat]
   end

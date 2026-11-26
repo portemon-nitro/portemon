@@ -39,10 +39,7 @@ function HallOfFamePresentation:prepare(bundle)
   assert(not self.disposed, "disposed Hall of Fame presentation cannot prepare")
   assert(type(bundle) == "table", "the ending presentation needs its generated bundle")
   for _, section in ipairs(HallOfFamePresentation.SECTIONS) do
-    assert(
-      type(bundle[section]) == "table",
-      "the ending presentation bundle carries its " .. section .. " section"
-    )
+    assert(type(bundle[section]) == "table", "the ending presentation bundle carries its " .. section .. " section")
   end
   self.sections = bundle
   self.signature = assert(bundle.signature, "the ending presentation bundle names its source signature")

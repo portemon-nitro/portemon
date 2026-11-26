@@ -709,7 +709,7 @@ end
 function T.tests.the_source_trade_house_swaps_the_selected_mon_once()
   local game = bootField({ map = ONIX_MAP, tile = ONIX_TILE })
   local ok, err = xpcall(function()
-    giftParty(game, { STARTER_SPECIES, table.unpack(FILLER_SPECIES) }, OUTGOING_LEVEL)
+    giftParty(game, { STARTER_SPECIES, unpack(FILLER_SPECIES) }, OUTGOING_LEVEL)
     Assert.equal(mons(game):partyCount(), 6, "the scenario trades away a mon from a full party")
     local outgoing = copy(mons(game):partyMon(0))
     local scoreBefore = liveScore(game)

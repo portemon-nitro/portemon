@@ -183,56 +183,7 @@ function TradeBalloonModel.new(opts)
     _projection = Matrix4.identity(),
     _released = false,
   }, TradeBalloonModel)
-  local poolWasOwned = false
-  local ok, failure = pcall(function()
-    -- The model's own textures realize through a private image owner: the
-    -- trade overlay composes this model outside the field's session pool.
-    local images = ImageAssetPool.new(cacheFs, { graphics = graphics })
-    self._images = images
-    local pool = GpuAssetPool.new(cacheFs, { graphics = graphics, imageAssets = images })
-    self._pool = pool
-    poolWasOwned = true
-    local model = opts.model --[[@as table<string, unknown>]]
-    self._prepared = pool:build(function()
-      local materialById = {}
-      for _, record in ipairs(assert(model.materials --[[@as table[] ]])) do
-        local wrap = SceneDescriptor.wrap(record)
-        local handle = pool:sharedImage(record.texture, wrap.x, wrap.y)
-        materialById[record.id] = {
-          id = record.id,
-          name = record.name,
-          image = handle and handle.image or nil,
-          palette = handle and handle.palette or nil,
-          indexed = handle and handle.indexed or nil,
-          texMatrix = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
-          wrap = wrap,
-        }
-      end
-      local batches = {}
-      for _, batch in ipairs(assert(model.batches --[[@as table[] ]])) do
-        local mesh = pool:meshFor(batch.geometry)
-        batches[#batches + 1] = {
-          mesh = mesh.mesh,
-          material = assert(materialById[batch.material], "the trade balloon batch names its material"),
-          center = mesh.center,
-          sortBounds = mesh.bounds,
-          alphaClass = batch.alphaClass,
-          cullMode = batch.cullMode,
-          polygonAlpha = (batch.polygonAlpha --[[@as number]]) / FixedPoint.RGB5_MAX,
-          polygonMode = batch.polygonMode,
-          polygonId = batch.polygonId,
-          translucentDepthWrite = batch.translucentDepthWrite,
-          depthEqual = batch.depthEqual,
-          lightMask = batch.lightMask,
-          fogEnabled = batch.fogEnabled,
-        }
-      end
-      return { batches = batches }
-    end)
-    self._renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = graphics })
-    self._canvas = graphics.newCanvas(REFERENCE_WIDTH, REFERENCE_HEIGHT, { format = "rgba8", dpiscale = 1 })
-    self._canvas:setFilter("nearest", "nearest")
-  end)
+  local ok, failure = pcall(TradeBalloonModel._realize, self, opts, cacheFs)
   if not ok then
     if self._canvas ~= nil then
       self._canvas:release()
@@ -242,7 +193,7 @@ function TradeBalloonModel.new(opts)
       self._renderer:release()
       self._renderer = nil
     end
-    if poolWasOwned and self._pool ~= nil then
+    if self._pool ~= nil then
       self._pool:release()
       self._pool = nil
     end
@@ -253,6 +204,65 @@ function TradeBalloonModel.new(opts)
     error(failure, 0)
   end
   return self
+end
+
+-- Realizes the owned image, pool, prepared batches, renderer and canvas. A
+-- failure releases nothing: the constructor drops whatever this method had
+-- already assigned, so the completed acquisitions stay the only owned state.
+---@param opts { graphics: table<string, unknown>, cacheFs: table<string, unknown>, model: table<string, unknown> }
+---@param cacheFs table<string, unknown>
+function TradeBalloonModel:_realize(opts, cacheFs)
+  local graphics = self._graphics
+  -- The model's own textures realize through a private image owner: the
+  -- trade overlay composes this model outside the field's session pool.
+  local images = ImageAssetPool.new(cacheFs, { graphics = graphics })
+  self._images = images
+  local pool = GpuAssetPool.new(cacheFs, { graphics = graphics, imageAssets = images })
+  self._pool = pool
+  local model = opts.model --[[@as table<string, unknown>]]
+  self._prepared = pool:build(function()
+    local materialById = {}
+    for _, record in
+      ipairs(assert(model.materials --[[@as table[] ]]))
+    do
+      local wrap = SceneDescriptor.wrap(record)
+      local handle = pool:sharedImage(record.texture, wrap.x, wrap.y)
+      materialById[record.id] = {
+        id = record.id,
+        name = record.name,
+        image = handle and handle.image or nil,
+        palette = handle and handle.palette or nil,
+        indexed = handle and handle.indexed or nil,
+        texMatrix = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+        wrap = wrap,
+      }
+    end
+    local batches = {}
+    for _, batch in
+      ipairs(assert(model.batches --[[@as table[] ]]))
+    do
+      local mesh = pool:meshFor(batch.geometry)
+      batches[#batches + 1] = {
+        mesh = mesh.mesh,
+        material = assert(materialById[batch.material], "the trade balloon batch names its material"),
+        center = mesh.center,
+        sortBounds = mesh.bounds,
+        alphaClass = batch.alphaClass,
+        cullMode = batch.cullMode,
+        polygonAlpha = batch.polygonAlpha --[[@as number]] / FixedPoint.RGB5_MAX,
+        polygonMode = batch.polygonMode,
+        polygonId = batch.polygonId,
+        translucentDepthWrite = batch.translucentDepthWrite,
+        depthEqual = batch.depthEqual,
+        lightMask = batch.lightMask,
+        fogEnabled = batch.fogEnabled,
+      }
+    end
+    return { batches = batches }
+  end)
+  self._renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = graphics })
+  self._canvas = graphics.newCanvas(REFERENCE_WIDTH, REFERENCE_HEIGHT, { format = "rgba8", dpiscale = 1 })
+  self._canvas:setFilter("nearest", "nearest")
 end
 
 -- Draws the model for one snapshot placement onto the caller's target, then
@@ -325,7 +335,7 @@ function TradeBalloonModel:draw(balloon, camera)
   graphics.setShader()
   graphics.setDepthMode()
   graphics.setBlendMode("alpha", "alphamultiply")
-  graphics.setColor(1, 1, 1, (balloon.alpha --[[@as integer]]) / 31)
+  graphics.setColor(1, 1, 1, balloon.alpha --[[@as integer]] / 31)
   graphics.draw(canvas, 0, 0)
   graphics.setColor(1, 1, 1, 1)
   graphics.pop()

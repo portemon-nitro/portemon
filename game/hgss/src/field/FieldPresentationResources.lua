@@ -103,6 +103,11 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field pokemonCenterHealDefinition table<string, unknown>? generated healing-ball asset definition
 ---@field gymMechanism GymMechanism? the runtime mechanism whose presented source props this composition owns
 ---@field rocketHideoutEffects RocketHideoutEffects? the runtime hideout effects whose presented trap this composition owns
+---@field legendEventScene LegendEventScene? the runtime legend scenes whose presented parts and montage this composition owns
+---@field pokemonCareHost PokemonCareScriptHost? the runtime's script-owned care child host
+---@field presentationDisplay DisplayMeasurement? the runtime's own measured display facts
+---@field bindPokemonCarePresentation fun(runtime: FieldPresentationResourcesRuntime, acquire: fun(request: table<string, unknown>): table<string, unknown>): integer runtime care preparation binding in presented composition
+---@field unbindPokemonCarePresentation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime care preparation unbinding in presented composition
 
 ---@class FieldPresentationResources
 ---@field cacheFs CacheFs generated asset filesystem
@@ -1746,15 +1751,16 @@ function FieldPresentationResources:drawMonPicture(status, referenceFrame, field
   assert(type(status) == "table", "the picture window reports a record while open")
   local frame = assert(status.frame, "the open picture window carries its picture frame")
   local image = self:_monPictureImageFor(assert(status.pageId, "the open picture window carries its page"))
-  local placement = self:mainDisplayPlacement(referenceFrame, fieldScale)
+  local placement = FieldPresentationResources.mainDisplayPlacement(referenceFrame, fieldScale)
+  local placementFrame = placement.frame
   local originX = FieldMonPictureWindow.SOURCE_TILE_X * FieldMonPictureWindow.TILE_PIXELS + frame.x
   local originY = FieldMonPictureWindow.SOURCE_TILE_Y * FieldMonPictureWindow.TILE_PIXELS + frame.y
   local lg = love.graphics
   local prevR, prevG, prevB, prevA = lg.getColor()
   local prevScissorX, prevScissorY, prevScissorW, prevScissorH = lg.getScissor()
   lg.setColor(1, 1, 1, 1)
-  local x = placement.x + originX * placement.scale
-  local y = placement.y + originY * placement.scale
+  local x = placementFrame.x + originX * placement.scale
+  local y = placementFrame.y + originY * placement.scale
   local width = frame.width * placement.scale
   local height = frame.height * placement.scale
   lg.setScissor(x, y, width, height)
@@ -2169,6 +2175,11 @@ function FieldPresentationResources:pokemonCare()
   end
   local runtime = assert(self._presentationRuntime, "care preparation borrows the presented runtime")
   local PokemonCarePresentationResources = require("game.hgss.src.field.PokemonCarePresentationResources")
+  -- The reminder draws the source's two screens, so it resolves the pair
+  -- from the same live display facts every other dual-screen child uses.
+  local function measureDisplay()
+    return runtime.presentationDisplay
+  end
   local created = PokemonCarePresentationResources.new({
     cacheFs = runtime.cacheFs,
     graphics = assert(love and love.graphics, "care preparation needs the graphics namespace"),
@@ -2177,11 +2188,7 @@ function FieldPresentationResources:pokemonCare()
     window = assert(self.windowRenderer, "care preparation borrows the window renderer"),
     fontDef = assert(self.textRenderer.fontDef, "care preparation borrows the field font definition"),
     frameIndex = runtime.playerData and runtime.playerData.options and runtime.playerData.options.textFrame or nil,
-    -- The reminder draws the source's two screens, so it resolves the pair
-    -- from the same live display facts every other dual-screen child uses.
-    measureDisplay = function()
-      return runtime.presentationDisplay
-    end,
+    measureDisplay = measureDisplay,
   })
   self.pokemonCareResources = created
   return created

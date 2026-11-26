@@ -354,10 +354,7 @@ end
 ---@param catalog table<string, unknown> borrowed contact catalog
 ---@return integer native trainer identity, or numeric zero without a source set
 function TrainerPhonePrograms.rematchTrainerId(baseTrainerNo, world, catalog)
-  assert(
-    type(baseTrainerNo) == "number" and baseTrainerNo % 1 == 0,
-    "rematch resolution names its base trainer"
-  )
+  assert(type(baseTrainerNo) == "number" and baseTrainerNo % 1 == 0, "rematch resolution names its base trainer")
   local sets = catalog.rematches
   assert(type(sets) == "table", "rematch resolution reads the generated rematch sets")
   local entries = sets --[[@as table<integer, integer[]>]][baseTrainerNo]
@@ -380,8 +377,12 @@ local function catalogContact(contact, catalog)
   if type(catalog) ~= "table" or type(catalog.contacts) ~= "table" then
     return nil
   end
-  for _, entry in ipairs(catalog.contacts --[[@as table<integer, unknown>]]) do
-    if type(entry) == "table" and (entry --[[@as table<string, unknown>]]).key == contact then
+  for _, entry in
+    ipairs(catalog.contacts --[[@as table<integer, unknown>]])
+  do
+    if
+      type(entry) == "table" and (entry --[[@as table<string, unknown>]]).key == contact
+    then
       return entry --[[@as table<string, unknown>]]
     end
   end
@@ -406,6 +407,7 @@ function TrainerPhonePrograms.query(contact, world, catalog)
   end
   local entry = catalogContact(contact, catalog)
   assert(type(entry) == "table", "rematch queries read the catalogued contact " .. contact)
+  local contactCatalog = assert(catalog, "rematch queries read the catalogued contact " .. contact)
   if entry.id == TrainerPhonePrograms.KENJI_CONTACT_ID then
     local readFacts = world.rematchFacts
     assert(type(readFacts) == "function", "rematch queries read the live time band")
@@ -417,7 +419,8 @@ function TrainerPhonePrograms.query(contact, world, catalog)
   end
   local trainerNo = entry.trainerId
   assert(type(trainerNo) == "number" and trainerNo % 1 == 0, "catalogued contacts carry their native trainer")
-  local trainerId = TrainerPhonePrograms.rematchTrainerId(trainerNo, world, catalog)
+  ---@cast trainerNo integer
+  local trainerId = TrainerPhonePrograms.rematchTrainerId(trainerNo, world, contactCatalog)
   return { ready = trainerId ~= 0, trainerId = trainerId }
 end
 

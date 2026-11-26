@@ -408,10 +408,7 @@ MartService.MAX_ATHLETE_POINTS = MAX_ATHLETE_POINTS
 ---@param amount unknown
 ---@return integer
 local function checkAthleteAmount(amount)
-  assert(
-    integer(amount, 0, MAX_ATHLETE_AMOUNT),
-    "an Athlete Point amount must be an unsigned 16-bit source operand"
-  )
+  assert(integer(amount, 0, MAX_ATHLETE_AMOUNT), "an Athlete Point amount must be an unsigned 16-bit source operand")
   return amount
 end
 

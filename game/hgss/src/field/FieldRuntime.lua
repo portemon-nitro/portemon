@@ -599,7 +599,6 @@ end
 ---@field moveTutor MoveTutorService? the ordered relearn query and teaching owner (nil before composition / after teardown)
 ---@field battlePoints BattlePointsState? the saved Battle Point wallet (nil before composition / after teardown)
 ---@field pointsBox FieldPointsBox? the transient source points window the field draw renders
----@field gameClear table<string, unknown>? the League ending coordinator (nil before composition / after teardown)
 ---@field followerInteractionCatalog table<string, unknown> generated follower interaction rules
 ---@field followerReactionTicks table<string, integer> follower reaction emote kind -> emote action duration
 ---@field bagService HgssBagService the live bag/inventory service
@@ -697,7 +696,7 @@ end
 ---@field fieldEntranceIndicatorAsset table<string, unknown>
 ---@field fieldEffectAssets table<string, unknown>
 ---@field pokemonCareHost PokemonCareScriptHost? the one script-owned care child host
----@field _pokemonCarePresentation { id: integer, acquire: fun(request: table): table }? presented care asset binding
+---@field _pokemonCarePresentation { id: integer, acquire: fun(request: table<string, unknown>): table<string, unknown> }? presented care asset binding
 ---@field _pokemonCareBindingId integer? care binding identity counter
 ---@field pokemonCenterHeal PokemonCenterHealFlow? source-owned Pokémon Center choreography
 ---@field blackoutFlow FieldBlackoutFlow? runtime-owned whiteout presentation and recovery flow
@@ -1705,6 +1704,9 @@ function FieldRuntime:_composeFieldServices(boot)
   -- source lottery the radio-tower script drives. Composed before the script
   -- platform so its commands resolve it as their injected service.
   local FieldDailyEvents = require("game.hgss.src.field.FieldDailyEvents")
+  local function regrowApricorns(date)
+    self:_processApricornDate(date)
+  end
   self.dailyEvents = FieldDailyEvents.new({
     world = self.eventState,
     state = self.pokegearState,
@@ -1712,9 +1714,7 @@ function FieldRuntime:_composeFieldServices(boot)
     mart = self.martService,
     calls = self.incomingCalls,
     random = self.pokegearRandom,
-    regrowApricorns = function(date)
-      self:_processApricornDate(date)
-    end,
+    regrowApricorns = regrowApricorns,
   })
   -- The one following-mon controller: derived follower presentation over
   -- the live party, driven once per fixed tick after the session update.
@@ -1847,7 +1847,6 @@ function FieldRuntime:_composeFieldServices(boot)
     if mapProps == nil then
       return nil
     end
-    local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAnimations")
     for _, placement in ipairs(mapProps.placements) do
       if FieldScriptPropAnimations.sourceMemberId(placement.modelKey) == memberId then
         local transform = assert(placement.transform, "a compiled placement carries its transform")
@@ -1858,7 +1857,10 @@ function FieldRuntime:_composeFieldServices(boot)
   end
   self.legendEventScene = LegendEventScene.new({
     definitions = effectDefinitions,
-    audio = assert(self.audio or (self.scriptHosts and self.scriptHosts.audio), "the legend scenes need the source audio host"),
+    audio = assert(
+      self.audio or (self.scriptHosts and self.scriptHosts.audio),
+      "the legend scenes need the source audio host"
+    ),
     screen = self.screenFade,
     actors = self.actors,
     playerOf = currentMechanismPlayer,
@@ -1883,10 +1885,18 @@ function FieldRuntime:_composeFieldServices(boot)
   local function currentDaycareMap()
     return self.session ~= nil and self.session.currentMap or self.runtimeMap
   end
+  local function drawBreedingLc()
+    return self.monService:drawLcRandom()
+  end
+  -- Breeding continues the mon generation stream for its linear draws and
+  -- the companion draw pair for its source 32-bit personality draws, so no
+  -- second generator exists anywhere in the field.
+  local function drawBreedingMt()
+    return assert(self.pokegearRandom, "the Day Care needs the companion draw pair"):mt("daycare_egg_personality")
+  end
   -- The hatch matcher reads the current language and game the same way the
   -- source compares them against the saved mon, and the hatched original gift
   -- raises Elm's call plus its story flag.
-  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
   self.daycare = DaycareService.new({
     state = self.daycareState,
     mons = self.monService,
@@ -1897,17 +1907,8 @@ function FieldRuntime:_composeFieldServices(boot)
     care = self.careCatalog,
     profile = self.playerData.profile,
     date = monMetDate,
-    -- Breeding continues the mon generation stream for its linear draws and
-    -- the companion draw pair for its source 32-bit personality draws, so no
-    -- second generator exists anywhere in the field.
-    lc = function()
-      return self.monService:drawLcRandom()
-    end,
-    mt = function()
-      return assert(self.pokegearRandom, "the Day Care needs the companion draw pair"):mt(
-        "daycare_egg_personality"
-      )
-    end,
+    lc = drawBreedingLc,
+    mt = drawBreedingMt,
     identity = { language = self.monLanguage, game = self.versionId },
     phone = {
       state = assert(self.pokegearState, "the Day Care needs the companion state"),
@@ -2166,28 +2167,48 @@ function FieldRuntime:_composeGameClear()
       local currentMap = self.session and self.session.currentMap or self.runtimeMap
       return assert(currentMap and currentMap.mapSectionNativeId, "a detached party needs the active map section")
     end
-    return self:_newMonService(bucket, assert(self.playerDataContext, "the party needs its charmap").charmap, metSection, nowLocal)
+    return self:_newMonService(
+      bucket,
+      assert(self.playerDataContext, "the party needs its charmap").charmap,
+      metSection,
+      nowLocal
+    )
+  end
+  local function captureEndingCandidate()
+    return assert(self.saveCoordinator, "the ending needs the save coordinator"):captureEndingCandidate()
+  end
+  local function publishEndingRecord(record)
+    return self:_publishEndingRecord(record)
+  end
+  local function setSaveStatus(text)
+    self.saveStatus = text
+  end
+  local function isEndingFlagSet(_, id)
+    return scriptsWorldState():isFlagSet(id)
+  end
+  local function setEndingFlag(_, id)
+    return scriptsWorldState():setFlag(id)
+  end
+  local function clearEndingFlag(_, id)
+    return scriptsWorldState():clearFlag(id)
+  end
+  local function requestEndingAssets(urgency)
+    if self.derivedAssets == nil or type(self.derivedAssets.requestEnding) ~= "function" then
+      return nil
+    end
+    return self.derivedAssets.requestEnding(urgency)
+  end
+  local function loadEndingPresentation()
+    return self:_loadEndingPresentation()
   end
   self.gameClear = GameClearCoordinator.new({
-    capture = function()
-      return assert(self.saveCoordinator, "the ending needs the save coordinator"):captureEndingCandidate()
-    end,
-    publish = function(record)
-      return self:_publishEndingRecord(record)
-    end,
-    setSaveStatus = function(text)
-      self.saveStatus = text
-    end,
+    capture = captureEndingCandidate,
+    publish = publishEndingRecord,
+    setSaveStatus = setSaveStatus,
     worldState = {
-      isFlagSet = function(_, id)
-        return scriptsWorldState():isFlagSet(id)
-      end,
-      setFlag = function(_, id)
-        return scriptsWorldState():setFlag(id)
-      end,
-      clearFlag = function(_, id)
-        return scriptsWorldState():clearFlag(id)
-      end,
+      isFlagSet = isEndingFlagSet,
+      setFlag = setEndingFlag,
+      clearFlag = clearEndingFlag,
     },
     monService = self.monService,
     detachedMonService = detachedMonService,
@@ -2200,15 +2221,8 @@ function FieldRuntime:_composeGameClear()
     -- The generated ending bundle is not produced yet, so the ending's own
     -- presentation is unready: it publishes no frames and draws nothing.
     presentation = self.endingPresentation,
-    requestAssets = function(urgency)
-      if self.derivedAssets == nil or type(self.derivedAssets.requestEnding) ~= "function" then
-        return nil
-      end
-      return self.derivedAssets.requestEnding(urgency)
-    end,
-    loadPresentation = function()
-      return self:_loadEndingPresentation()
-    end,
+    requestAssets = requestEndingAssets,
+    loadPresentation = loadEndingPresentation,
     audio = self.audio or (self.scriptHosts and self.scriptHosts.audio),
   })
 end
@@ -2537,6 +2551,9 @@ function FieldRuntime:_startFieldSession(boot)
     local itemKey = self.bagService:registeredItems()[slot]
     return itemKey ~= nil and self:useKeyItem(itemKey, true)
   end
+  local function publishRoamerConnection(sourceMapId, destinationMapId)
+    self:publishRoamerTransition("connection", sourceMapId, destinationMapId)
+  end
   self.session = FieldSession.new({
     versionId = self.versionId,
     currentMap = self.runtimeMap,
@@ -2593,9 +2610,7 @@ function FieldRuntime:_startFieldSession(boot)
     partyKnowsMove = partyKnowsMove,
     gymMechanism = self.gymMechanism,
     roamerTransitions = {
-      connection = function(sourceMapId, destinationMapId)
-        self:publishRoamerTransition("connection", sourceMapId, destinationMapId)
-      end,
+      connection = publishRoamerConnection,
     },
   })
 
@@ -3692,10 +3707,11 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world, compiledEn
     mapRefs[mapId] = true
   end
   local mapIdBySymbol = assert(world.bySymbol, "world catalog carries its symbol index")
-  local roamerData = assert(
-    type(compiledEncounters) == "table" and compiledEncounters.roamers,
+  assert(
+    type(compiledEncounters) == "table" and type(compiledEncounters.roamers) == "table",
     "the compiled encounter catalog carries its roamer graph"
   )
+  local roamerData = compiledEncounters.roamers --[[@as table<string, unknown>]]
   local refs = { species = speciesRefs, maps = mapRefs, mapIdBySymbol = mapIdBySymbol }
   if loadedGame ~= nil and loadedGame.encounters ~= nil then
     self.roamerState = HgssRoamerState.restore(loadedGame.encounters, refs, roamerData)
@@ -3741,8 +3757,6 @@ end
 -- runtime holds the state as a required owner; the draw pair and calendar
 -- are transient adapters released at field shutdown. Field samples reach
 -- the calendar through explicit observations, never through polling here.
----@param loadedGame table<string, unknown>?
----@param cacheFs table<string, unknown> CacheFs-shaped
 -- The Mom bank: the transient savings window whose two balances are the
 -- script's own view of the saved wallet and Mom's savings, and the one
 -- transfer host behind the source amount screen. Both borrow the canonical
@@ -3760,31 +3774,36 @@ function FieldRuntime:_composeBank()
   -- field that never talks to Mom never reads the bank family, and a cold
   -- family fails the transfer (closing the screen) instead of painting art
   -- that does not exist.
+  local function measureDisplay()
+    return self.presentationDisplay
+  end
   local function createInterface()
     local BankCache = require("libs.assets.src.BankCache")
     local cacheFs = assert(self.cacheFs, "the bank presentation needs the version cache")
     local BankInterface = require("game.hgss.src.bank.BankInterface")
     return BankInterface.new({
       manifest = BankCache.loadManifest(cacheFs),
-      measureDisplay = function()
-        return self.presentationDisplay
-      end,
+      measureDisplay = measureDisplay,
     })
+  end
+  local function createScreen(maxAmount)
+    return BankScreenState.new(maxAmount)
+  end
+  local function clearBankUi()
+    self.input:clearUi()
   end
   self.bankHost = BankTransactionHost.new({
     profile = self.playerData.profile,
     pokegearState = self.pokegearState,
     savingsBox = self.savingsBox,
-    createScreen = function(maxAmount)
-      return BankScreenState.new(maxAmount)
-    end,
+    createScreen = createScreen,
     createInterface = createInterface,
-    clearUi = function()
-      self.input:clearUi()
-    end,
+    clearUi = clearBankUi,
   })
 end
 
+---@param loadedGame table<string, unknown>? the restored companion bucket's game record
+---@param cacheFs table<string, unknown> the version cache reader
 function FieldRuntime:_composePokegear(loadedGame, cacheFs)
   local PokegearState = require("libs.hgss.src.save.PokegearState")
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
@@ -4412,10 +4431,6 @@ function FieldRuntime:_composePokegearFeature(boot)
   self.incomingCalls = assert(bundle.incoming, "companion feature carries its incoming owner")
 end
 
--- The companion seed boundary: the validated trainer identity when the
--- profile carries one, otherwise a deterministic hash of the save id.
--- Never host time, so the same game always resumes the same streams.
----@return integer
 -- One compiled phone-trigger key by its source slot: slot 5 is the Day-Care
 -- call the committed-step check raises when it produces an egg, and slot 0 the
 -- call the hatched original gift raises.
@@ -4433,6 +4448,10 @@ function FieldRuntime:_pokegearTriggerKey(slot)
   return key
 end
 
+-- The companion seed boundary: the validated trainer identity when the
+-- profile carries one, otherwise a deterministic hash of the save id.
+-- Never host time, so the same game always resumes the same streams.
+---@return integer
 function FieldRuntime:_pokegearSeed()
   local profile = self.playerData ~= nil and self.playerData.profile or nil
   local trainerId = type(profile) == "table" and profile.trainerId or nil
@@ -4638,7 +4657,6 @@ end
 -- number, and the one dex owner that records the shown species as seen.
 ---@param cacheFs CacheFs
 function FieldRuntime:_composeMonPictureWindow(cacheFs)
-  local MonCache = require("libs.assets.src.MonCache")
   local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
   local FieldMonPictureWindow = require("game.hgss.src.field.FieldMonPictureWindow")
   local portraits = assert(
@@ -4656,11 +4674,12 @@ function FieldRuntime:_composeMonPictureWindow(cacheFs)
     receipt.publish()
     return true
   end
+  local function speciesKeyByNativeId(nativeId)
+    return catalog:speciesKeyByNativeId(nativeId)
+  end
   self.monPicture = FieldMonPictureWindow.new({
     portraits = portraits,
-    speciesKeyByNativeId = function(nativeId)
-      return catalog:speciesKeyByNativeId(nativeId)
-    end,
+    speciesKeyByNativeId = speciesKeyByNativeId,
     markSeen = markSeen,
   })
 end
@@ -5002,7 +5021,7 @@ local function roamerStatusVariable(species)
   if type(id) ~= "number" then
     return nil
   end
-  return id
+  return id --[[@as integer]]
 end
 
 -- Publishes one roamer's lifecycle word through the script world. Called from

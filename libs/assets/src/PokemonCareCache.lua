@@ -138,7 +138,9 @@ function PokemonCareCache.referencedTradePaths(manifest)
   end
   for _, phase in ipairs({ "send", "depart", "recede", "exchange", "approach", "arrive", "receive" }) do
     local scene = assert(scenes[phase], "the trade manifest carries its " .. phase .. " scene") --[[@as table]]
-    for _, layer in ipairs(assert(scene.layers, "the trade scene carries its layers") --[[@as table[] ]]) do
+    for _, layer in
+      ipairs(assert(scene.layers, "the trade scene carries its layers") --[[@as table[] ]])
+    do
       if layer.variants ~= nil then
         for _, key in ipairs({ "day", "evening", "night" }) do
           local variant = assert(layer.variants[key], "the layered surface carries its " .. key .. " bank") --[[@as table]]
@@ -152,8 +154,12 @@ function PokemonCareCache.referencedTradePaths(manifest)
   local sprites = assert(manifest.sprites, "the trade manifest carries its sprite sheets") --[[@as table]]
   for _, sheetKey in ipairs({ "effect" }) do
     local sheet = assert(sprites[sheetKey], "the trade manifest carries its " .. sheetKey .. " sheet") --[[@as table]]
-    for _, sequence in ipairs(assert(sheet.sequences, "the trade sprite sheet carries its sequences") --[[@as table[] ]]) do
-      for _, frame in ipairs(assert(sequence.frames, "the trade sprite sequence carries its frames") --[[@as table[] ]]) do
+    for _, sequence in
+      ipairs(assert(sheet.sequences, "the trade sprite sheet carries its sequences") --[[@as table[] ]])
+    do
+      for _, frame in
+        ipairs(assert(sequence.frames, "the trade sprite sequence carries its frames") --[[@as table[] ]])
+      do
         if frame.blank ~= true then
           add(assert(frame.image) --[[@as string]])
         end
@@ -178,7 +184,9 @@ function PokemonCareCache.tradeStagedPaths(manifest)
   end
   for _, phase in ipairs({ "send", "depart", "recede", "exchange", "approach", "arrive", "receive" }) do
     local scene = assert(manifest.scenes[phase], "the trade manifest carries its " .. phase .. " scene") --[[@as table]]
-    for _, layer in ipairs(assert(scene.layers, "the trade scene carries its layers") --[[@as table[] ]]) do
+    for _, layer in
+      ipairs(assert(scene.layers, "the trade scene carries its layers") --[[@as table[] ]])
+    do
       local indexPath = layer.indices
       if indexPath ~= nil and not seen[indexPath] then
         seen[indexPath] = true
@@ -187,7 +195,9 @@ function PokemonCareCache.tradeStagedPaths(manifest)
     end
   end
   local balloon = assert(manifest.balloon, "the trade manifest carries its balloon") --[[@as table]]
-  for _, path in ipairs(ModelAsset.referencedPaths(assert(balloon.model --[[@as table<string, unknown>]]))) do
+  for _, path in
+    ipairs(ModelAsset.referencedPaths(assert(balloon.model --[[@as table<string, unknown>]])))
+  do
     if not seen[path] then
       seen[path] = true
       paths[#paths + 1] = path

@@ -113,12 +113,7 @@ end
 -- blocking wait the source's own task runs until the shared phase boundary.
 ---@param choice integer
 function SinjohGym:choose(choice)
-  if
-    type(choice) ~= "number"
-    or choice % 1 ~= 0
-    or choice < 0
-    or choice >= GymMechanismState.SINJOH_CHOICES
-  then
+  if type(choice) ~= "number" or choice % 1 ~= 0 or choice < 0 or choice >= GymMechanismState.SINJOH_CHOICES then
     Errors.raise(FieldErrors.FIELD_GYM_MECHANISM_INVALID, "the Sinjoh choice is not a source pedestal", {
       choice = tostring(choice),
       choiceCount = GymMechanismState.SINJOH_CHOICES,

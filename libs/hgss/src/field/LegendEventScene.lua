@@ -27,6 +27,10 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 
 ---@class LegendEventScene.EffectDefinition
 ---@field parts LegendEventScene.EffectPart[]?
+---@field models table<string, unknown>[]? the source models keyed by source slot
+---@field machineModelMemberId integer? the placed machine the hall-of-fame balls anchor on
+---@field ballAnimationFrameCount integer? the ball clip's source frame count
+---@field ballPositions { role: string, offset: { x: number, y: number, z: number } }[]? one source ball offset per party slot
 ---@field sound string?
 ---@field layers table<integer, { path: string, width: integer, height: integer }>?
 ---@field sprite table<string, unknown>?
@@ -225,9 +229,13 @@ end
 function LegendEventScene:_requireDefinition(kind)
   local definition = self._definitions[kind]
   if definition == nil then
-    Errors.raise(FieldErrors.FIELD_LEGEND_EFFECT_SOURCE_MISSING, "the legend scene's generated source asset is missing", {
-      kind = kind,
-    })
+    Errors.raise(
+      FieldErrors.FIELD_LEGEND_EFFECT_SOURCE_MISSING,
+      "the legend scene's generated source asset is missing",
+      {
+        kind = kind,
+      }
+    )
   end
   return definition --[[@as LegendEventScene.EffectDefinition]]
 end
@@ -436,6 +444,7 @@ function LegendEventScene:_beginHallOfFame(count)
       { modelMemberId = definition.machineModelMemberId }
     )
   end
+  ---@cast anchor -nil
   self._active = {
     kind = "hall_of_fame_machine",
     definition = definition,
@@ -626,6 +635,7 @@ function LegendEventScene:_releaseHallOfFame(active)
 end
 
 ---@private
+---@param active table<string, unknown> the live scene claim
 ---@return string
 function LegendEventScene:_stepWing(active)
   local part = active.part
@@ -674,6 +684,7 @@ function LegendEventScene:_stepWing(active)
 end
 
 ---@private
+---@param active table<string, unknown> the live scene claim
 ---@return string
 function LegendEventScene:_stepLanceDeparture(active)
   active.ticks = active.ticks + 1
@@ -689,6 +700,7 @@ function LegendEventScene:_stepLanceDeparture(active)
 end
 
 ---@private
+---@param active table<string, unknown> the live scene claim
 ---@return string
 function LegendEventScene:_stepUnownCircle(active)
   local phase = active.phase
@@ -740,6 +752,7 @@ function LegendEventScene:_stepUnownCircle(active)
 end
 
 ---@private
+---@param active table<string, unknown> the live scene claim
 ---@return string
 function LegendEventScene:_stepEggCutscene(active)
   local phase = active.phase
@@ -819,6 +832,7 @@ function LegendEventScene:_runArceusCommand(active)
         fileId = fileId,
       })
     end
+    ---@cast image -nil
     active.layers[layer] = image.path
     active.cursor = active.cursor + 1
     return "continue"
@@ -903,6 +917,7 @@ function LegendEventScene:_runArceusCommand(active)
 end
 
 ---@private
+---@param active table<string, unknown> the live scene claim
 ---@return string
 function LegendEventScene:_stepCinematic(active)
   if active.phase == "blend" then

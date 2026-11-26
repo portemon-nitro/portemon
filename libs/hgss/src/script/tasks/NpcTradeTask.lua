@@ -78,7 +78,10 @@ local function subject(catalog, mon)
     nickname = name,
     speciesKey = assert(species.name, "a trade subject carries its generated species identity"),
     gender = gender,
-    shiny = Personality.shiny(assert(mon.origin.trainerId, "a trade subject carries its trainer identity"), mon.personality),
+    shiny = Personality.shiny(
+      assert(mon.origin.trainerId, "a trade subject carries its trainer identity"),
+      mon.personality
+    ),
   }
 end
 
@@ -170,6 +173,7 @@ end
 
 ---@param state table<string, unknown>
 ---@param ctx table<string, unknown>
+---@return { complete: boolean, state: table<string, unknown> }
 local function pollApplication(state, ctx)
   local care = service(ctx, "pokemonCare")
   local handle = assert(care:activeHandle(), "the trade application owns its child")

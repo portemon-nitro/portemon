@@ -75,7 +75,7 @@ local STREAK_FALL_DISTANCE = 128
 ---@param value number
 ---@return integer
 local function u32(value)
-  return value % U32
+  return value % U32 --[[@as integer]]
 end
 
 ---@param a integer
@@ -100,16 +100,13 @@ local function newMtRandom(seed)
     state[cycle + 1] = u32(mul32(1812433253, bit.bxor(previous, bit.rshift(previous, 30))) + cycle)
   end
   local index = 624
-  return function()
+  local function nextU32()
     if index >= 624 then
       for position = 1, 624 do
         local nextState = state[position % 624 + 1]
         local value = bit.bor(bit.band(state[position], 0x80000000), bit.band(nextState, 0x7FFFFFFF))
-        local twisted = bit.bxor(
-          state[(position + 396) % 624 + 1],
-          bit.rshift(value, 1),
-          bit.band(value, 1) == 1 and 0x9908B0DF or 0
-        )
+        local twisted =
+          bit.bxor(state[(position + 396) % 624 + 1], bit.rshift(value, 1), bit.band(value, 1) == 1 and 0x9908B0DF or 0)
         state[position] = u32(twisted)
       end
       index = 0
@@ -122,6 +119,7 @@ local function newMtRandom(seed)
     value = bit.bxor(value, bit.rshift(value, 18))
     return u32(value)
   end
+  return nextU32
 end
 
 ---@param value number
@@ -287,7 +285,7 @@ end
 ---@field private _spriteTicks table<integer, integer>
 ---@field private _streakFall NpcTradeStreakFall?
 ---@field private _pictures { subject: string, visible: boolean, x: number, y: number }[]
----@field private _pulses { running: boolean, stopping: boolean?, direction: integer, timer: integer, nextSlot: integer, slots: table<integer, table> }
+---@field private _pulses { running: boolean, stopping: boolean?, direction: integer, timer: integer, nextSlot: integer, slots: table<integer, { index: integer?, frames: integer }> }
 ---@field private _zoomScale number
 ---@field private _zoomSpeed number
 ---@field private _zoomCenterY integer
@@ -1318,280 +1316,292 @@ local scenes = NpcTradeState.SCENES
 
 -- Scene 0 (trade_sequence_send.c): the sent record's picture and its two
 -- lines, then a brightness flash, the burst sprite and the bouncing ball.
+local function enterSendScene(self)
+  self._pictures = { { subject = "outgoing", visible = true, x = 128, y = 80 } }
+end
+
+local function stepSendScene(self)
+  self._timer = self._timer + 1
+  local state = self._state
+  if state == 0 then
+    -- WaitFadeIn: sixteen-frame fade, then the send effect appears.
+    if self._timer >= 16 then
+      self:_showSprite(2)
+      self._state, self._timer = 1, 0
+    end
+  elseif state == 1 then
+    -- ShowMessages / PRINT_SENDING (timer > 10).
+    if self._timer > 10 then
+      self._messageId = 0
+      self._state, self._timer = 2, 0
+    end
+  elseif state == 2 then
+    -- PRINT_BYE_BYE (timer > 60) with the sent record's cry.
+    if self._timer > 60 then
+      self._messageId = 1
+      self:_cry("outgoing")
+      self._state, self._timer = 3, 0
+    end
+  elseif state == 3 then
+    -- CLEAR (timer > 60).
+    if self._timer > 60 then
+      self._messageId = nil
+      self._state, self._timer = 4, 0
+    end
+  elseif state == 4 then
+    -- WAIT_END (timer > 20).
+    if self._timer > 20 then
+      self._state, self._timer = 5, 0
+    end
+  elseif state == 5 then
+    -- ReplaceMonWithModel / START_FLASH.
+    self:_sound("SEQ_SE_DP_KOUKAN01")
+    self:_startBrightness(12)
+    self._state, self._timer = 6, 0
+  elseif state == 6 then
+    -- WAIT_FLASH: the picture goes, the burst replaces it.
+    if self:_brightnessDone() then
+      for _, picture in ipairs(self._pictures) do
+        picture.visible = false
+      end
+      self:_showSprite(1)
+      self._state, self._timer = 7, 0
+    end
+  elseif state == 7 then
+    -- WAIT_BALL_ANIM: the burst animation ends, the model appears.
+    if self._timer >= EFFECT_SEQUENCE_TICKS then
+      self._balloon.visible = true
+      self:_startBrightness(16)
+      self._bounce = { speed = 0x2F60, bounces = 0, spin = 0, landed = false, frames = 0 }
+      self._state, self._timer = 8, 0
+    end
+  elseif state == 8 then
+    self:_stepSendBounce()
+    -- WAIT_BOUNCES: two bounces (or a landed model) start the fade-out.
+    if self._bounce == nil or self._bounce.bounces >= 2 then
+      self._state, self._timer = 9, 0
+    end
+  elseif state == 9 then
+    self:_stepSendBounce()
+    -- WAIT_FADE_OUT: the source's 24-frame fade, then the bounce settles.
+    if self._timer >= 24 and self._bounce == nil then
+      return true
+    end
+  end
+  return false
+end
+
 scenes[1] = {
   phase = PokemonCareInterface.TRADE_PHASES.SEND,
   sprites = {
     { sequence = 0, x = 128, y = 90 },
     { sequence = 1, x = 128, y = 100 },
   },
-  enter = function(self)
-    self._pictures = { { subject = "outgoing", visible = true, x = 128, y = 80 } }
-  end,
-  step = function(self)
-    self._timer = self._timer + 1
-    local state = self._state
-    if state == 0 then
-      -- WaitFadeIn: sixteen-frame fade, then the send effect appears.
-      if self._timer >= 16 then
-        self:_showSprite(2)
-        self._state, self._timer = 1, 0
-      end
-    elseif state == 1 then
-      -- ShowMessages / PRINT_SENDING (timer > 10).
-      if self._timer > 10 then
-        self._messageId = 0
-        self._state, self._timer = 2, 0
-      end
-    elseif state == 2 then
-      -- PRINT_BYE_BYE (timer > 60) with the sent record's cry.
-      if self._timer > 60 then
-        self._messageId = 1
-        self:_cry("outgoing")
-        self._state, self._timer = 3, 0
-      end
-    elseif state == 3 then
-      -- CLEAR (timer > 60).
-      if self._timer > 60 then
-        self._messageId = nil
-        self._state, self._timer = 4, 0
-      end
-    elseif state == 4 then
-      -- WAIT_END (timer > 20).
-      if self._timer > 20 then
-        self._state, self._timer = 5, 0
-      end
-    elseif state == 5 then
-      -- ReplaceMonWithModel / START_FLASH.
-      self:_sound("SEQ_SE_DP_KOUKAN01")
-      self:_startBrightness(12)
-      self._state, self._timer = 6, 0
-    elseif state == 6 then
-      -- WAIT_FLASH: the picture goes, the burst replaces it.
-      if self:_brightnessDone() then
-        for _, picture in ipairs(self._pictures) do
-          picture.visible = false
-        end
-        self:_showSprite(1)
-        self._state, self._timer = 7, 0
-      end
-    elseif state == 7 then
-      -- WAIT_BALL_ANIM: the burst animation ends, the model appears.
-      if self._timer >= EFFECT_SEQUENCE_TICKS then
-        self._balloon.visible = true
-        self:_startBrightness(16)
-        self._bounce = { speed = 0x2F60, bounces = 0, spin = 0, landed = false, frames = 0 }
-        self._state, self._timer = 8, 0
-      end
-    elseif state == 8 then
-      self:_stepSendBounce()
-      -- WAIT_BOUNCES: two bounces (or a landed model) start the fade-out.
-      if self._bounce == nil or self._bounce.bounces >= 2 then
-        self._state, self._timer = 9, 0
-      end
-    elseif state == 9 then
-      self:_stepSendBounce()
-      -- WAIT_FADE_OUT: the source's 24-frame fade, then the bounce settles.
-      if self._timer >= 24 and self._bounce == nil then
-        return true
-      end
-    end
-    return false
-  end,
+  enter = enterSendScene,
+  step = stepSendScene,
 }
 
 -- Scene 1 (trade_sequence_depart.c): the ball flies off the top screen, rises
 -- through the bottom one while the light streaks fall, then the screen scrolls
 -- and fades.
+local function enterDepartScene(self)
+  self._camera.angleX = 0xEBE0
+  self._balloon.x = 0
+  self._balloon.y = -55.5
+  self._balloon.z = 0
+  self._balloon.scale = 1.75
+  self._scrollY = -256
+  self:_startZoom(0x480, FX32_ONE, 0, 1, 0x128)
+  self:_startPulses(1)
+end
+
+local function stepDepartScene(self)
+  self._timer = self._timer + 1
+  local state = self._state
+  if state == 0 then
+    -- WaitBgZoom: the eight-frame fade and the zoom task.
+    local zoom = self._zoom
+    if self._timer >= 8 and zoom ~= nil and zoom.finished == true then
+      self._state, self._timer = 1, 0
+    end
+  elseif state == 1 then
+    -- FlyOffTopScreen / INIT then DELAY (timer > 8): the ball fades in and
+    -- starts its flight.
+    if self._timer > 8 then
+      self:_startAlphaFade(0, 31, 24)
+      self._balloon.visible = true
+      self._flight = {
+        stage = "appear",
+        center = { x = 0, y = -55.5 * FX32_ONE, z = 0 },
+        height = -55.5 * FX32_ONE,
+        speed = (-8 * FX32_ONE + 55.5 * FX32_ONE) / 30,
+        acceleration = 0,
+        radiusX = 0,
+        radiusZ = 0,
+        radiusXStep = 0,
+        radiusZStep = 0,
+        radiusXTarget = 0,
+        radiusZTarget = 0,
+        radiusFrames = 0,
+        angle = 0,
+        angleSpeed = 0x4000,
+        angleSpeedStep = 0,
+        angleSpeedTarget = 0,
+        angleSpeedFrames = 0,
+        spins = {
+          { speed = 0, step = 0, target = 0, frames = 0 },
+          { speed = 0, step = 0, target = 0, frames = 0 },
+          { speed = 0, step = 0, target = 0, frames = 0 },
+        },
+        outOfView = false,
+        flyingAway = false,
+        frames = 30,
+      }
+      self:_setFlightAngleSpeed(self._flight, 0xD00, 30)
+      self:_setFlightRadius(self._flight, 41 * FX32_ONE, 20 * FX32_ONE, 30)
+      self._state, self._timer = 2, 0
+    end
+  elseif state == 2 then
+    self:_stepDepartFlight()
+    -- WAIT_FLYING_AWAY.
+    if self._flight ~= nil and self._flight.flyingAway == true then
+      self._state = 3
+    end
+  elseif state == 3 then
+    self:_stepDepartFlight()
+    -- WAIT_OUT_OF_VIEW.
+    if self._flight ~= nil and self._flight.outOfView == true then
+      self._state = 4
+    end
+  elseif state == 4 then
+    -- SWAP_SCREENS: the bottom screen's map becomes the top screen's.
+    self._scrollY = -256
+    self._state, self._timer = 5, 0
+  elseif state == 5 then
+    -- FlyThroughBottomScreen / RESTART_FLIGHT: the ball rises from below
+    -- with an orthographic camera and twice its scale.
+    local flight = self._flight
+    assert(flight ~= nil, "the restart follows the departed flight")
+    flight.stage = "rise"
+    flight.outOfView = false
+    self._camera.angleX = 0
+    self._camera.angleY = 0
+    self._camera.perspectiveType = 1
+    flight.speed = 0x58CC
+    flight.height = 0x58CC - 128 * FX32_ONE
+    flight.frames = 20
+    self._balloon.y = flight.height / FX32_ONE
+    self:_setFlightRadius(flight, 0, 0, 20)
+    self:_setFlightSpin(flight, 2, -flight.angleSpeed, 30)
+    self:_setFlightSpin(flight, 3, 0x100, 50)
+    self._balloon.scale = 2
+    self._balloon.visible = true
+    self._state, self._timer = 6, 0
+  elseif state == 6 then
+    self:_stepDepartFlight()
+    -- STOP_PULSES (timer > 2).
+    if self._timer > 2 then
+      self:_stopPulses()
+      self._state, self._timer = 7, 0
+    end
+  elseif state == 7 then
+    self:_stepDepartFlight()
+    -- WAIT_PULSES: the scroll starts once the pulses drained.
+    if not self._pulses.running then
+      self:_startDepartScroll(-256)
+      self._state, self._timer = 8, 0
+    end
+  elseif state == 8 then
+    self:_stepDepartFlight()
+    -- WAIT_OUT_OF_VIEW: the ball leaves the view at frame forty.
+    if self._timer == 40 then
+      self:_sound("SEQ_SE_DP_KOUKAN10")
+    end
+    if self._flight == nil or self._flight.outOfView == true then
+      self._state, self._timer = 9, 0
+    end
+  elseif state == 9 then
+    -- WAIT_FADE_OUT: the four-frame white fade.
+    if self._timer >= 4 then
+      return true
+    end
+  end
+  return false
+end
+
 scenes[2] = {
   phase = PokemonCareInterface.TRADE_PHASES.DEPART,
   scroll = "depart",
-  enter = function(self)
-    self._camera.angleX = 0xEBE0
-    self._balloon.x = 0
-    self._balloon.y = -55.5
-    self._balloon.z = 0
-    self._balloon.scale = 1.75
-    self._scrollY = -256
-    self:_startZoom(0x480, FX32_ONE, 0, 1, 0x128)
-    self:_startPulses(1)
-  end,
-  step = function(self)
-    self._timer = self._timer + 1
-    local state = self._state
-    if state == 0 then
-      -- WaitBgZoom: the eight-frame fade and the zoom task.
-      local zoom = self._zoom
-      if self._timer >= 8 and zoom ~= nil and zoom.finished == true then
-        self._state, self._timer = 1, 0
-      end
-    elseif state == 1 then
-      -- FlyOffTopScreen / INIT then DELAY (timer > 8): the ball fades in and
-      -- starts its flight.
-      if self._timer > 8 then
-        self:_startAlphaFade(0, 31, 24)
-        self._balloon.visible = true
-        self._flight = {
-          stage = "appear",
-          center = { x = 0, y = -55.5 * FX32_ONE, z = 0 },
-          height = -55.5 * FX32_ONE,
-          speed = (-8 * FX32_ONE + 55.5 * FX32_ONE) / 30,
-          acceleration = 0,
-          radiusX = 0,
-          radiusZ = 0,
-          radiusXStep = 0,
-          radiusZStep = 0,
-          radiusXTarget = 0,
-          radiusZTarget = 0,
-          radiusFrames = 0,
-          angle = 0,
-          angleSpeed = 0x4000,
-          angleSpeedStep = 0,
-          angleSpeedTarget = 0,
-          angleSpeedFrames = 0,
-          spins = {
-            { speed = 0, step = 0, target = 0, frames = 0 },
-            { speed = 0, step = 0, target = 0, frames = 0 },
-            { speed = 0, step = 0, target = 0, frames = 0 },
-          },
-          outOfView = false,
-          flyingAway = false,
-          frames = 30,
-        }
-        self:_setFlightAngleSpeed(self._flight, 0xD00, 30)
-        self:_setFlightRadius(self._flight, 41 * FX32_ONE, 20 * FX32_ONE, 30)
-        self._state, self._timer = 2, 0
-      end
-    elseif state == 2 then
-      self:_stepDepartFlight()
-      -- WAIT_FLYING_AWAY.
-      if self._flight ~= nil and self._flight.flyingAway == true then
-        self._state = 3
-      end
-    elseif state == 3 then
-      self:_stepDepartFlight()
-      -- WAIT_OUT_OF_VIEW.
-      if self._flight ~= nil and self._flight.outOfView == true then
-        self._state = 4
-      end
-    elseif state == 4 then
-      -- SWAP_SCREENS: the bottom screen's map becomes the top screen's.
-      self._scrollY = -256
-      self._state, self._timer = 5, 0
-    elseif state == 5 then
-      -- FlyThroughBottomScreen / RESTART_FLIGHT: the ball rises from below
-      -- with an orthographic camera and twice its scale.
-      local flight = self._flight
-      assert(flight ~= nil, "the restart follows the departed flight")
-      flight.stage = "rise"
-      flight.outOfView = false
-      self._camera.angleX = 0
-      self._camera.angleY = 0
-      self._camera.perspectiveType = 1
-      flight.speed = 0x58CC
-      flight.height = 0x58CC - 128 * FX32_ONE
-      flight.frames = 20
-      self._balloon.y = flight.height / FX32_ONE
-      self:_setFlightRadius(flight, 0, 0, 20)
-      self:_setFlightSpin(flight, 2, -flight.angleSpeed, 30)
-      self:_setFlightSpin(flight, 3, 0x100, 50)
-      self._balloon.scale = 2
-      self._balloon.visible = true
-      self._state, self._timer = 6, 0
-    elseif state == 6 then
-      self:_stepDepartFlight()
-      -- STOP_PULSES (timer > 2).
-      if self._timer > 2 then
-        self:_stopPulses()
-        self._state, self._timer = 7, 0
-      end
-    elseif state == 7 then
-      self:_stepDepartFlight()
-      -- WAIT_PULSES: the scroll starts once the pulses drained.
-      if not self._pulses.running then
-        self:_startDepartScroll(-256)
-        self._state, self._timer = 8, 0
-      end
-    elseif state == 8 then
-      self:_stepDepartFlight()
-      -- WAIT_OUT_OF_VIEW: the ball leaves the view at frame forty.
-      if self._timer == 40 then
-        self:_sound("SEQ_SE_DP_KOUKAN10")
-      end
-      if self._flight == nil or self._flight.outOfView == true then
-        self._state, self._timer = 9, 0
-      end
-    elseif state == 9 then
-      -- WAIT_FADE_OUT: the four-frame white fade.
-      if self._timer >= 4 then
-        return true
-      end
-    end
-    return false
-  end,
+  enter = enterDepartScene,
+  step = stepDepartScene,
 }
 
 -- Scene 2 (trade_sequence_recede.c): the ball spirals across the top screen,
 -- shrinks into the distance; then the effect sprite plays and the scene fades.
+local function enterRecedeScene(self)
+  self._camera.angleX = 0x18E3
+  self._camera.fov = 0x7D2
+end
+
+local function stepRecedeScene(self)
+  self._timer = self._timer + 1
+  local state = self._state
+  if state == 0 then
+    -- Run / DELAY (timer > 10): the flight starts.
+    if self._timer > 10 then
+      self:_sound("SEQ_SE_DP_KOUKAN06")
+      self._balloon.rotation.x = 0x2000
+      self._balloon.rotation.y = -0x2000
+      self._balloon.scale = 1
+      self._balloon.visible = true
+      self._flight = {
+        stage = "enterView",
+        center = { x = 0, y = -0xAF200, z = 226 * FX32_ONE },
+        angle = -10128,
+        angleSpeed = -2736,
+        centerStepY = 0x134C4,
+        centerStepZ = -0xB2AA,
+        elapsed = 0,
+        timer = 0,
+        scale = FX32_ONE,
+        radiusX = 18.5 * FX32_ONE,
+        radiusY = 24.75 * FX32_ONE,
+        radiusXStep = 0,
+        radiusYStep = 0,
+        scaleStep = 0,
+        stepFrames = 0,
+      }
+      self._state, self._timer = 1, 0
+    end
+  elseif state == 1 then
+    self:_stepRecedeFlight()
+    -- WAIT_FLIGHT: the flight ends, the effect sprite appears.
+    if self._flight == nil then
+      self:_sound("SEQ_SE_DP_KOUKAN07")
+      self:_showSprite(1)
+      self._state, self._timer = 2, 0
+    end
+  elseif state == 2 then
+    -- WAIT_SPRITE_ANIM.
+    if self._timer >= EFFECT_SEQUENCE_TICKS then
+      self._state, self._timer = 3, 0
+    end
+  elseif state == 3 then
+    -- WAIT_FADE_OUT (sixteen frames).
+    if self._timer >= 16 then
+      return true
+    end
+  end
+  return false
+end
+
 scenes[3] = {
   phase = PokemonCareInterface.TRADE_PHASES.RECEDE,
   sprites = {
     { sequence = 3, x = 128, y = 96 },
   },
-  enter = function(self)
-    self._camera.angleX = 0x18E3
-    self._camera.fov = 0x7D2
-  end,
-  step = function(self)
-    self._timer = self._timer + 1
-    local state = self._state
-    if state == 0 then
-      -- Run / DELAY (timer > 10): the flight starts.
-      if self._timer > 10 then
-        self:_sound("SEQ_SE_DP_KOUKAN06")
-        self._balloon.rotation.x = 0x2000
-        self._balloon.rotation.y = -0x2000
-        self._balloon.scale = 1
-        self._balloon.visible = true
-        self._flight = {
-          stage = "enterView",
-          center = { x = 0, y = -0xAF200, z = 226 * FX32_ONE },
-          angle = -10128,
-          angleSpeed = -2736,
-          centerStepY = 0x134C4,
-          centerStepZ = -0xB2AA,
-          elapsed = 0,
-          timer = 0,
-          scale = FX32_ONE,
-          radiusX = 18.5 * FX32_ONE,
-          radiusY = 24.75 * FX32_ONE,
-          radiusXStep = 0,
-          radiusYStep = 0,
-          scaleStep = 0,
-          stepFrames = 0,
-        }
-        self._state, self._timer = 1, 0
-      end
-    elseif state == 1 then
-      self:_stepRecedeFlight()
-      -- WAIT_FLIGHT: the flight ends, the effect sprite appears.
-      if self._flight == nil then
-        self:_sound("SEQ_SE_DP_KOUKAN07")
-        self:_showSprite(1)
-        self._state, self._timer = 2, 0
-      end
-    elseif state == 2 then
-      -- WAIT_SPRITE_ANIM.
-      if self._timer >= EFFECT_SEQUENCE_TICKS then
-        self._state, self._timer = 3, 0
-      end
-    elseif state == 3 then
-      -- WAIT_FADE_OUT (sixteen frames).
-      if self._timer >= 16 then
-        return true
-      end
-    end
-    return false
-  end,
+  enter = enterRecedeScene,
+  step = stepRecedeScene,
 }
 
 -- Scene 3 (trade_sequence_exchange.c): the two pictures slide past each other,
@@ -1603,44 +1613,48 @@ scenes[3] = {
 -- screen y is (512 - (offset & 0x1FF)) mod 512: the sent picture rises from
 -- y=384 to y=48 over the sixty slide frames and the received one from y=432,
 -- and the source's own final SetMonPicPositions(-48, -48) lands both at y=48.
+local function enterExchangeScene(self)
+  self._pictures = {
+    { subject = "incoming", visible = true, x = 56, y = 432 },
+    { subject = "outgoing", visible = true, x = 200, y = 384 },
+  }
+end
+
+local function stepExchangeScene(self)
+  self._timer = self._timer + 1
+  local state = self._state
+  if state == 0 then
+    -- Slide / WAIT_FADE_IN (eight frames).
+    if self._timer >= 8 then
+      self._slide = { frames = 60, sentY = -384 * FX32_ONE, receivedY = 80 * FX32_ONE }
+      self._state, self._timer = 1, 0
+    end
+  elseif state == 1 then
+    local slide = assert(self._slide, "the slide state owns its task")
+    local frames = assert(slide.frames --[[@as integer]])
+    if frames > 0 then
+      slide.frames = frames - 1
+      slide.sentY = assert(slide.sentY --[[@as number]]) + 0x5999
+      slide.receivedY = assert(slide.receivedY --[[@as number]]) - 0x2222
+      self:_placeExchangePictures(slide.sentY, slide.receivedY)
+    else
+      self:_placeExchangePictures(-48 * FX32_ONE, -48 * FX32_ONE)
+      self:_sound("SEQ_SE_DP_KOUKAN03")
+      self._state, self._timer = 2, 0
+    end
+  elseif state == 2 then
+    -- WAIT_FADE_OUT (sixteen frames).
+    if self._timer >= 16 then
+      return true
+    end
+  end
+  return false
+end
+
 scenes[4] = {
   phase = PokemonCareInterface.TRADE_PHASES.EXCHANGE,
-  enter = function(self)
-    self._pictures = {
-      { subject = "incoming", visible = true, x = 56, y = 432 },
-      { subject = "outgoing", visible = true, x = 200, y = 384 },
-    }
-  end,
-  step = function(self)
-    self._timer = self._timer + 1
-    local state = self._state
-    if state == 0 then
-      -- Slide / WAIT_FADE_IN (eight frames).
-      if self._timer >= 8 then
-        self._slide = { frames = 60, sentY = -384 * FX32_ONE, receivedY = 80 * FX32_ONE }
-        self._state, self._timer = 1, 0
-      end
-    elseif state == 1 then
-      local slide = assert(self._slide, "the slide state owns its task")
-      local frames = assert(slide.frames --[[@as integer]])
-      if frames > 0 then
-        slide.frames = frames - 1
-        slide.sentY = assert(slide.sentY --[[@as number]]) + 0x5999
-        slide.receivedY = assert(slide.receivedY --[[@as number]]) - 0x2222
-        self:_placeExchangePictures(slide.sentY, slide.receivedY)
-      else
-        self:_placeExchangePictures(-48 * FX32_ONE, -48 * FX32_ONE)
-        self:_sound("SEQ_SE_DP_KOUKAN03")
-        self._state, self._timer = 2, 0
-      end
-    elseif state == 2 then
-      -- WAIT_FADE_OUT (sixteen frames).
-      if self._timer >= 16 then
-        return true
-      end
-    end
-    return false
-  end,
+  enter = enterExchangeScene,
+  step = stepExchangeScene,
 }
 
 -- The exchange pictures' screen y from the source's background y offset
@@ -1663,252 +1677,264 @@ end
 
 -- Scene 4 (trade_sequence_approach.c): the effect sprite plays, then the ball
 -- spirals in from below and leaves the view.
+local function enterApproachScene(self)
+  self._camera.angleX = 0x18E3 + 0x1150
+  self._camera.fov = 0x7D2
+end
+
+local function stepApproachScene(self)
+  self._timer = self._timer + 1
+  local state = self._state
+  if state == 0 then
+    -- WAIT_FADE_IN (eight frames) then the sprite plays.
+    if self._timer >= 8 then
+      self:_showSprite(1)
+      self._state, self._timer = 1, 0
+    end
+  elseif state == 1 then
+    -- WAIT_SPRITE_ANIM: its end starts the flight.
+    if self._timer >= EFFECT_SEQUENCE_TICKS then
+      self:_sound("SEQ_SE_DP_KOUKAN05")
+      self._balloon.rotation.x = 0x2000
+      self._balloon.rotation.y = -0x2000
+      self._balloon.scale = 0.125
+      self._balloon.visible = true
+      self._flight = {
+        stage = "start",
+        center = { x = 0, y = 982.75 * FX32_ONE, z = -444 * FX32_ONE },
+        angle = -10128,
+        angleSpeed = -2736,
+        centerStepY = -0x10D3A,
+        centerStepZ = 0x936D,
+        frames = 0,
+        timer = 0,
+        scale = 0.125 * FX32_ONE,
+        radiusX = 0.5 * FX32_ONE,
+        radiusY = 0.5 * FX32_ONE,
+        radiusXStep = (74 * 1024 - 0.5 * FX32_ONE) / 12,
+        radiusYStep = (99 * 1024 - 0.5 * FX32_ONE) / 12,
+        scaleStep = (FX32_ONE - 0.125 * FX32_ONE) / 12,
+        radiusXTarget = 74 * 1024,
+        radiusYTarget = 99 * 1024,
+        scaleTarget = FX32_ONE,
+        stepFrames = 12,
+      }
+      self._state, self._timer = 2, 0
+    end
+  elseif state == 2 then
+    self:_stepApproachFlight()
+    -- WAIT_FLIGHT.
+    if self._flight == nil then
+      self._state, self._timer = 3, 0
+    end
+  elseif state == 3 then
+    -- WAIT_FADE_OUT (sixteen frames).
+    if self._timer >= 16 then
+      return true
+    end
+  end
+  return false
+end
+
 scenes[5] = {
   phase = PokemonCareInterface.TRADE_PHASES.APPROACH,
   sprites = {
     { sequence = 3, x = 128, y = 96 },
   },
-  enter = function(self)
-    self._camera.angleX = 0x18E3 + 0x1150
-    self._camera.fov = 0x7D2
-  end,
-  step = function(self)
-    self._timer = self._timer + 1
-    local state = self._state
-    if state == 0 then
-      -- WAIT_FADE_IN (eight frames) then the sprite plays.
-      if self._timer >= 8 then
-        self:_showSprite(1)
-        self._state, self._timer = 1, 0
-      end
-    elseif state == 1 then
-      -- WAIT_SPRITE_ANIM: its end starts the flight.
-      if self._timer >= EFFECT_SEQUENCE_TICKS then
-        self:_sound("SEQ_SE_DP_KOUKAN05")
-        self._balloon.rotation.x = 0x2000
-        self._balloon.rotation.y = -0x2000
-        self._balloon.scale = 0.125
-        self._balloon.visible = true
-        self._flight = {
-          stage = "start",
-          center = { x = 0, y = 982.75 * FX32_ONE, z = -444 * FX32_ONE },
-          angle = -10128,
-          angleSpeed = -2736,
-          centerStepY = -0x10D3A,
-          centerStepZ = 0x936D,
-          frames = 0,
-          timer = 0,
-          scale = 0.125 * FX32_ONE,
-          radiusX = 0.5 * FX32_ONE,
-          radiusY = 0.5 * FX32_ONE,
-          radiusXStep = (74 * 1024 - 0.5 * FX32_ONE) / 12,
-          radiusYStep = (99 * 1024 - 0.5 * FX32_ONE) / 12,
-          scaleStep = (FX32_ONE - 0.125 * FX32_ONE) / 12,
-          radiusXTarget = 74 * 1024,
-          radiusYTarget = 99 * 1024,
-          scaleTarget = FX32_ONE,
-          stepFrames = 12,
-        }
-        self._state, self._timer = 2, 0
-      end
-    elseif state == 2 then
-      self:_stepApproachFlight()
-      -- WAIT_FLIGHT.
-      if self._flight == nil then
-        self._state, self._timer = 3, 0
-      end
-    elseif state == 3 then
-      -- WAIT_FADE_OUT (sixteen frames).
-      if self._timer >= 16 then
-        return true
-      end
-    end
-    return false
-  end,
+  enter = enterApproachScene,
+  step = stepApproachScene,
 }
 
 -- Scene 5 (trade_sequence_arrive.c): the spinning ball lands, the map scrolls
 -- into place, the pulses walk, and the background zooms out.
+local function enterArriveScene(self)
+  self._camera.perspectiveType = 1
+  self._balloon.x = 0
+  self._balloon.y = 140
+  self._balloon.z = 0
+  self._balloon.scale = 2
+  self._balloon.visible = true
+  self._scrollY = -384
+end
+
+local function stepArriveScene(self)
+  self._timer = self._timer + 1
+  self._balloon.rotation.y = self._balloon.rotation.y + 0x1000
+  local state = self._state
+  if state == 0 then
+    -- LowerAndFade / WAIT_FADE_IN: the lower task starts.
+    if self._timer >= 8 then
+      self._lower = {
+        position = self._balloon.y,
+        step = (50 - self._balloon.y) * FX32_ONE / 16,
+        frames = 16,
+      }
+      self._state, self._timer = 1, 0
+    end
+  elseif state == 1 then
+    self:_stepArriveLower()
+    -- DELAY (timer > 8): the map scrolls into place.
+    if self._timer > 8 then
+      self:_startArriveScroll(-384)
+      self._state, self._timer = 2, 0
+    end
+  elseif state == 2 then
+    self:_stepArriveLower()
+    -- WAIT_SCROLL: both tasks finished.
+    if self._scroll == nil and self._lower == nil then
+      self._state, self._timer = 3, 0
+    end
+  elseif state == 3 then
+    -- START_PULSES (direction -1).
+    self:_startPulses(-1)
+    self._state, self._timer = 4, 0
+  elseif state == 4 then
+    -- DELAY_FADE (timer > 30): the ball fades out.
+    if self._timer > 30 then
+      self:_startAlphaFade(31, 0, 40)
+      self._state, self._timer = 5, 0
+    end
+  elseif state == 5 then
+    -- WAIT_ALPHA_FADE.
+    if self._fade == nil then
+      self:_stopPulses()
+      self._state, self._timer = 6, 0
+    end
+  elseif state == 6 then
+    -- WAIT_PULSES.
+    if not self._pulses.running then
+      self._state, self._timer = 7, 0
+    end
+  elseif state == 7 then
+    -- ZoomOut / ZOOM_START.
+    self:_startZoom(FX32_ONE, 1024, 1, 1, 0x128)
+    self._state, self._timer = 8, 0
+  elseif state == 8 then
+    -- ZOOM_DELAY (timer > 13) then the eight-frame fade to black.
+    if self._timer > 13 then
+      self._state, self._timer = 9, 0
+    end
+  elseif state == 9 then
+    -- ZOOM_WAIT_FADE_OUT.
+    local zoom = self._zoom
+    if self._timer >= 8 and zoom ~= nil and zoom.finished == true then
+      return true
+    end
+  end
+  return false
+end
+
 scenes[6] = {
   phase = PokemonCareInterface.TRADE_PHASES.ARRIVE,
   scroll = "arrive",
-  enter = function(self)
-    self._camera.perspectiveType = 1
-    self._balloon.x = 0
-    self._balloon.y = 140
-    self._balloon.z = 0
-    self._balloon.scale = 2
-    self._balloon.visible = true
-    self._scrollY = -384
-  end,
-  step = function(self)
-    self._timer = self._timer + 1
-    self._balloon.rotation.y = self._balloon.rotation.y + 0x1000
-    local state = self._state
-    if state == 0 then
-      -- LowerAndFade / WAIT_FADE_IN: the lower task starts.
-      if self._timer >= 8 then
-        self._lower = {
-          position = self._balloon.y,
-          step = (50 - self._balloon.y) * FX32_ONE / 16,
-          frames = 16,
-        }
-        self._state, self._timer = 1, 0
-      end
-    elseif state == 1 then
-      self:_stepArriveLower()
-      -- DELAY (timer > 8): the map scrolls into place.
-      if self._timer > 8 then
-        self:_startArriveScroll(-384)
-        self._state, self._timer = 2, 0
-      end
-    elseif state == 2 then
-      self:_stepArriveLower()
-      -- WAIT_SCROLL: both tasks finished.
-      if self._scroll == nil and self._lower == nil then
-        self._state, self._timer = 3, 0
-      end
-    elseif state == 3 then
-      -- START_PULSES (direction -1).
-      self:_startPulses(-1)
-      self._state, self._timer = 4, 0
-    elseif state == 4 then
-      -- DELAY_FADE (timer > 30): the ball fades out.
-      if self._timer > 30 then
-        self:_startAlphaFade(31, 0, 40)
-        self._state, self._timer = 5, 0
-      end
-    elseif state == 5 then
-      -- WAIT_ALPHA_FADE.
-      if self._fade == nil then
-        self:_stopPulses()
-        self._state, self._timer = 6, 0
-      end
-    elseif state == 6 then
-      -- WAIT_PULSES.
-      if not self._pulses.running then
-        self._state, self._timer = 7, 0
-      end
-    elseif state == 7 then
-      -- ZoomOut / ZOOM_START.
-      self:_startZoom(FX32_ONE, 1024, 1, 1, 0x128)
-      self._state, self._timer = 8, 0
-    elseif state == 8 then
-      -- ZOOM_DELAY (timer > 13) then the eight-frame fade to black.
-      if self._timer > 13 then
-        self._state, self._timer = 9, 0
-      end
-    elseif state == 9 then
-      -- ZOOM_WAIT_FADE_OUT.
-      local zoom = self._zoom
-      if self._timer >= 8 and zoom ~= nil and zoom.finished == true then
-        return true
-      end
-    end
-    return false
-  end,
+  enter = enterArriveScene,
+  step = stepArriveScene,
 }
 
 -- Scene 6 (trade_sequence_receive.c): the ball bounces in, the received record
 -- appears with its cry and its two lines, then the scene fades out.
+local function enterReceiveScene(self)
+  self._balloon.y = 19
+  self._balloon.z = 120
+  self._balloon.rotation.y = -0x1000
+  self._balloon.alpha = 0
+  self._pictures = { { subject = "incoming", visible = false, x = 128, y = 80 } }
+end
+
+local function stepReceiveScene(self)
+  self._timer = self._timer + 1
+  local state = self._state
+  if state == 0 then
+    -- WaitFadeIn (sixteen frames) then the receive effect.
+    if self._timer >= 16 then
+      self:_showSprite(2)
+      self._state, self._timer = 1, 0
+    end
+  elseif state == 1 then
+    -- ShowMon / START_BOUNCE.
+    self._balloon.visible = true
+    self._bounce = {
+      stage = "fadeIn",
+      alpha = 0,
+      alphaStep = 0x18CC,
+      alphaFrames = 20,
+      spinSpeed = 0x1000,
+      spinStep = 0,
+      spinTarget = 0,
+      spinFrames = 0,
+      speed = 0,
+      timer = 0,
+    }
+    self._state, self._timer = 2, 0
+  elseif state == 2 then
+    self:_stepReceiveBounce()
+    -- WAIT_BOUNCE: the burst takes over and the ball goes.
+    if self._bounce == nil then
+      self:_showSprite(1)
+      self._balloon.visible = false
+      self._state, self._timer = 3, 0
+    end
+  elseif state == 3 then
+    -- DELAY (timer > 10): the received picture appears with the flash.
+    if self._timer > 10 then
+      for _, picture in ipairs(self._pictures) do
+        picture.visible = true
+      end
+      self:_startBrightness(12)
+      self._state, self._timer = 4, 0
+    end
+  elseif state == 4 then
+    -- WAIT_BRIGHTNESS: the received record's cry.
+    if self:_brightnessDone() then
+      self:_cry("incoming")
+      self._state, self._timer = 5, 0
+    end
+  elseif state == 5 then
+    -- WAIT_END (timer > 30).
+    if self._timer > 30 then
+      self._state, self._timer = 6, 0
+    end
+  elseif state == 6 then
+    -- ShowMessages / PRINT_RECEIVED (timer > 10) with its fanfare.
+    if self._timer > 10 then
+      self._messageId = 2
+      self:_fanfare("SEQ_ME_SHINKAOME")
+      self._state, self._timer = 7, 0
+    end
+  elseif state == 7 then
+    -- PRINT_TAKE_CARE (sixty frames).
+    if self._timer >= 60 then
+      self._messageId = 3
+      self._state, self._timer = 8, 0
+    end
+  elseif state == 8 then
+    -- CLEAR (sixty frames).
+    if self._timer >= 60 then
+      self._messageId = nil
+      self._state, self._timer = 9, 0
+    end
+  elseif state == 9 then
+    -- FADE_OUT (timer > 10).
+    if self._timer > 10 then
+      self._state, self._timer = 10, 0
+    end
+  elseif state == 10 then
+    -- WAIT_FADE_OUT (sixteen frames).
+    if self._timer >= 16 then
+      return true
+    end
+  end
+  return false
+end
+
 scenes[7] = {
   phase = PokemonCareInterface.TRADE_PHASES.RECEIVE,
   sprites = {
     { sequence = 2, x = 128, y = 90 },
     { sequence = 1, x = 128, y = 100 },
   },
-  enter = function(self)
-    self._balloon.y = 19
-    self._balloon.z = 120
-    self._balloon.rotation.y = -0x1000
-    self._balloon.alpha = 0
-    self._pictures = { { subject = "incoming", visible = false, x = 128, y = 80 } }
-  end,
-  step = function(self)
-    self._timer = self._timer + 1
-    local state = self._state
-    if state == 0 then
-      -- WaitFadeIn (sixteen frames) then the receive effect.
-      if self._timer >= 16 then
-        self:_showSprite(2)
-        self._state, self._timer = 1, 0
-      end
-    elseif state == 1 then
-      -- ShowMon / START_BOUNCE.
-      self._balloon.visible = true
-      self._bounce = {
-        stage = "fadeIn",
-        alpha = 0,
-        alphaStep = 0x18CC,
-        alphaFrames = 20,
-        spinSpeed = 0x1000,
-        spinStep = 0,
-        spinTarget = 0,
-        spinFrames = 0,
-        speed = 0,
-        timer = 0,
-      }
-      self._state, self._timer = 2, 0
-    elseif state == 2 then
-      self:_stepReceiveBounce()
-      -- WAIT_BOUNCE: the burst takes over and the ball goes.
-      if self._bounce == nil then
-        self:_showSprite(1)
-        self._balloon.visible = false
-        self._state, self._timer = 3, 0
-      end
-    elseif state == 3 then
-      -- DELAY (timer > 10): the received picture appears with the flash.
-      if self._timer > 10 then
-        for _, picture in ipairs(self._pictures) do
-          picture.visible = true
-        end
-        self:_startBrightness(12)
-        self._state, self._timer = 4, 0
-      end
-    elseif state == 4 then
-      -- WAIT_BRIGHTNESS: the received record's cry.
-      if self:_brightnessDone() then
-        self:_cry("incoming")
-        self._state, self._timer = 5, 0
-      end
-    elseif state == 5 then
-      -- WAIT_END (timer > 30).
-      if self._timer > 30 then
-        self._state, self._timer = 6, 0
-      end
-    elseif state == 6 then
-      -- ShowMessages / PRINT_RECEIVED (timer > 10) with its fanfare.
-      if self._timer > 10 then
-        self._messageId = 2
-        self:_fanfare("SEQ_ME_SHINKAOME")
-        self._state, self._timer = 7, 0
-      end
-    elseif state == 7 then
-      -- PRINT_TAKE_CARE (sixty frames).
-      if self._timer >= 60 then
-        self._messageId = 3
-        self._state, self._timer = 8, 0
-      end
-    elseif state == 8 then
-      -- CLEAR (sixty frames).
-      if self._timer >= 60 then
-        self._messageId = nil
-        self._state, self._timer = 9, 0
-      end
-    elseif state == 9 then
-      -- FADE_OUT (timer > 10).
-      if self._timer > 10 then
-        self._state, self._timer = 10, 0
-      end
-    elseif state == 10 then
-      -- WAIT_FADE_OUT (sixteen frames).
-      if self._timer >= 16 then
-        return true
-      end
-    end
-    return false
-  end,
+  enter = enterReceiveScene,
+  step = stepReceiveScene,
 }
 
 return NpcTradeState

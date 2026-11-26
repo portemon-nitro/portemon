@@ -154,8 +154,7 @@ local function playSound(audio, sound)
 end
 
 ---@param audio table<string, unknown>
----@param query { isCryFinished: fun(self: table<string, unknown>): boolean }|nil
----@return boolean
+---@return boolean whether the source cry finished
 local function cryFinished(audio)
   local query = audio --[[@as { isCryFinished: fun(self: table): boolean }]]
   if type(query.isCryFinished) ~= "function" then

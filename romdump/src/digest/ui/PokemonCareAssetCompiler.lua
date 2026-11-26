@@ -74,7 +74,7 @@ end
 ---@param bytes string
 ---@param role string
 ---@param decodeOptions table<string, unknown>?
----@return table
+---@return table<string, unknown>
 local function decode(kind, bytes, role, decodeOptions)
   return UiAssetHelpers.decode(kind, bytes, role, "hatch", sourceError, decodeOptions)
 end
@@ -171,7 +171,7 @@ end
 ---@param role string frame path role of this sequence
 ---@param directory string staged directory the frames live under
 ---@param assets table<string, string>
----@param allowBlank boolean whether blank source frames are published as marks
+---@param allowBlank boolean? whether blank source frames are published as marks
 ---@return table<string, unknown> { frames = ... }
 local function compileAnimationFrames(charData, palette, cellData, sequence, role, directory, assets, allowBlank)
   local frames = {}
@@ -181,7 +181,7 @@ local function compileAnimationFrames(charData, palette, cellData, sequence, rol
     if type(duration) ~= "number" or duration % 1 ~= 0 or duration < 0 then
       sourceError("frame timing is invalid", { role = role, frame = frameIndex - 1 })
     end
-    if allowBlank and isBlankFrame(cellData, sourceFrame) then
+    if allowBlank == true and isBlankFrame(cellData, sourceFrame) then
       frames[frameIndex] = { blank = true, durationTicks = duration }
     else
       local ok, rendered = pcall(
@@ -246,8 +246,7 @@ end
 ---@param assets table<string, string>
 ---@return table<string, unknown>
 local function compileSpriteGroup(archive, group, role, dependencies, assets)
-  local charData, palette, cellData, animation =
-    decodeSpriteGroup(archive, group, role, "hatch-art", dependencies)
+  local charData, palette, cellData, animation = decodeSpriteGroup(archive, group, role, "hatch-art", dependencies)
   local sequenceNo = assert(group.sequence --[[@as integer]], "the sprite group names its sequence")
   return compileSequence(animation, sequenceNo, role, PokemonCareCache.hatchDir(), charData, palette, cellData, assets)
 end
@@ -297,9 +296,8 @@ end
 ---@param bankId integer
 ---@param messageId integer
 ---@param role string
----@param dependencies table<string, unknown>[]
 ---@return { id: integer, text: string, align: string? }
-local function compileMessage(bank, bankId, messageId, role, dependencies)
+local function compileMessage(bank, bankId, messageId, role)
   local tokens = UiAssetHelpers.messageTokens(bank, bankId, messageId, role, "hatch", sourceError)
   local pieces = {}
   local align = nil
@@ -374,10 +372,11 @@ local function compileParticles(romFs, dependencies, assets)
   for _, variant in ipairs({ "egg", "manaphy" }) do
     local memberId = assert(source[variant].member --[[@as integer]])
     local bytes = readMember(archive, memberId, "particle-" .. variant, dependencies, "hatch-particles")
+    local function particleTexturePath(textureId)
+      return string.format("%s/particle-%s-%d.png", PokemonCareCache.hatchDir(), variant, textureId)
+    end
     local compiled, compileErr = SplEmitterCompiler.compile(bytes, {
-      texturePath = function(textureId)
-        return string.format("%s/particle-%s-%d.png", PokemonCareCache.hatchDir(), variant, textureId)
-      end,
+      texturePath = particleTexturePath,
     })
     if compiled == nil then
       sourceError("particle resource does not compile", {
@@ -386,7 +385,9 @@ local function compileParticles(romFs, dependencies, assets)
       })
     end
     assert(compiled ~= nil, "uncompilable particle resources fail above")
-    for path, bytesOut in pairs(compiled.files --[[@as table<string, string> ]]) do
+    for path, bytesOut in
+      pairs(compiled.files --[[@as table<string, string> ]])
+    do
       assets[path] = bytesOut
     end
     local particles = compiled.particles --[[@as table<string, unknown> ]]
@@ -442,16 +443,10 @@ function PokemonCareAssetCompiler.compileHatch(romFs)
       egg = egg,
       bars = bars,
       messages = {
-        hatched = compileMessage(bank, messages.memberId, messages.hatched, "hatched", dependencies),
-        nicknameQuestion = compileMessage(
-          bank,
-          messages.memberId,
-          messages.nicknameQuestion,
-          "nickname-question",
-          dependencies
-        ),
-        yes = compileMessage(bank, messages.memberId, messages.yes, "yes", dependencies),
-        no = compileMessage(bank, messages.memberId, messages.no, "no", dependencies),
+        hatched = compileMessage(bank, messages.memberId, messages.hatched, "hatched"),
+        nicknameQuestion = compileMessage(bank, messages.memberId, messages.nicknameQuestion, "nickname-question"),
+        yes = compileMessage(bank, messages.memberId, messages.yes, "yes"),
+        no = compileMessage(bank, messages.memberId, messages.no, "no"),
       },
       particles = compileParticles(romFs, dependencies, assets),
     }
@@ -579,7 +574,7 @@ local function compileTradeLayer(archive, layerSource, role, dependencies, asset
       local offsets = layerSource.paletteOffsets --[[@as table<string, integer> ]]
       local offsetBytes = assert(offsets[assert(variant, "a time-of-day layer names its variant")], nil)
       assert(offsetBytes % 32 == 0, "16-colour layer offsets are whole banks")
-      colors = tradeShiftedPalette(paletteColors, offsetBytes / 32)
+      colors = tradeShiftedPalette(paletteColors, math.floor(offsetBytes / 32))
     else
       colors = paletteColors
     end
@@ -590,7 +585,8 @@ local function compileTradeLayer(archive, layerSource, role, dependencies, asset
       variant ~= nil and (role .. "-" .. variant) or role,
       sourceError
     )
-    local path = string.format("%s/%s%s.png", PokemonCareCache.tradeDir(), role, variant ~= nil and ("-" .. variant) or "")
+    local path =
+      string.format("%s/%s%s.png", PokemonCareCache.tradeDir(), role, variant ~= nil and ("-" .. variant) or "")
     return stageImage(path, image, assets)
   end
 
@@ -598,7 +594,9 @@ local function compileTradeLayer(archive, layerSource, role, dependencies, asset
   if layerSource.paletteOffsets ~= nil then
     local variants = {}
     for _, variantName in ipairs(PokemonCareSources.tradeBackdropNames) do
-      if (layerSource.paletteOffsets --[[@as table<string, integer> ]])[variantName] ~= nil then
+      if
+        (layerSource.paletteOffsets --[[@as table<string, integer> ]])[variantName] ~= nil
+      then
         variants[variantName] = compose(variantName)
       end
     end
@@ -627,7 +625,9 @@ local function compileTradeScenes(archive, dependencies, assets)
   for _, phase in ipairs(PokemonCareSources.tradePhaseOrder) do
     local source = assert(PokemonCareSources.tradeScenes[phase], "every played phase names its source scene")
     local layers = {}
-    for index, layerSource in ipairs(source.layers --[[@as table[] ]]) do
+    for index, layerSource in
+      ipairs(source.layers --[[@as table[] ]])
+    do
       layers[index] = compileTradeLayer(archive, layerSource, phase .. "-" .. index, dependencies, assets)
     end
     scenes[phase] = { layers = layers }
@@ -648,7 +648,9 @@ end
 local function compileTradeSpriteSheet(archive, sheet, key, dependencies, assets)
   local charData, palette, cellData, animation = decodeSpriteGroup(archive, sheet, key, "trade-art", dependencies)
   local sequences = {}
-  for _, sequenceNo in ipairs(sheet.sequences --[[@as integer[] ]]) do
+  for _, sequenceNo in
+    ipairs(sheet.sequences --[[@as integer[] ]])
+  do
     local compiled = compileSequence(
       animation,
       sequenceNo,
@@ -681,18 +683,12 @@ local function compileTradeBalloon(archive, dependencies, assets)
   if decoded == nil then
     sourceError("the trade balloon model does not decode", { memberId = memberId })
   end
-  local model = assert(decoded, "decoded balloon source exists").models[1]
-  if model == nil or decoded.embeddedTextures == nil then
+  ---@cast decoded -nil
+  local model = assert(decoded.models[1], "decoded balloon source exists")
+  if decoded.embeddedTextures == nil then
     sourceError("the trade balloon model carries no model or textures", { memberId = memberId })
   end
-  assert(model ~= nil, "missing balloon models fail above")
-  do
-    local nodes = model.nodes or {}
-    for index, node in ipairs(nodes) do
-      print("DBG node", index, node.scaleX, node.scaleY, node.scaleZ, node.transX, node.transY, node.transZ)
-    end
-    print("DBG model shapes", #(model.shapes or {}), "info", model.info and model.info.posScale, model.info and model.info.invPosScale)
-  end
+  ---@cast model -nil
   local meshes, textures = {}, {}
   local compiled = ModelAssetCompiler.compileModel(model, decoded.embeddedTextures, meshes, textures, {
     role = "trade-balloon",
@@ -746,7 +742,10 @@ end
 local function compileTradePictureHeights(romFs, dependencies)
   local base, baseErr = romFs:openNarc(MonSources.PICTURE_HEIGHT_NARC)
   if base == nil then
-    sourceError("the picture height archive is unavailable", { archive = MonSources.PICTURE_HEIGHT_NARC, cause = baseErr })
+    sourceError(
+      "the picture height archive is unavailable",
+      { archive = MonSources.PICTURE_HEIGHT_NARC, cause = baseErr }
+    )
   end
   local other, otherErr = romFs:openNarc(MonSources.PICTURE_HEIGHT_OTHER_NARC)
   if other == nil then
@@ -809,9 +808,8 @@ end
 ---@param bankId integer
 ---@param messageId integer
 ---@param role string
----@param dependencies table<string, unknown>[]
 ---@return { id: integer, text: string, align: string? }
-local function compileTradeMessage(bank, bankId, messageId, role, dependencies)
+local function compileTradeMessage(bank, bankId, messageId, role)
   local tokens = UiAssetHelpers.messageTokens(bank, bankId, messageId, role, "trade", sourceError)
   local pieces = {}
   local align = nil
@@ -821,8 +819,9 @@ local function compileTradeMessage(bank, bankId, messageId, role, dependencies)
       -- The sequence's lines name the message-format buffers it fills: field 0
       -- with buffer 0 or 1 is a subject's nickname, and field 3 with buffer 2 is
       -- the trade profile's player name.
-      local field = type(typed.control) == "number" and typed.name == "STRVAR_1" and typed.control
-          - FieldMessageText.STRVAR_1
+      local field = type(typed.control) == "number"
+          and typed.name == "STRVAR_1"
+          and typed.control - FieldMessageText.STRVAR_1
         or nil
       local args = typed.args --[[@as table|nil ]]
       local buffer = type(args) == "table" and args[1] or nil
@@ -885,9 +884,6 @@ local function compileTradeMessage(bank, bankId, messageId, role, dependencies)
   return line
 end
 
--- Compiles the trade sequence presentation from one cartridge view.
----@param romFs table<string, unknown>
----@return table<string, unknown>|nil bundle, Errors.Error|nil failure
 -- Lowers one reminder line: its printable text with the source's name and
 -- move substitutions kept as markers. Any other substitution is a source form
 -- this application never prints, so it fails instead of publishing a line the
@@ -912,7 +908,11 @@ local function compileReminderLine(bank, bankId, messageId, role)
       local control = typed.control
       if typed.name == "STRVAR_1" and control == REMINDER_MON_STRVAR then
         pieces[#pieces + 1] = REMINDER_MON_MARKER
-      elseif typed.name == "STRVAR_1" and REMINDER_MOVE_STRVAR[control --[[@as integer]]] then
+      elseif
+        typed.name == "STRVAR_1" and REMINDER_MOVE_STRVAR[
+          control --[[@as integer]]
+        ]
+      then
         pieces[#pieces + 1] = REMINDER_MOVE_MARKER
       else
         sourceError("reminder line carries an unsupported substitution", {
@@ -980,13 +980,8 @@ local function compileReminderSurface(archive, charData, palette, screenMember, 
     readMember(archive, screenMember, role .. "-screen", dependencies, "reminder-art"),
     role .. "-screen"
   )
-  local image = UiAssetHelpers.rasterizeScreen(
-    charData,
-    assert(palette.colors) --[[@as table]],
-    screenData,
-    role,
-    sourceError
-  )
+  local image =
+    UiAssetHelpers.rasterizeScreen(charData, assert(palette.colors) --[[@as table]], screenData, role, sourceError)
   return stageImage(PokemonCareCache.reminderDir() .. "/" .. role .. ".png", image, assets)
 end
 
@@ -1064,24 +1059,8 @@ function PokemonCareAssetCompiler.compileReminder(romFs)
     end
     local manifest = {
       schema = PokemonCareAssetSchema.REMINDER_SCHEMA,
-      main = compileReminderSurface(
-        archive,
-        charData,
-        palette,
-        art.main.screen,
-        "reminder-main",
-        dependencies,
-        assets
-      ),
-      sub = compileReminderSurface(
-        archive,
-        charData,
-        palette,
-        art.sub.screen,
-        "reminder-sub",
-        dependencies,
-        assets
-      ),
+      main = compileReminderSurface(archive, charData, palette, art.main.screen, "reminder-main", dependencies, assets),
+      sub = compileReminderSurface(archive, charData, palette, art.sub.screen, "reminder-sub", dependencies, assets),
       buttons = compileReminderSurface(
         archive,
         charData,
@@ -1102,6 +1081,9 @@ function PokemonCareAssetCompiler.compileReminder(romFs)
   end, romFs)
 end
 
+-- Compiles the trade sequence presentation from one cartridge view.
+---@param romFs table<string, unknown>
+---@return table<string, unknown>|nil bundle, Errors.Error|nil failure
 function PokemonCareAssetCompiler.compileTrade(romFs)
   local dependencies = {}
   local assets = {}
@@ -1150,10 +1132,10 @@ function PokemonCareAssetCompiler.compileTrade(romFs)
         heights = compileTradePictureHeights(romFs, dependencies),
       },
       messages = {
-        send = compileTradeMessage(bank, messagesSource.memberId, lines.send, "send", dependencies),
-        farewell = compileTradeMessage(bank, messagesSource.memberId, lines.farewell, "farewell", dependencies),
-        received = compileTradeMessage(bank, messagesSource.memberId, lines.received, "received", dependencies),
-        takeCare = compileTradeMessage(bank, messagesSource.memberId, lines.takeCare, "take-care", dependencies),
+        send = compileTradeMessage(bank, messagesSource.memberId, lines.send, "send"),
+        farewell = compileTradeMessage(bank, messagesSource.memberId, lines.farewell, "farewell"),
+        received = compileTradeMessage(bank, messagesSource.memberId, lines.received, "received"),
+        takeCare = compileTradeMessage(bank, messagesSource.memberId, lines.takeCare, "take-care"),
       },
     }
     local valid, validationErr = pcall(PokemonCareAssetSchema.assertTradeManifest, manifest)

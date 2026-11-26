@@ -30,7 +30,7 @@ local function sourceError(message, context)
   Errors.raise(BankAssetCompiler.ERROR.SOURCE_INVALID, "bank " .. message, context or {})
 end
 
----@param archive table
+---@param archive Narc
 ---@param memberId integer
 ---@param role string
 ---@param archiveName string
@@ -46,6 +46,7 @@ local function readMember(archive, memberId, role, archiveName, dependencies)
       cause = err,
     })
   end
+  ---@cast bytes -nil
   dependencies[#dependencies + 1] = {
     name = archiveName .. ":member:" .. memberId,
     role = role,
@@ -56,7 +57,7 @@ local function readMember(archive, memberId, role, archiveName, dependencies)
     if not plain then
       error(decodeError, 0)
     end
-    return plain
+    return plain --[[@as string]]
   end
   return bytes
 end
@@ -69,10 +70,10 @@ local function decode(kind, bytes, role)
   return value
 end
 
----@param charData table
----@param paletteData table
----@param cellData table
----@param animationData table
+---@param charData G2dRasterizer.CharData
+---@param paletteData G2dRasterizer.PaletteData
+---@param cellData { cells: table[] }
+---@param animationData { anims: table[] }
 ---@param sequence integer one-based source animation sequence
 ---@param role string
 ---@return { width: integer, height: integer, pixels: string }
@@ -82,7 +83,7 @@ local function renderSprite(charData, paletteData, cellData, animationData, sequ
     sourceError("sprite animation sequence is absent: " .. role, { role = role, sequence = sequence })
   end
   animation = assert(animation)
-  local image, err = G2dRasterizer.renderAnimationFrame(charData, paletteData, cellData, animation, 1, role)
+  local image, err = G2dRasterizer.renderAnimationFrame(charData, paletteData, cellData, animation, 1, { role = role })
   if not image then
     sourceError("sprite frame does not rasterize: " .. role .. ": " .. tostring(err and err.message), {
       role = role,
@@ -126,7 +127,9 @@ local function packAtlas(frames)
       local target = rows[position.y + row + 1]
       assert(type(target) == "string", "the atlas holds its rows")
       local source = image.pixels:sub(row * image.width * 4 + 1, (row + 1) * image.width * 4)
-      rows[position.y + row + 1] = target:sub(1, position.x * 4) .. source .. target:sub((position.x + image.width) * 4 + 1)
+      rows[position.y + row + 1] = target:sub(1, position.x * 4)
+        .. source
+        .. target:sub((position.x + image.width) * 4 + 1)
     end
   end
   return { width = width, height = height, pixels = table.concat(rows) }, positions
@@ -178,7 +181,7 @@ end
 
 -- The three button labels NumberEntry_CreateButtonLabels prints into its lower
 -- windows: BACK, CONFIRM and QUIT from bank 196.
----@param romFs table
+---@param romFs RomFs
 ---@param dependencies table[]
 ---@return table<string, string>
 local function readLabels(romFs, dependencies)
@@ -187,6 +190,7 @@ local function readLabels(romFs, dependencies)
   if not archive then
     sourceError("message archive is unavailable", { cause = err and err.code })
   end
+  ---@cast archive -nil
   local info = assert(romFs:resolvedNarc(messages.archive.alias), "bank message NARC resolves")
   dependencies[#dependencies + 1] = {
     name = messages.archive.alias .. ":narc",
@@ -241,7 +245,7 @@ end
 
 -- One source archive read yields the complete keypad: the composited BG layer,
 -- the sprite atlas with its frames, the source key geometry and the labels.
----@param romFs table
+---@param romFs RomFs
 ---@return table<string, unknown> bundle
 function BankAssetCompiler.compile(romFs)
   assert(type(romFs) == "table" and type(romFs.openNarc) == "function", "bank compilation needs a source reader")
@@ -251,6 +255,7 @@ function BankAssetCompiler.compile(romFs)
   if not archive then
     sourceError("resource archive is unavailable", { cause = archiveErr and archiveErr.code })
   end
+  ---@cast archive -nil
   local info = assert(romFs:resolvedNarc(archiveName), "bank NARC alias resolves")
   dependencies[#dependencies + 1] = {
     name = archiveName .. ":narc",
@@ -258,10 +263,18 @@ function BankAssetCompiler.compile(romFs)
   }
 
   local resources = BankSources.archive.resources
-  local bgChar = decode("decodeChar", readMember(archive, resources.bg.char, "bg-char", archiveName, dependencies), "bg-char")
-  local bgPalette =
-    decode("decodePalette", readMember(archive, resources.bg.palette, "bg-palette", archiveName, dependencies), "bg-palette")
-  local bgScreen = decode("decodeScreen", readMember(archive, resources.bg.screen, "bg-screen", archiveName, dependencies), "bg-screen")
+  local bgChar =
+    decode("decodeChar", readMember(archive, resources.bg.char, "bg-char", archiveName, dependencies), "bg-char")
+  local bgPalette = decode(
+    "decodePalette",
+    readMember(archive, resources.bg.palette, "bg-palette", archiveName, dependencies),
+    "bg-palette"
+  )
+  local bgScreen = decode(
+    "decodeScreen",
+    readMember(archive, resources.bg.screen, "bg-screen", archiveName, dependencies),
+    "bg-screen"
+  )
   local layer, layerErr = G2dRasterizer.renderScreen(bgChar, bgPalette, bgScreen, { role = "bank-keypad" })
   if not layer then
     sourceError("keypad layer does not rasterize: " .. tostring(layerErr and layerErr.message), {})
@@ -270,13 +283,21 @@ function BankAssetCompiler.compile(romFs)
   local function loadSpriteSet(name)
     local members = assert(resources[name], "the bank sprite set is named")
     return {
-      char = decode("decodeChar", readMember(archive, members.char, name .. "-char", archiveName, dependencies), name .. "-char"),
+      char = decode(
+        "decodeChar",
+        readMember(archive, members.char, name .. "-char", archiveName, dependencies),
+        name .. "-char"
+      ),
       palette = decode(
         "decodePalette",
         readMember(archive, members.palette, name .. "-palette", archiveName, dependencies),
         name .. "-palette"
       ),
-      cell = decode("decodeCell", readMember(archive, members.cell, name .. "-cell", archiveName, dependencies), name .. "-cell"),
+      cell = decode(
+        "decodeCell",
+        readMember(archive, members.cell, name .. "-cell", archiveName, dependencies),
+        name .. "-cell"
+      ),
       animation = decode(
         "decodeAnimation",
         readMember(archive, members.animation, name .. "-animation", archiveName, dependencies),

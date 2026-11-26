@@ -32,7 +32,8 @@ PokemonCareScriptHost.__index = PokemonCareScriptHost
 
 ---@param args { runtime: table<string, unknown> }
 ---@return PokemonCareScriptHost
-function PokemonCareScriptHost.new(args)  assert(type(args) == "table", "care host requires its owner")
+function PokemonCareScriptHost.new(args)
+  assert(type(args) == "table", "care host requires its owner")
   assert(type(args.runtime) == "table", "care host borrows its field runtime")
   return setmetatable({
     _runtime = args.runtime,
@@ -52,7 +53,8 @@ end
 function PokemonCareScriptHost:_summaryFamily()
   if self._summaryManifest == nil then
     local runtime = self._runtime
-    self._summaryManifest = SummaryCache.loadManifest(assert(runtime.cacheFs, "script summaries need the version cache"))
+    self._summaryManifest =
+      SummaryCache.loadManifest(assert(runtime.cacheFs, "script summaries need the version cache"))
   end
   return assert(self._summaryManifest, "the summary family stays loaded for the child lifetime")
 end
@@ -64,26 +66,30 @@ end
 ---@return SummarySubjectPort
 function PokemonCareScriptHost:_singleSubjectPort(slot0)
   local mons = assert(self._runtime.monService, "a script Summary needs the live mon service")
+  local function countSubjects()
+    return 1
+  end
+  local function partyRevision()
+    return mons:partyRevision()
+  end
+  local function readSubject(index)
+    assert(index == 0, "a one-subject Summary reads its only subject")
+    return mons:partyMon(slot0)
+  end
+  local function publishSubject(index, mon, expectedRevision)
+    local preparation, reason = mons:preparePartyChanges(expectedRevision, { { slot = index, mon = mon } })
+    if preparation == nil then
+      assert(reason == "stale", "preparation refuses stale revisions loudly")
+      return { kind = "stale" }
+    end
+    preparation.publish()
+    return { kind = "changed" }
+  end
   return {
-    count = function()
-      return 1
-    end,
-    revision = function()
-      return mons:partyRevision()
-    end,
-    read = function(index)
-      assert(index == 0, "a one-subject Summary reads its only subject")
-      return mons:partyMon(slot0)
-    end,
-    publish = function(index, mon, expectedRevision)
-      local preparation, reason = mons:preparePartyChanges(expectedRevision, { { slot = index, mon = mon } })
-      if preparation == nil then
-        assert(reason == "stale", "preparation refuses stale revisions loudly")
-        return { kind = "stale" }
-      end
-      preparation.publish()
-      return { kind = "changed" }
-    end,
+    count = countSubjects,
+    revision = partyRevision,
+    read = readSubject,
+    publish = publishSubject,
   }
 end
 
@@ -133,23 +139,32 @@ function PokemonCareScriptHost:_summaryPreparation()
     end
   end
   local host = self
+  local function prepareLeaseDemand(_, demand)
+    return host:_prepareLeaseDemand(demand)
+  end
+  local function releaseLeaseDemand() end
   return {
-    ---@param _ table<string, unknown> the lease itself
-    ---@param demand table<string, unknown>
-    prepare = function(_, demand)
-      assert(type(demand) == "table" and type(demand.key) == "string", "summary demands carry their key")
-      local active = host._active
-      local careLease = active ~= nil and active.lease or nil
-      if careLease ~= nil then
-        local outcome = careLease:prepare()
-        if outcome.kind ~= "ready" then
-          return outcome
-        end
-      end
-      return { kind = "ready", key = demand.key, assets = host._activeAssets or EMPTY_ASSETS }
-    end,
-    release = function() end,
+    prepare = prepareLeaseDemand,
+    release = releaseLeaseDemand,
   }
+end
+
+-- The committed care bundle's summary family, or the empty bundle a headless
+-- composition rides. A live child's own lease prepares first, so a failed
+-- preparation refuses the demand instead of drawing a partial family.
+---@param demand table<string, unknown> the requested family key
+---@return table<string, unknown> preparation outcome
+function PokemonCareScriptHost:_prepareLeaseDemand(demand)
+  assert(type(demand) == "table" and type(demand.key) == "string", "summary demands carry their key")
+  local active = self._active
+  local careLease = active ~= nil and active.lease or nil
+  if careLease ~= nil then
+    local outcome = careLease:prepare()
+    if outcome.kind ~= "ready" then
+      return outcome
+    end
+  end
+  return { kind = "ready", key = demand.key, assets = self._activeAssets or EMPTY_ASSETS }
 end
 
 -- The screen a script Summary or a replacement picker runs: the field's own
@@ -281,7 +296,10 @@ function PokemonCareScriptHost:open(request)
   assert(self._active == nil, "a care application already owns the script modal")
   assert(type(request) == "table", "care applications open from a request record")
   local runtime = self._runtime
-  local audio = assert(runtime.audio or (runtime.scriptHosts and runtime.scriptHosts.audio), "care host needs the source audio host")
+  local audio = assert(
+    runtime.audio or (runtime.scriptHosts and runtime.scriptHosts.audio),
+    "care host needs the source audio host"
+  )
   self._nextId = self._nextId + 1
   local handle = { id = self._nextId }
   local typed, state
@@ -293,16 +311,18 @@ function PokemonCareScriptHost:open(request)
     local tutor = assert(runtime.moveTutor, "the reminder lesson needs the move tutor owner")
     local catalog = assert(runtime.monService, "the reminder lesson needs the mon service"):catalog()
     local host = self
+    local function teachMove(move, targetSlot)
+      return tutor:teach(typed.slot, move, targetSlot, typed.revision)
+    end
+    local function openSummary(childRequest)
+      return host:_summaryChild(childRequest)
+    end
     state = MoveRelearnerState.new({
       request = typed,
       catalog = catalog,
       audio = audio,
-      teach = function(move, targetSlot)
-        return tutor:teach(typed.slot, move, targetSlot, typed.revision)
-      end,
-      openSummary = function(childRequest)
-        return host:_summaryChild(childRequest)
-      end,
+      teach = teachMove,
+      openSummary = openSummary,
     })
   elseif request.kind == PokemonCareInterface.KINDS.summary_application then
     typed = PokemonCareInterface.assertSummaryRequest(request)

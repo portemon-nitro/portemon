@@ -139,16 +139,14 @@ function BankScreenState.new(maxAmount)
   }, BankScreenState)
 end
 
----@param self BankScreenState
 ---@return integer[]
-local function offsets(self)
+function BankScreenState:_offsets()
   return assert(X_OFFSETS[self._numDigits], "the entry has a source offset row")
 end
 
 -- NumberEntry_ComputeValue: the fixed cells, most significant first.
----@param self BankScreenState
 ---@return integer
-local function computeValue(self)
+function BankScreenState:_computeValue()
   local value = 0
   for index = 0, self._numDigits - 1 do
     value = value * 10 + self._digits[index + 1]
@@ -158,10 +156,9 @@ end
 
 -- NumberEntry_MoveDigitCursor: the cursor clamps into the cells and reports
 -- whether it moved.
----@param self BankScreenState
 ---@param delta integer
 ---@return boolean
-local function moveCursor(self, delta)
+function BankScreenState:_moveCursor(delta)
   local previous = self._cursor
   self._cursor = self._cursor + delta
   if self._cursor < 0 then
@@ -176,27 +173,24 @@ local function moveCursor(self, delta)
 end
 
 -- NumberEntry_SetDigit writes the pressed digit into the selected cell.
----@param self BankScreenState
 ---@param digit integer
-local function setDigit(self, digit)
+function BankScreenState:_setDigit(digit)
   self._digits[self._cursor + 1] = digit
 end
 
 -- NumberEntry_StartSpriteBlink/StartBgBlink: one blink of the pressed key,
 -- then the state the screen returns to.
----@param self BankScreenState
 ---@param target integer the pressed key whose feedback blinks
 ---@param seqA integer
 ---@param seqB integer
-local function startBlink(self, target, seqA, seqB)
+function BankScreenState:_startBlink(target, seqA, seqB)
   self._blink = { target = target, seqA = seqA, seqB = seqB, phase = "start", timer = 0, visible = true }
 end
 
 -- NumberEntry_UpdateBlink: start paints the first frame, the timer holds it
 -- for four ticks, then the second frame holds for two and the blink ends.
----@param self BankScreenState
 ---@return boolean whether the blink is still running
-local function updateBlink(self)
+function BankScreenState:_updateBlink()
   local blink = self._blink
   assert(blink ~= nil, "a blink update reads the running blink")
   if blink.phase == "start" then
@@ -204,7 +198,7 @@ local function updateBlink(self)
     return true
   end
   if blink.phase == "first" then
-    blink.timer = (blink.timer --[[@as integer]]) + 1
+    blink.timer = blink.timer --[[@as integer]] + 1
     if blink.timer == BLINK_FIRST_TICKS then
       blink.phase = "second"
       blink.timer = 0
@@ -212,7 +206,7 @@ local function updateBlink(self)
     end
     return true
   end
-  blink.timer = (blink.timer --[[@as integer]]) + 1
+  blink.timer = blink.timer --[[@as integer]] + 1
   if blink.timer == BLINK_SECOND_TICKS then
     self._blink = nil
     return false
@@ -220,9 +214,8 @@ local function updateBlink(self)
   return true
 end
 
----@param self BankScreenState
 ---@param result { amount: integer }
-local function finish(self, result)
+function BankScreenState:_finish(result)
   self._blink = nil
   self._result = result
   self._gridCursor = 0
@@ -231,35 +224,34 @@ end
 -- ScrCmd_BankTransaction's keypad result: a confirmed amount at most the
 -- maximum, or zero for a cancel. A confirmed amount above the maximum only
 -- blinks the confirm key, exactly like the source.
----@param self BankScreenState
----@param digitOrAction integer
+---@param key integer the pressed grid cell
 ---@return boolean whether the key produced a step
-local function pressGridKey(self, key)
+function BankScreenState:_pressGridKey(key)
   if key >= 0 and key <= 9 then
-    setDigit(self, key)
-    moveCursor(self, 1)
-    startBlink(self, key, key + 12, key + 1)
+    self:_setDigit(key)
+    self:_moveCursor(1)
+    self:_startBlink(key, key + 12, key + 1)
     return true
   end
   if key == GRID_CLEAR then
     -- The source button is labelled BACK and only walks the cursor left; the
     -- fixed cells keep their digits.
-    startBlink(self, 2, 4, 3)
-    moveCursor(self, -1)
+    self:_startBlink(2, 4, 3)
+    self:_moveCursor(-1)
     return true
   end
   if key == GRID_CONFIRM then
-    local value = computeValue(self)
-    startBlink(self, 3, 4, 3)
+    local value = self:_computeValue()
+    self:_startBlink(3, 4, 3)
     if value > self._max then
       return true
     end
-    finish(self, { amount = value })
+    self:_finish({ amount = value })
     return true
   end
   if key == GRID_CANCEL then
-    startBlink(self, 4, 4, 3)
-    finish(self, { amount = 0 })
+    self:_startBlink(4, 4, 3)
+    self:_finish({ amount = 0 })
     return true
   end
   return false
@@ -267,10 +259,9 @@ end
 
 -- The dpad grid walks to a neighbour, exactly like GridInputHandler's
 -- directional neighbour lookup.
----@param self BankScreenState
 ---@param direction string "up"|"down"|"left"|"right"
 ---@return boolean whether the cursor moved
-local function walkGrid(self, direction)
+function BankScreenState:_walkGrid(direction)
   local box = DPAD_BOXES[self._gridCursor + 1]
   assert(box ~= nil, "the dpad grid holds the cursor")
   local target = box[direction]
@@ -283,10 +274,9 @@ end
 
 -- One source pointer tap lands on the source rectangle it hits: a digit cell,
 -- the entry's own cursor strip, or one of the three action buttons.
----@param self BankScreenState
 ---@param x number
 ---@param y number
-local function tap(self, x, y)
+function BankScreenState:_tap(x, y)
   for digit = 0, 9 do
     local column = digit % DIGIT_COLUMNS
     local row = (digit - column) / DIGIT_COLUMNS
@@ -294,20 +284,25 @@ local function tap(self, x, y)
     local top = DIGIT_ORIGIN_Y + row * DIGIT_CELL
     if x >= left and x <= left + DIGIT_CELL - 1 and y >= top and y <= top + DIGIT_CELL - 1 then
       self._gridCursor = digit
-      pressGridKey(self, digit)
+      self:_pressGridKey(digit)
       return
     end
   end
   for _, action in ipairs(ACTIONS) do
-    if x >= action.x and x <= action.x + action.width - 1 and y >= ACTION_ROW_Y and y <= ACTION_ROW_Y + ACTION_ROW_HEIGHT - 1 then
+    if
+      x >= action.x
+      and x <= action.x + action.width - 1
+      and y >= ACTION_ROW_Y
+      and y <= ACTION_ROW_Y + ACTION_ROW_HEIGHT - 1
+    then
       self._gridCursor = action.role == "clear" and GRID_CLEAR
         or action.role == "confirm" and GRID_CONFIRM
         or GRID_CANCEL
-      pressGridKey(self, self._gridCursor)
+      self:_pressGridKey(self._gridCursor)
       return
     end
   end
-  local cursorOffsets = offsets(self)
+  local cursorOffsets = self:_offsets()
   for index = 1, self._numDigits do
     local left = cursorOffsets[index] - CURSOR_STRIP_WIDTH / 2
     if
@@ -337,7 +332,7 @@ function BankScreenState:step(uiEvents)
       return
     end
     if event.type == "pointer_down" then
-      tap(self, event.x, event.y)
+      self:_tap(event.x, event.y)
     elseif event.type == "pointer_up" then
       local target = self:_hintAt(event.x, event.y)
       if target ~= nil then
@@ -345,22 +340,22 @@ function BankScreenState:step(uiEvents)
       end
     elseif event.type == "confirm" then
       self._gridCursor = GRID_CONFIRM
-      pressGridKey(self, GRID_CONFIRM)
+      self:_pressGridKey(GRID_CONFIRM)
     elseif event.type == "cancel" then
-      moveCursor(self, -1)
+      self:_moveCursor(-1)
     elseif event.type == "navigate" then
-      walkGrid(self, event.direction)
+      self:_walkGrid(event.direction)
     elseif event.type == "button" then
       if event.button == "start" then
         self._gridCursor = GRID_CONFIRM
-        pressGridKey(self, GRID_CONFIRM)
+        self:_pressGridKey(GRID_CONFIRM)
       end
     end
   end
   -- The pressed-key blink is the source's visual feedback; it shows the two
   -- source frames over the following ticks and never holds a later key back.
   if self._blink ~= nil then
-    updateBlink(self)
+    self:_updateBlink()
   end
 end
 
@@ -381,7 +376,12 @@ function BankScreenState:_hintAt(x, y)
     end
   end
   for _, action in ipairs(ACTIONS) do
-    if x >= action.x and x <= action.x + action.width - 1 and y >= ACTION_ROW_Y and y <= ACTION_ROW_Y + ACTION_ROW_HEIGHT - 1 then
+    if
+      x >= action.x
+      and x <= action.x + action.width - 1
+      and y >= ACTION_ROW_Y
+      and y <= ACTION_ROW_Y + ACTION_ROW_HEIGHT - 1
+    then
       if action.role == "clear" then
         return GRID_CLEAR
       elseif action.role == "confirm" then
@@ -434,7 +434,7 @@ function BankScreenState:status()
     }
   end
   local digitCells = {}
-  local cursorOffsets = offsets(self)
+  local cursorOffsets = self:_offsets()
   for index = 1, self._numDigits do
     digitCells[index] = { x = cursorOffsets[index], y = DIGIT_ROW_Y + 16 }
   end
@@ -453,7 +453,7 @@ function BankScreenState:status()
     digits[index] = self._digits[index]
   end
   return {
-    amount = computeValue(self),
+    amount = self:_computeValue(),
     maxAmount = self._max,
     maxDigits = self._numDigits,
     cursor = self._cursor,

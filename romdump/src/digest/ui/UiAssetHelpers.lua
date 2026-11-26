@@ -71,8 +71,8 @@ end
 
 -- Renders one decoded screen with native entry palette indices. Raises
 -- through the compiler's source error on unrasterizable screens.
----@param charData string raw character bytes
----@param palette table<string, unknown> raw palette colors
+---@param charData G2dRasterizer.CharData decoded character tiles
+---@param palette { r: integer, g: integer, b: integer }[] decoded palette colors
 ---@param screen table<string, unknown> decoded screen record
 ---@param role string dependency role recorded alongside failures
 ---@param sourceError fun(message: string, context: table<string, unknown>?) compiler-specific source failure

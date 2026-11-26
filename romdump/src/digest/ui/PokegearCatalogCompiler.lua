@@ -111,7 +111,11 @@ function PokegearCatalogCompiler.compileRematchSets(romFs)
     local base = row[1]
     if type(base) ~= "number" or base % 1 ~= 0 or base < 1 then
       return nil,
-        Errors.new(PokegearCatalogCompiler.ERROR.REMATCH_INVALID, label .. " must name its base trainer", { row = index })
+        Errors.new(
+          PokegearCatalogCompiler.ERROR.REMATCH_INVALID,
+          label .. " must name its base trainer",
+          { row = index }
+        )
     end
     if rows[base] ~= nil then
       return nil,

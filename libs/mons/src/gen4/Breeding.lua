@@ -85,7 +85,7 @@ local function maleSplit(personality)
 end
 
 ---@param parents table[]
----@return table, table
+---@return table<string, unknown>, table<string, unknown>
 local function requirePair(parents)
   if type(parents) ~= "table" or #parents ~= 2 then
     reject("breeding needs exactly two parent records", {})
@@ -246,7 +246,7 @@ end
 -- value, keeping the last draw once the source bound is passed. Otherwise one
 -- source random value becomes the pending personality. A zero result is a
 -- legal outcome: the caller still attempts the phone trigger.
----@param opts { parents: table[], lc: fun(): integer, mt: fun(): integer }
+---@param opts { parents: table[], lc: (fun(): integer), mt: (fun(): integer) } the linear draw and the source personality draw
 ---@return integer pending egg personality
 function Breeding.generateEggPid(opts)
   assert(type(opts) == "table", "egg personality generation requires its draws")
@@ -360,10 +360,7 @@ function Breeding.offspring(opts)
       break
     end
   end
-  local motherGender = Personality.gender(
-    catalog:species(motherSpecies).genderRatio,
-    parents[motherSlot].personality
-  )
+  local motherGender = Personality.gender(catalog:species(motherSpecies).genderRatio, parents[motherSlot].personality)
   if parents[fatherSlot].species == Breeding.DITTO and motherGender ~= "female" then
     motherSlot, fatherSlot = fatherSlot, motherSlot
   end
@@ -483,7 +480,7 @@ end
 -- moves that are shared and appear in the offspring's own level-up list; a
 -- Pichu adds Volt Tackle when either parent holds a Light Ball. Every insertion
 -- skips a move the offspring already knows.
----@param opts { offspring: { species: string, form: integer }, mother: table, father: table, catalog: MonCatalog, care: table<string, unknown> }
+---@param opts { offspring: { species: string, form: integer }, mother: table<string, unknown>, father: table<string, unknown>, catalog: MonCatalog, care: table<string, unknown> }
 ---@return table<string, unknown>[] the inherited move set in slot order
 function Breeding.inheritedMoves(opts)
   assert(type(opts) == "table", "move inheritance requires its sources")

@@ -79,7 +79,8 @@ local function lessonRequest(request, ctx)
   local species = catalog:species(mon.species)
   -- The main screen draws the subject's own portrait: its generated species
   -- identity, form and the gender/palette its personality derives.
-  local gender = Personality.gender(species.genderRatio, assert(mon.personality, "a stored mon carries its personality"))
+  local gender =
+    Personality.gender(species.genderRatio, assert(mon.personality, "a stored mon carries its personality"))
   if gender ~= "female" then
     gender = "male"
   end

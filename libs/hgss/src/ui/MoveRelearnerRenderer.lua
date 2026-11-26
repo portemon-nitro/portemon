@@ -24,7 +24,6 @@
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
-local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PokemonCareInterface = require("libs.hgss.src.ui.PokemonCareInterface")
 
@@ -369,10 +368,10 @@ function MoveRelearnerRenderer:draw(status, _)
   self._graphics.setColor(1, 1, 1, 1)
 end
 
----@param box { x: integer, y: integer, width: integer, height: integer }
----@param x integer
----@param y integer
----@return boolean
+---@param box { x: integer, y: integer, width: integer, height: integer, framed: boolean }
+---@param x number logical x on the bottom screen
+---@param y number logical y on the bottom screen
+---@return boolean whether the point lands inside the box
 local function inside(box, x, y)
   return x >= box.x and x < box.x + box.width and y >= box.y and y < box.y + box.height
 end
@@ -523,10 +522,9 @@ function MoveRelearnerRenderer.interface(manifest, resolveTarget)
   end
 
   ---@param context ApplicationLayout.Context
-  ---@param view table<string, unknown>
   ---@param horizontal boolean
   ---@return table<string, unknown>
-  local function paired(context, view, horizontal)
+  local function paired(context, horizontal)
     local geometry
     if horizontal then
       geometry = ApplicationLayout.sideBySide(context, MAIN_NATIVE, SUB_NATIVE)
@@ -547,15 +545,17 @@ function MoveRelearnerRenderer.interface(manifest, resolveTarget)
     }, geometry.frames or {}, mapPairedInput)
   end
 
+  local function wide(context)
+    return paired(context, true)
+  end
+  local function tall(context)
+    return paired(context, false)
+  end
   return {
     dualDisplay = dualDisplay,
     nativeLike = nativeLike,
-    wide = function(context, view)
-      return paired(context, view, true)
-    end,
-    tall = function(context, view)
-      return paired(context, view, false)
-    end,
+    wide = wide,
+    tall = tall,
   }
 end
 

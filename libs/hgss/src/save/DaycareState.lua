@@ -121,7 +121,6 @@ local function checkSlot(validateMon, value, where)
   }
 end
 
----@param validateMon fun(mon: unknown): table<string, unknown>
 -- SaveMisc_SetTogepiPersonalityGender stores the personality and the source
 -- gender code of the one original gift. The bucket keeps them beside custody
 -- because the matcher reads them from the same saved Day Care owner.
@@ -139,6 +138,7 @@ local function checkGift(value)
   }
 end
 
+---@param validateMon fun(mon: unknown): table<string, unknown>
 ---@param value unknown
 ---@return { mon: table<string, unknown>, steps: integer }[]
 local function checkSlots(validateMon, value)
@@ -162,7 +162,7 @@ end
 
 ---@param value unknown
 ---@param what string
----@return table<string, unknown>
+---@return fun(mon: unknown): table<string, unknown>
 local function checkValidator(value, what)
   if type(value) ~= "function" then
     fail("day care " .. what .. " requires the canonical mon validator", {})
@@ -189,29 +189,28 @@ end
 ---@field isCurrent fun(): boolean
 ---@field publish fun()
 
----@param state DaycareState
 ---@param slots { mon: table<string, unknown>, steps: integer }[]
 ---@param pendingEggPid integer
 ---@param eggCycleCounter integer
 ---@param togepiGift DaycareState.TogepiGift? the recorded original-gift identity
 ---@return DaycarePreparation
-local function prepareState(state, slots, pendingEggPid, eggCycleCounter, togepiGift)
-  local capturedRevision = state._revision
+function DaycareState:_prepareState(slots, pendingEggPid, eggCycleCounter, togepiGift)
+  local capturedRevision = self._revision
   local gift = togepiGift ~= nil and checkGift(togepiGift) or nil
-  local liveGift = state._togepiGift
+  local liveGift = self._togepiGift
   local giftChanged = (gift == nil) ~= (liveGift == nil)
     or (
       gift ~= nil
       and liveGift ~= nil
       and (gift.personality ~= liveGift.personality or gift.gender ~= liveGift.gender)
     )
-  local changed = #slots ~= #state._slots
-    or pendingEggPid ~= state._pendingEggPid
-    or eggCycleCounter ~= state._eggCycleCounter
+  local changed = #slots ~= #self._slots
+    or pendingEggPid ~= self._pendingEggPid
+    or eggCycleCounter ~= self._eggCycleCounter
     or giftChanged
   if not changed then
     for index, slot in ipairs(slots) do
-      local live = state._slots[index]
+      local live = self._slots[index]
       if slot.steps ~= live.steps or slot.mon ~= live.mon then
         changed = true
       end
@@ -219,22 +218,22 @@ local function prepareState(state, slots, pendingEggPid, eggCycleCounter, togepi
   end
   local consumed = false
   local function isCurrent()
-    return (not consumed) and state._revision == capturedRevision
+    return (not consumed) and self._revision == capturedRevision
   end
   local function publish()
     if consumed then
       fail("day care preparation already published", {})
     end
-    if state._revision ~= capturedRevision then
+    if self._revision ~= capturedRevision then
       fail("day care preparation is stale", {})
     end
     consumed = true
-    state._slots = slots
-    state._pendingEggPid = pendingEggPid
-    state._eggCycleCounter = eggCycleCounter
-    state._togepiGift = gift
+    self._slots = slots
+    self._pendingEggPid = pendingEggPid
+    self._eggCycleCounter = eggCycleCounter
+    self._togepiGift = gift
     if changed then
-      state._revision = state._revision + 1
+      self._revision = self._revision + 1
     end
   end
   return { changed = changed, isCurrent = isCurrent, publish = publish }
@@ -242,11 +241,10 @@ end
 
 -- Copies the live slots for a candidate: a caller may stage any number of
 -- derived edits without ever aliasing live state.
----@param state DaycareState
 ---@return { mon: table<string, unknown>, steps: integer }[]
-local function copySlots(state)
+function DaycareState:_copySlots()
   local slots = {}
-  for index, slot in ipairs(state._slots) do
+  for index, slot in ipairs(self._slots) do
     slots[index] = { mon = slot.mon, steps = slot.steps }
   end
   return slots
@@ -408,9 +406,9 @@ function DaycareState:prepareDeposit(expectedRevision, mon)
   if #self._slots >= DaycareState.MAX_SLOTS then
     return nil, "full"
   end
-  local slots = copySlots(self)
+  local slots = self:_copySlots()
   slots[#slots + 1] = { mon = self._validateMon(mon), steps = 0 }
-  return prepareState(self, slots, self._pendingEggPid, self._eggCycleCounter, self._togepiGift)
+  return self:_prepareState(slots, self._pendingEggPid, self._eggCycleCounter, self._togepiGift)
 end
 
 -- Stages one withdrawal: the candidate hands the detached parent and its
@@ -430,10 +428,10 @@ function DaycareState:prepareWithdraw(expectedRevision, slot0)
   if slot == nil then
     return nil, "empty"
   end
-  local slots = copySlots(self)
+  local slots = self:_copySlots()
   table.remove(slots, slot0 + 1)
   return {
-    prepared = prepareState(self, slots, self._pendingEggPid, self._eggCycleCounter, self._togepiGift),
+    prepared = self:_prepareState(slots, self._pendingEggPid, self._eggCycleCounter, self._togepiGift),
     mon = copyValue(slot.mon),
     steps = slot.steps,
   }
@@ -452,7 +450,7 @@ function DaycareState:prepareStepAdvance(expectedRevision, advance)
   if expectedRevision ~= self._revision then
     return nil, "stale"
   end
-  local slots = copySlots(self)
+  local slots = self:_copySlots()
   for _, slot in ipairs(slots) do
     if slot.steps < DaycareState.MAX_STEPS then
       slot.steps = slot.steps + 1
@@ -465,11 +463,10 @@ function DaycareState:prepareStepAdvance(expectedRevision, advance)
       pendingEggPid = checkUnsigned(advance.pendingEggPid, "pending egg pid", DaycareState.MAX_EGG_PID)
     end
     if advance.eggCycleCounter ~= nil then
-      eggCycleCounter =
-        checkUnsigned(advance.eggCycleCounter, "egg cycle counter", DaycareState.MAX_EGG_CYCLE)
+      eggCycleCounter = checkUnsigned(advance.eggCycleCounter, "egg cycle counter", DaycareState.MAX_EGG_CYCLE)
     end
   end
-  return prepareState(self, slots, pendingEggPid, eggCycleCounter, self._togepiGift)
+  return self:_prepareState(slots, pendingEggPid, eggCycleCounter, self._togepiGift)
 end
 
 -- Stages one produced egg identity: only the pending PID changes, exactly like
@@ -482,9 +479,8 @@ function DaycareState:prepareEggPending(expectedRevision, pendingEggPid)
   if expectedRevision ~= self._revision then
     return nil, "stale"
   end
-  return prepareState(
-    self,
-    copySlots(self),
+  return self:_prepareState(
+    self:_copySlots(),
     checkUnsigned(pendingEggPid, "pending egg pid", DaycareState.MAX_EGG_PID),
     self._eggCycleCounter,
     self._togepiGift
@@ -503,7 +499,7 @@ function DaycareState:prepareTogepiGift(expectedRevision, personality, gender)
   if expectedRevision ~= self._revision then
     return nil, "stale"
   end
-  return prepareState(self, copySlots(self), self._pendingEggPid, self._eggCycleCounter, {
+  return self:_prepareState(self:_copySlots(), self._pendingEggPid, self._eggCycleCounter, {
     personality = checkUnsigned(personality, "gift personality", DaycareState.MAX_EGG_PID),
     gender = checkUnsigned(gender, "gift gender", 1),
   })
@@ -518,7 +514,7 @@ function DaycareState:prepareEggReset(expectedRevision)
   if expectedRevision ~= self._revision then
     return nil, "stale"
   end
-  return prepareState(self, copySlots(self), 0, 0, self._togepiGift)
+  return self:_prepareState(self:_copySlots(), 0, 0, self._togepiGift)
 end
 
 return DaycareState

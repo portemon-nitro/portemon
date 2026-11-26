@@ -57,6 +57,8 @@ end
 
 ---@param value unknown
 ---@param what string
+---@param min integer
+---@param max integer
 ---@return integer
 local function checkBoundedInteger(value, what, min, max)
   if not isInteger(value) or value < min or value > max then

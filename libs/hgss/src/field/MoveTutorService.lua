@@ -130,7 +130,13 @@ function MoveTutorService:tutorEligibleMoves(slot0, tutorNpc)
   local mon = self:_mon(slot0)
   local catalog = self._mons:catalog()
   local species = assert(mon.species, "a stored mon carries its species")
-  local forms = assert(self._tutors.learnsets --[[@as table<string, string[][]>]][species], "the tutor table covers species")
+  local forms = assert(
+    self
+      ._tutors
+      .learnsets --[[@as table<string, string[][]>]]
+      [species],
+    "the tutor table covers species"
+  )
   local form = assert(mon.form, "a stored mon carries its form")
   local learnable = forms[form + 1]
   if learnable == nil then
@@ -145,7 +151,9 @@ function MoveTutorService:tutorEligibleMoves(slot0, tutorNpc)
     known[entry.move] = true
   end
   local offers = {}
-  for _, row in ipairs(self._tutors.moves --[[@as { move: string, cost: integer, npc: string }[] ]]) do
+  for _, row in
+    ipairs(self._tutors.moves --[[@as { move: string, cost: integer, npc: string }[] ]])
+  do
     if row.npc == npc and canLearn[row.move] == true and known[row.move] ~= true then
       offers[#offers + 1] = {
         move = row.move,
@@ -229,7 +237,9 @@ function MoveTutorService:tutorPrice(move)
     return nil
   end
   local catalog = self._mons:catalog()
-  for _, row in ipairs(self._tutors.moves --[[@as { move: string, cost: integer, npc: string }[] ]]) do
+  for _, row in
+    ipairs(self._tutors.moves --[[@as { move: string, cost: integer, npc: string }[] ]])
+  do
     local definition = catalog:move(row.move)
     if definition.nativeId == move then
       return { move = row.move, cost = row.cost, nativeId = definition.nativeId }

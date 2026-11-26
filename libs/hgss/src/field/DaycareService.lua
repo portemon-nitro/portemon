@@ -224,8 +224,7 @@ function DaycareService:_genderSymbol(mon)
   if gender == "genderless" then
     return ""
   end
-  local unnamedNidoran =
-    (mon.species == "NIDORAN_F" or mon.species == "NIDORAN_M") and mon.nickname == nil
+  local unnamedNidoran = (mon.species == "NIDORAN_F" or mon.species == "NIDORAN_M") and mon.nickname == nil
   if unnamedNidoran then
     return ""
   end
@@ -334,7 +333,7 @@ function DaycareService:_storedCopy(mon)
   return stored
 end
 
----@param slot index zero-based source slot of an occupied parent
+---@param slot integer zero-based source slot of an occupied parent
 ---@return table<string, unknown>
 function DaycareService:_requireParent(slot)
   local mon = self._state:mon(slot)
@@ -411,6 +410,7 @@ function DaycareService:deposit(partySlot0)
   if parentPrep == nil then
     fail("day care deposit was rejected: " .. tostring(parentReason), { slot = partySlot0 })
   end
+  ---@cast parentPrep -nil
   local roster = {}
   for slot = 0, mons:partyCount() - 1 do
     if slot ~= partySlot0 then
@@ -424,6 +424,7 @@ function DaycareService:deposit(partySlot0)
   if partyPrep == nil then
     fail("day care deposit lost its party revision: " .. tostring(partyReason), { slot = partySlot0 })
   end
+  ---@cast partyPrep -nil
   local statsPrep = self._stats:prepareChanges({ observations = { { kind = "daycare_deposit" } } })
   assert(parentPrep.isCurrent(), "the day care parent candidate stayed current")
   assert(partyPrep.isCurrent(), "the day care party candidate stayed current")
@@ -449,6 +450,7 @@ function DaycareService:withdraw(slot0)
   if staged == nil then
     fail("day care withdrawal was rejected: " .. tostring(reason), { slot = slot0 })
   end
+  ---@cast staged -nil
   local mon = staged.mon
   mon.condition = { currentHp = self._mons:derive(mon).maxHp, effects = {} }
   mon.capsule = { id = 0, seals = {} }
@@ -463,14 +465,11 @@ function DaycareService:withdraw(slot0)
     self:_learnCrossedMoves(mon, curve, level)
     mon.condition.currentHp = self._mons:derive(mon).maxHp
   end
-  local partyPrep, partyReason = self._mons:preparePartyBatch(
-    self._mons:partyRevision(),
-    {},
-    { mon }
-  )
+  local partyPrep, partyReason = self._mons:preparePartyBatch(self._mons:partyRevision(), {}, { mon })
   if partyPrep == nil then
     fail("day care withdrawal lost its party revision: " .. tostring(partyReason), { slot = slot0 })
   end
+  ---@cast partyPrep -nil
   assert(staged.prepared.isCurrent(), "the day care withdrawal candidate stayed current")
   assert(partyPrep.isCurrent(), "the day care withdrawal party candidate stayed current")
   staged.prepared.publish()
@@ -494,6 +493,7 @@ function DaycareService:sanitizeMon(partySlot0)
   if mon == nil then
     fail("day care sanitize names an occupied party slot", { slot = partySlot0 })
   end
+  ---@cast mon -nil
   if mon.heldItem ~= "NONE" then
     local definition = bag:catalog():item(mon.heldItem)
     if definition.heldFormEffect == "griseous_orb" then
@@ -532,6 +532,7 @@ function DaycareService:_sanitizeParty(partySlot0, mon)
   if partyPrep == nil then
     fail("day care sanitize lost its party revision: " .. tostring(reason), { slot = partySlot0 })
   end
+  ---@cast partyPrep -nil
   return partyPrep
 end
 
@@ -551,7 +552,7 @@ function DaycareService:updateYardObjects()
     if mon == nil then
       actors:clearReservedObject(slot.numericId)
     else
-      local descriptor = self._catalog:followerSelection(mon)
+      local descriptor = assert(self._catalog:followerSelection(mon), "a stored parent carries its follower visual")
       local visual = descriptor
       if descriptor.female ~= nil then
         local gender = Personality.gender(self._catalog:species(mon.species).genderRatio, mon.personality)
@@ -847,16 +848,15 @@ function DaycareService:giveTogepiEgg()
   if partyPrep == nil then
     fail("the original gift lost its party revision: " .. tostring(partyReason), {})
   end
+  ---@cast partyPrep -nil
   local state = self._state
   local gender = Personality.gender(self._catalog:species("TOGEPI").genderRatio, mon.personality)
-  local giftPrep, stateReason = state:prepareTogepiGift(
-    state:revision(),
-    mon.personality,
-    gender == "female" and 1 or 0
-  )
+  local giftPrep, stateReason =
+    state:prepareTogepiGift(state:revision(), mon.personality, gender == "female" and 1 or 0)
   if giftPrep == nil then
     fail("the original gift lost its Day Care state: " .. tostring(stateReason), {})
   end
+  ---@cast giftPrep -nil
   assert(partyPrep.isCurrent(), "the original gift party candidate stayed current")
   assert(giftPrep.isCurrent(), "the original gift identity candidate stayed current")
   partyPrep.publish()
@@ -912,10 +912,12 @@ function DaycareService:receiveEgg()
   if partyPrep == nil then
     fail("day care egg receipt lost its party revision: " .. tostring(partyReason), {})
   end
+  ---@cast partyPrep -nil
   local statePrep, stateReason = state:prepareEggReset(state:revision())
   if statePrep == nil then
     fail("day care egg receipt lost its stored state: " .. tostring(stateReason), {})
   end
+  ---@cast statePrep -nil
   assert(partyPrep.isCurrent(), "the day care egg receipt party candidate stayed current")
   assert(statePrep.isCurrent(), "the day care egg receipt candidate stayed current")
   partyPrep.publish()

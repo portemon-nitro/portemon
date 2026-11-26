@@ -150,9 +150,8 @@ function MoveRelearnerState.new(opts)
   }, MoveRelearnerState)
 end
 
----@param self MoveRelearnerState
 ---@param sound string
-local function play(self, sound)
+function MoveRelearnerState:_play(sound)
   if type(self._audio.play) == "function" then
     self._audio:play(sound)
   end
@@ -160,11 +159,10 @@ end
 
 -- Prints one source line and continues into `nextPhase` when the printer
 -- finishes; a question leaves the prompt open instead.
----@param self MoveRelearnerState
 ---@param index integer the source message index inside the mode's column
 ---@param nextPhase string
 ---@param question string?
-local function printLine(self, index, nextPhase, question)
+function MoveRelearnerState:_printLine(index, nextPhase, question)
   self._message = index
   self._question = question
   self._nextPhase = nextPhase
@@ -173,89 +171,83 @@ local function printLine(self, index, nextPhase, question)
   self._frame = 0
 end
 
----@param self MoveRelearnerState
 ---@param phase string
-local function enter(self, phase)
+function MoveRelearnerState:_enter(phase)
   self._phase = phase
   self._frame = 0
 end
 
----@param self MoveRelearnerState
 ---@return PokemonCareRelearnerRow? the focused eligible move
-local function focusedMove(self)
+function MoveRelearnerState:_focusedMove()
   return self._moves[self._scrollOffset + self._cursor + 1]
 end
 
 -- MoveRelearner_AskTeach: room for the move asks the teach question, a full
 -- moveset asks the source's replacement question.
----@param self MoveRelearnerState
-local function askTeach(self)
+function MoveRelearnerState:_askTeach()
   if #self._known < MAX_MON_MOVES then
-    printLine(self, 1, PHASE.HANDLE_YES_NO, QUESTION.teach)
+    self:_printLine(1, PHASE.HANDLE_YES_NO, QUESTION.teach)
     return
   end
-  printLine(self, 4, PHASE.HANDLE_YES_NO, QUESTION.delete_move)
+  self:_printLine(4, PHASE.HANDLE_YES_NO, QUESTION.delete_move)
 end
 
 -- MoveRelearner_AskAfterSummary: the replacement Summary answered a real row,
 -- so the source asks the forget confirmation; a cancelled picker answers
 -- MOVE_SLOT_NEW and the source asks whether to stop teaching.
----@param self MoveRelearnerState
-local function askAfterSummary(self)
+function MoveRelearnerState:_askAfterSummary()
   local target = self._moveSlot
   assert(target ~= nil, "the replacement Summary answered before the confirmation")
   if target < MOVE_SLOT_NEW then
-    printLine(self, 10, PHASE.HANDLE_YES_NO, QUESTION.forget_move)
+    self:_printLine(10, PHASE.HANDLE_YES_NO, QUESTION.forget_move)
     return
   end
-  printLine(self, 7, PHASE.HANDLE_YES_NO, QUESTION.stop_teaching)
+  self:_printLine(7, PHASE.HANDLE_YES_NO, QUESTION.stop_teaching)
 end
 
----@param self MoveRelearnerState
-local function beginExit(self, cancelled)
+---@param cancelled boolean whether the lesson ends without teaching
+function MoveRelearnerState:_beginExit(cancelled)
   self._cancelled = cancelled
   self._message = nil
   self._question = nil
-  enter(self, PHASE.FADE_OUT)
+  self:_enter(PHASE.FADE_OUT)
 end
 
 -- The source buttons flash before their state runs.
----@param self MoveRelearnerState
 ---@param button "teach"|"return"
 ---@param nextPhase string
-local function startFlash(self, button, nextPhase)
+function MoveRelearnerState:_startFlash(button, nextPhase)
   self._flash = button
   self._nextPhase = nextPhase
-  enter(self, PHASE.BUTTON_FLASH)
+  self:_enter(PHASE.BUTTON_FLASH)
 end
 
 -- MoveRelearner_TeachMove: the selected move lands once, through the owning
 -- publication, before the closing fade. A stale revision or an owner failure
 -- keeps the lesson unlearned.
----@param self MoveRelearnerState
-local function teachSelectedMove(self)
-  local selected = assert(focusedMove(self), "a lesson names the move it teaches")
+function MoveRelearnerState:_teachSelectedMove()
+  local selected = assert(self:_focusedMove(), "a lesson names the move it teaches")
   local target = self._moveSlot
   if target == nil or target >= MOVE_SLOT_NEW then
     target = #self._known
   end
   local outcome = self._teach(selected.move, target)
   if outcome.kind ~= "changed" then
-    beginExit(self, true)
+    self:_beginExit(true)
     return
   end
   self._learned = true
   self._cancelled = false
   self._message = nil
   self._question = nil
-  enter(self, PHASE.FADE_OUT)
+  self:_enter(PHASE.FADE_OUT)
 end
 
 -- The replacement Summary runs as the application's own child overlay: the
 -- source tears its own screen down, runs the Summary, then rebuilds and asks
 -- where to continue.
----@param self MoveRelearnerState
-local function runSummary(self, input)
+---@param input { pressedAction: boolean?, pressedCancel: boolean?, pressedDirection: string? }?
+function MoveRelearnerState:_runSummary(input)
   local summary = assert(self._summary, "the replacement Summary owns its child")
   summary:updateFixed(PokemonCareInterface.summaryInputEvents(input))
   local result = summary:takeResult()
@@ -274,81 +266,78 @@ local function runSummary(self, input)
     error("the replacement Summary answered " .. tostring(result.kind), 0)
   end
   self._nextPhase = PHASE.ASK_AFTER_SUMMARY
-  enter(self, PHASE.WAIT_FADE)
+  self:_enter(PHASE.WAIT_FADE)
 end
 
----@param self MoveRelearnerState
-local function openSummaryChild(self)
+function MoveRelearnerState:_openSummaryChild()
   local child = self._openSummary({
     kind = PokemonCareInterface.KINDS.summary_application,
     mode = PokemonCareInterface.SUMMARY_MODES.move_picker,
     slot = self._slot,
     revision = self._revision,
-    moveToLearn = assert(focusedMove(self), "the replacement Summary previews the selected move").move,
+    moveToLearn = assert(self:_focusedMove(), "the replacement Summary previews the selected move").move,
   })
   assert(type(child) == "table", "the replacement Summary answers a child screen")
   self._summary = child
-  enter(self, PHASE.RUN_SUMMARY)
+  self:_enter(PHASE.RUN_SUMMARY)
 end
 
 -- One source yes/no answer runs its own action table
 -- (sMoveRelearnerYesNoActions).
----@param self MoveRelearnerState
 ---@param answer "yes"|"no"
-local function answerQuestion(self, answer)
+function MoveRelearnerState:_answerQuestion(answer)
   local question = assert(self._question, "a yes/no answer belongs to its question")
   self._question = nil
   if question == QUESTION.teach then
     if answer == "yes" then
       self._moveSlot = #self._known
-      printLine(self, 3, PHASE.TEACH_MOVE, nil)
+      self:_printLine(3, PHASE.TEACH_MOVE, nil)
       return
     end
     self._message = nil
-    enter(self, PHASE.INPUT)
+    self:_enter(PHASE.INPUT)
     return
   end
   if question == QUESTION.give_up then
     if answer == "yes" then
-      beginExit(self, true)
+      self:_beginExit(true)
       return
     end
     self._message = nil
-    enter(self, PHASE.INPUT)
+    self:_enter(PHASE.INPUT)
     return
   end
   if question == QUESTION.delete_move then
     if answer == "yes" then
-      enter(self, PHASE.FADE_OUT_TO_SUMMARY)
+      self:_enter(PHASE.FADE_OUT_TO_SUMMARY)
       return
     end
-    printLine(self, 7, PHASE.HANDLE_YES_NO, QUESTION.stop_teaching)
+    self:_printLine(7, PHASE.HANDLE_YES_NO, QUESTION.stop_teaching)
     return
   end
   if question == QUESTION.stop_teaching then
     if answer == "yes" then
-      printLine(self, 8, PHASE.HANDLE_YES_NO, nil)
+      self:_printLine(8, PHASE.HANDLE_YES_NO, nil)
       self._nextPhase = PHASE.FADE_OUT
       self._cancelled = true
       return
     end
-    printLine(self, 4, PHASE.HANDLE_YES_NO, QUESTION.delete_move)
+    self:_printLine(4, PHASE.HANDLE_YES_NO, QUESTION.delete_move)
     return
   end
   assert(question == QUESTION.forget_move, "unknown source question " .. tostring(question))
   if answer == "yes" then
-    printLine(self, 5, PHASE.PRINT_LEARNED, nil)
+    self:_printLine(5, PHASE.PRINT_LEARNED, nil)
     return
   end
-  enter(self, PHASE.FADE_OUT_TO_SUMMARY)
+  self:_enter(PHASE.FADE_OUT_TO_SUMMARY)
 end
 
 -- The source grid: rows 0..3 focus list entries, up/down walk the visible rows
 -- and scroll when the list continues past them, Confirm answers the focused
 -- row and Cancel is the RETURN button.
----@param self MoveRelearnerState
 ---@param input { pressedAction: boolean?, pressedCancel: boolean?, pressedDirection: string? }?
-local function handleListInput(self, input)
+function MoveRelearnerState:_handleListInput(input)
   local typed = input or {}
   local direction = typed.pressedDirection
   if direction == "up" or direction == "down" then
@@ -372,27 +361,26 @@ local function handleListInput(self, input)
     end
     if cursor ~= self._cursor then
       self._cursor = cursor
-      play(self, SOUND.decide)
+      self:_play(SOUND.decide)
     end
     return
   end
   if typed.pressedCancel == true then
-    play(self, SOUND.cancel)
-    startFlash(self, "return", PHASE.ASK_GIVE_UP)
+    self:_play(SOUND.cancel)
+    self:_startFlash("return", PHASE.ASK_GIVE_UP)
     return
   end
   if typed.pressedAction == true then
-    if focusedMove(self) == nil then
+    if self:_focusedMove() == nil then
       return
     end
-    play(self, SOUND.decide)
-    askTeach(self)
+    self:_play(SOUND.decide)
+    self:_askTeach()
   end
 end
 
----@param self MoveRelearnerState
 ---@param input { pressedAction: boolean?, pressedCancel: boolean?, pressedDirection: string? }?
-local function handleQuestionInput(self, input)
+function MoveRelearnerState:_handleQuestionInput(input)
   local typed = input or {}
   local direction = typed.pressedDirection
   if direction == "up" or direction == "left" then
@@ -404,18 +392,17 @@ local function handleQuestionInput(self, input)
     return
   end
   if typed.pressedCancel == true then
-    play(self, SOUND.cancel)
-    answerQuestion(self, "no")
+    self:_play(SOUND.cancel)
+    self:_answerQuestion("no")
     return
   end
   if typed.pressedAction == true then
-    play(self, self._selection == "yes" and SOUND.decide or SOUND.cancel)
-    answerQuestion(self, self._selection)
+    self:_play(self._selection == "yes" and SOUND.decide or SOUND.cancel)
+    self:_answerQuestion(self._selection)
   end
 end
 
----@param self MoveRelearnerState
-local function advanceWait(self)
+function MoveRelearnerState:_advanceWait()
   self._frame = self._frame + 1
   local phase = self._phase
   if phase == PHASE.WAIT_FADE then
@@ -427,10 +414,10 @@ local function advanceWait(self)
     local nextPhase = self._nextPhase or PHASE.INPUT
     self._nextPhase = nil
     if nextPhase == PHASE.ASK_AFTER_SUMMARY then
-      askAfterSummary(self)
+      self:_askAfterSummary()
       return
     end
-    enter(self, nextPhase)
+    self:_enter(nextPhase)
     return
   end
   if phase == PHASE.WAIT_MESSAGE then
@@ -443,16 +430,16 @@ local function advanceWait(self)
       -- The prompt opens once the printer finished; its answer belongs to the
       -- following ticks.
       self._nextPhase = nil
-      enter(self, PHASE.HANDLE_YES_NO)
+      self:_enter(PHASE.HANDLE_YES_NO)
       return
     end
     self._nextPhase = nil
     self._message = nil
-    enter(self, nextPhase)
+    self:_enter(nextPhase)
     return
   end
   if phase == PHASE.SHOW_YES_NO then
-    enter(self, PHASE.HANDLE_YES_NO)
+    self:_enter(PHASE.HANDLE_YES_NO)
     return
   end
   if phase == PHASE.BUTTON_FLASH then
@@ -462,27 +449,27 @@ local function advanceWait(self)
     local nextPhase = assert(self._nextPhase, "a flashing button continues into its state")
     self._flash = nil
     self._nextPhase = nil
-    enter(self, nextPhase)
+    self:_enter(nextPhase)
     return
   end
   if phase == PHASE.TEACH_MOVE then
-    teachSelectedMove(self)
+    self:_teachSelectedMove()
     return
   end
   if phase == PHASE.PRINT_LEARNED then
-    printLine(self, 6, PHASE.TEACH_MOVE, nil)
+    self:_printLine(6, PHASE.TEACH_MOVE, nil)
     return
   end
   if phase == PHASE.FADE_OUT_TO_SUMMARY then
-    openSummaryChild(self)
+    self:_openSummaryChild()
     return
   end
   if phase == PHASE.ASK_TEACH then
-    askTeach(self)
+    self:_askTeach()
     return
   end
   if phase == PHASE.ASK_GIVE_UP then
-    printLine(self, 2, PHASE.HANDLE_YES_NO, QUESTION.give_up)
+    self:_printLine(2, PHASE.HANDLE_YES_NO, QUESTION.give_up)
     return
   end
   if phase == PHASE.FADE_OUT then
@@ -490,7 +477,7 @@ local function advanceWait(self)
       return
     end
     self._done = true
-    enter(self, PHASE.EXIT)
+    self:_enter(PHASE.EXIT)
   end
 end
 
@@ -514,30 +501,30 @@ function MoveRelearnerState:handlePointer(target)
       local visible = math.max(0, index - self._scrollOffset)
       assert(visible < VISIBLE_ROWS, "a row target lies inside the drawn list")
       if index ~= self._scrollOffset + self._cursor then
-        play(self, SOUND.decide)
+        self:_play(SOUND.decide)
       end
       self._cursor = visible
       return
     end
     if target.kind == "teach" then
-      if focusedMove(self) == nil then
+      if self:_focusedMove() == nil then
         return
       end
-      play(self, SOUND.decide)
-      startFlash(self, "teach", PHASE.ASK_TEACH)
+      self:_play(SOUND.decide)
+      self:_startFlash("teach", PHASE.ASK_TEACH)
       return
     end
     if target.kind == "return" then
-      play(self, SOUND.cancel)
-      startFlash(self, "return", PHASE.ASK_GIVE_UP)
+      self:_play(SOUND.cancel)
+      self:_startFlash("return", PHASE.ASK_GIVE_UP)
     end
     return
   end
   if phase == PHASE.HANDLE_YES_NO and target.kind == "answer" then
     local answer = assert(target.answer, "a prompt answer names yes or no")
     assert(answer == "yes" or answer == "no", "a prompt answer names yes or no")
-    play(self, answer == "yes" and SOUND.decide or SOUND.cancel)
-    answerQuestion(self, answer)
+    self:_play(answer == "yes" and SOUND.decide or SOUND.cancel)
+    self:_answerQuestion(answer)
   end
 end
 
@@ -548,24 +535,24 @@ function MoveRelearnerState:updateFixed(input)
   end
   local phase = self._phase
   if phase == PHASE.RUN_SUMMARY then
-    runSummary(self, input)
+    self:_runSummary(input)
     return
   end
   if phase ~= PHASE.FADE_OUT and phase ~= PHASE.EXIT and self._preparationError ~= nil then
-    beginExit(self, true)
+    self:_beginExit(true)
     return
   end
   if phase == PHASE.INPUT then
     self._frame = self._frame + 1
-    handleListInput(self, input)
+    self:_handleListInput(input)
     return
   end
   if phase == PHASE.HANDLE_YES_NO then
     self._frame = self._frame + 1
-    handleQuestionInput(self, input)
+    self:_handleQuestionInput(input)
     return
   end
-  advanceWait(self)
+  self:_advanceWait()
 end
 
 -- Reports the generated presentation's readiness. A lesson never claims a
@@ -616,7 +603,6 @@ function MoveRelearnerState:snapshot()
     known = self._known,
     question = question,
     selected = self._moveSlot,
-    learnButton = self._preparationReady,
     flash = self._flash,
     message = message,
     done = self._done,

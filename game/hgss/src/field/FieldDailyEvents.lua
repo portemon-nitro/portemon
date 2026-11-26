@@ -199,10 +199,12 @@ function FieldDailyEvents:applyDay(sample, days)
     type(seed) == "number" and seed % 1 == 0 and seed >= 0 and seed <= U32.MAX,
     "the calendar persists an unsigned daily seed"
   )
+  ---@cast seed integer
   -- Party_UpdatePokerus.
   self:_decayPokerus(days)
   -- Save_LCRNGAdvanceLotoID: the source linear step, no linear draw.
-  self:_writeLotoId(U32.add(U32.mul(seed, LOTO_MULTIPLIER), LOTO_INCREMENT))
+  local lotoId = U32.add(U32.mul(seed, LOTO_MULTIPLIER), LOTO_INCREMENT) --[[@as integer]]
+  self:_writeLotoId(lotoId)
   -- Save_VarsFlags_RandomizeVar4041.
   world:setVar(
     assert(VARS.VAR_UNK_4041, "the shared daily variable resolves in the symbol catalog"),
@@ -268,7 +270,7 @@ function FieldDailyEvents:_decayPokerus(days)
       { owner = "mon service", operation = "preparePartyChanges", reason = reason }
     )
   end
-  preparation --[[@as { publish: fun(self: table) }]].publish()
+  preparation --[[@as { publish: fun() }]].publish()
 end
 
 -- Save_VarsFlags_SetLotoId without BUGFIX_LOTO_NUMBER_HI: both halfword

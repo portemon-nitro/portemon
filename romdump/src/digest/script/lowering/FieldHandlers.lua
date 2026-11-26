@@ -1335,7 +1335,6 @@ local function pcHallOfFameOpen()
   return { op = "pc_hof_open" }
 end
 
-
 local function waitInputOrTicks(ins)
   return { op = "wait_input_or_ticks", ticks = Operands.operandValue(ins.operands[1]) }
 end
@@ -2249,9 +2248,7 @@ FieldHandlers[522] = FieldServiceHandlers.getCurrentHour
 -- the shared party-screen nodes with the care context. ScrCmd_
 -- CountAliveMonsAndPC (358) is the same conscious party count including every
 -- stored PC box mon, which the same deposit screen reads.
-FieldHandlers[358] = function(ins)
-  return { op = "count_alive_mons_and_pc", result = Operands.varRef(ins.operands[1]) }
-end
+FieldHandlers[358] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").countAliveMonsAndPc
 FieldHandlers[312] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").monNicknames
 FieldHandlers[313] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").state
 FieldHandlers[361] = require("romdump.src.digest.script.lowering.PokemonCareHandlers").retrieveMon

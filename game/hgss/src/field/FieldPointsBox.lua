@@ -191,15 +191,27 @@ end
 function FieldPointsBox:_liveBalance(walletRole)
   local wallet = self._wallets[walletRole]
   if type(wallet) ~= "table" then
-    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live " .. walletRole .. " wallet", {})
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "the points window requires the live " .. walletRole .. " wallet",
+      {}
+    )
   end
   ---@cast wallet FieldPointsBox.Wallet
   if type(wallet.balance) ~= "function" then
-    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live " .. walletRole .. " wallet", {})
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "the points window requires the live " .. walletRole .. " wallet",
+      {}
+    )
   end
   local balance = wallet:balance()
   if type(balance) ~= "number" then
-    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the points window requires the live " .. walletRole .. " wallet", {})
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "the points window requires the live " .. walletRole .. " wallet",
+      {}
+    )
   end
   return balance
 end

@@ -1362,7 +1362,10 @@ function FieldState:_drawBankKeypad(resources)
   local auxiliary = type(measured) == "table" and measured.auxiliary or nil
   local surface = { x = 0, y = 0, width = placement.width, height = placement.height }
   if type(auxiliary) == "table" and type(auxiliary.width) == "number" and auxiliary.width > 0 then
-    local scale = math.max(1, math.min(math.floor(auxiliary.width / placement.width), math.floor(auxiliary.height / placement.height)))
+    local scale = math.max(
+      1,
+      math.min(math.floor(auxiliary.width / placement.width), math.floor(auxiliary.height / placement.height))
+    )
     surface = {
       x = auxiliary.x + math.floor((auxiliary.width - placement.width * scale) / 2),
       y = auxiliary.y + math.floor((auxiliary.height - placement.height * scale) / 2),
@@ -1391,7 +1394,14 @@ function FieldState:_drawBankKeypad(resources)
     return acquired.image
   end
   local lg = love.graphics
-  LogicalSurface.draw(lg, { x = surface.x, y = surface.y, scale = surface.width / placement.width, pixelRatio = 1 }, function()
+  local surfacePlacement = {
+    frame = { x = surface.x, y = surface.y, width = surface.width, height = surface.height },
+    scale = surface.width / placement.width,
+    logicalWidth = placement.width,
+    logicalHeight = placement.height,
+    pixelRatio = 1,
+  }
+  LogicalSurface.draw(lg, surfacePlacement, function()
     BankInterface.draw(plan, image)
     for _, label in ipairs(plan.labels) do
       local width = text:textWidth(label.text) or 0

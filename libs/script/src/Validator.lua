@@ -638,8 +638,7 @@ local function checkPointsBoxStep(context, step, path, name)
       context,
       ScriptErrors.SCRIPT_SCHEMA_INVALID,
       path,
-      needsType and "a points window paint names its source type"
-        or "hiding the points window carries no type selector",
+      needsType and "a points window paint names its source type" or "hiding the points window carries no type selector",
       { op = name }
     )
   end
@@ -735,9 +734,7 @@ local function checkStep(context, step, path)
         { kind = step.kind }
       )
     end
-  elseif
-    name == "money_change" or name == "money_check" or name == "money_box" or name == "savings_box"
-  then
+  elseif name == "money_change" or name == "money_check" or name == "money_box" or name == "savings_box" then
     checkMoneyStep(context, step, path, name)
   elseif name == "coin_change" or name == "coin_check" then
     checkCoinStep(context, step, path, name)
@@ -965,7 +962,7 @@ local function checkBindings(context, v, path, field)
     checkTextValue(context, textValue, path .. "/" .. tostring(slot), field)
   end
 end
-local function checkBufferSlot(context, v, path, field)
+local function checkBufferSlotValue(context, v, path, field)
   if type(v) ~= "number" or v % 1 ~= 0 or v < 0 or v > 7 then
     fail(
       context,
@@ -1098,7 +1095,7 @@ CHECKERS.steps = checkSteps
 CHECKERS.cases = checkCases
 CHECKERS.args = checkArgs
 CHECKERS.bindings = checkBindings
-CHECKERS.buffer_slot = checkBufferSlot
+CHECKERS.buffer_slot = checkBufferSlotValue
 CHECKERS.buttons = checkButtons
 CHECKERS.scalar_list = checkScalarList
 CHECKERS.menu_items = checkMenuItems

@@ -749,7 +749,8 @@ end
 ---@param action string
 ---@param operands
 ---| { selector: integer?, switchNumber: integer? }
----| { useLastInteracted: boolean?, lastInteractedActor: string? }|nil
+---| { useLastInteracted: boolean?, lastInteractedActor: string? }
+---| { kind: integer?, choice: integer? }|nil
 function GymMechanism:begin(action, operands)
   if self:isRiding() then
     Errors.raise(FieldErrors.FIELD_GYM_MECHANISM_BUSY, "another gym transport owns the field", { action = action })

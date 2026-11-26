@@ -25,6 +25,12 @@ function PokemonCareHandlers.monNicknames(_)
   return { op = "daycare_mon_nicknames" }
 end
 
+-- ScrCmd_CountAliveMonsAndPC: the same conscious party count including every
+-- stored PC box mon, which the deposit screen's own count reads.
+function PokemonCareHandlers.countAliveMonsAndPc(ins)
+  return { op = "count_alive_mons_and_pc", result = Operands.varRef(ins.operands[1]) }
+end
+
 -- ScrCmd_GetDaycareState: the source state code lands in the output variable.
 function PokemonCareHandlers.state(ins)
   return { op = "daycare_state", result = Operands.varRef(ins.operands[1]) }

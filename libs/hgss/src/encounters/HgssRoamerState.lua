@@ -23,6 +23,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@field private _species table<string, boolean> selected species reference set
 ---@field private _maps table<integer, boolean> selected map reference set
 ---@field private _native table<string, unknown>? the source roamer slot/route graph
+---@field private _nativeSlots table<integer, { key: string, species: string, level: integer, regionMin: integer, regionCount: integer }>? the compiled source slots behind the graph
 ---@field private _routeMaps integer[] route index to map identity
 ---@field private _steps integer
 ---@field private _repelSteps integer
@@ -160,6 +161,7 @@ function HgssRoamerState.new(args)
     if type(mapIdBySymbol) ~= "table" then
       Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer state resolves its routes through the world catalog", {})
     end
+    ---@cast mapIdBySymbol -nil
     nativeSlots, routeMaps = resolveNative(args.native, mapIdBySymbol)
   end
   if not Validate.isArray(args.records) then
@@ -229,6 +231,7 @@ function HgssRoamerState.restore(bucket, refs, native)
     if type(mapIdBySymbol) ~= "table" then
       Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer restoration resolves its routes through the world catalog", {})
     end
+    ---@cast mapIdBySymbol -nil
     local _, resolved = resolveNative(native, mapIdBySymbol)
     routeMaps = resolved
   end
@@ -328,7 +331,7 @@ end
 -- refuses the meeting on its own 1-in-2 draw and picks uniformly when
 -- several slots stand there. A map with no standing roamer draws nothing.
 ---@param mapId integer the player's map identity
----@param rng table world random stream
+---@param rng { nextRaw: fun(self: table<string, unknown>): integer } world random stream
 ---@return string? the standing roamer's record key, nil when none is met
 function HgssRoamerState:stepEncounterKey(mapId, rng)
   if type(mapId) ~= "number" or mapId % 1 ~= 0 then
@@ -474,6 +477,7 @@ function HgssRoamerState:nativeSlot(slot)
   if slots == nil then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer creation requires the source roamer graph", {})
   end
+  ---@cast slots -nil
   assert(type(slots) == "table", "roamer creation reads the source slots")
   local fact = slots[slot]
   if type(fact) ~= "table" then
@@ -528,7 +532,7 @@ end
 -- rejecting the player's previous location and the roamer's current route.
 ---@param slot table<string, unknown> source slot facts
 ---@param current integer? current route index, nil when the slot is fresh
----@param rng table world random stream
+---@param rng { nextRaw: fun(self: table<string, unknown>): integer } world random stream
 ---@return integer the chosen route index
 function HgssRoamerState:_chooseRandom(slot, current, rng)
   local regionMin = slot.regionMin --[[@as integer]]
@@ -557,9 +561,10 @@ end
 -- otherwise one adjacent route, never the player's previous location. A
 -- single neighbour that is that location falls back to the random branch.
 -- Terminal slots never move and draw nothing.
----@param rng table world random stream
+---@param rng { nextRaw: fun(self: table<string, unknown>): integer } world random stream
 function HgssRoamerState:updateOnConnectionEntry(rng)
   local slots = assert(self._nativeSlots, "roamer movement requires the source roamer graph")
+  ---@cast slots -nil
   assert(type(slots) == "table", "roamer movement reads the source slots")
   local previous = self._playerRoutes.previous
   local adjacency = assert(self._native, "roamer movement reads the adjacency table")
@@ -613,9 +618,10 @@ end
 -- field_roamer.c::Save_RandomizeRoamersLocation: every active slot picks a
 -- fresh in-region route, excluding the player's previous location and its
 -- own current route, one draw attempt at a time in source order.
----@param rng table world random stream
+---@param rng { nextRaw: fun(self: table<string, unknown>): integer } world random stream
 function HgssRoamerState:randomizeLocations(rng)
   local slots = assert(self._nativeSlots, "roamer randomization requires the source roamer graph")
+  ---@cast slots -nil
   assert(type(slots) == "table", "roamer randomization reads the source slots")
   for slotIndex = 0, #slots - 1 do
     local fact = slots[slotIndex]
@@ -672,7 +678,7 @@ end
 -- error, never a silent second creation.
 ---@param slot integer source slot index
 ---@param mon table<string, unknown> the created roaming mon
----@param rng table world random stream
+---@param rng { nextRaw: fun(self: table<string, unknown>): integer } world random stream
 ---@return table<string, unknown> the created record
 function HgssRoamerState:createNativeSlot(slot, mon, rng)
   local fact = self:nativeSlot(slot)

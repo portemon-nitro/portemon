@@ -103,10 +103,7 @@ local function checkRequest(mode, request)
       type(request.prospectiveMove) == "string" and request.prospectiveMove ~= "",
       "preview moves arrive as named moves"
     )
-    assert(
-      context == "replace_machine" or context == "replace_tutor",
-      "preview rows belong to a replacement picker"
-    )
+    assert(context == "replace_machine" or context == "replace_tutor", "preview rows belong to a replacement picker")
   end
 end
 

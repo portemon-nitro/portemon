@@ -1134,13 +1134,14 @@ end
 -- picks the PID-selected slot ability and health clamps to the re-derived
 -- maximum without reviving a fainted mon, exactly like the source
 -- UpdateBoxMonAbility plus CalcMonLevelAndStats.
+---@param service HgssMonService the live mon service the form derives through
 ---@param staged table<string, unknown>
 ---@param form integer
 ---@return table<string, unknown>
 local function applyOrdinaryForm(service, staged, form)
   local oldMax = service:derive(staged).maxHp
   staged.form = form
-  local abilities = service._catalog:form(staged.species, form).abilities
+  local abilities = service:catalog():form(staged.species, form).abilities
   assert(type(abilities) == "table", "the target form lists its abilities")
   if #abilities == 1 then
     staged.ability = abilities[1]

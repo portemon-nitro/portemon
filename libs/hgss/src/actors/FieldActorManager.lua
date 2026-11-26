@@ -275,9 +275,13 @@ end
 ---@field captureObjects fun(self: FieldActorManager): table<string, unknown>
 ---@field new fun(opts: FieldActorManagerOptions): FieldActorManager
 ---@field isPlacementRejection fun(err: unknown): boolean
+local FieldActorManager = {}
+FieldActorManager.__index = FieldActorManager
+
 ---@class FieldActorManager.Actor: FieldObjectActor
 ---@field movementType string
 ---@field large boolean? source follower shape nibble is nonzero
+---@field visualId integer? the acquired visual identity the actor currently borrows
 
 ---@class FieldActorManager.CommittedStep
 ---@field actorId string
@@ -364,10 +368,6 @@ end
 ---@field worldY number?
 ---@field sourceEvent table<string, unknown>
 ---@field actorId string
-local FieldActorManager = {}
----@cast FieldActorManager FieldActorManager
-FieldActorManager.__index = FieldActorManager
-
 -- MapObject_GetPositionVectorYCoordUInt shifts the source model Y by /8 and
 -- then converts it to FX32 tiles. Runtime world Y is already normalized to
 -- 16 model units per tile, so two source bands fit in one runtime tile.
@@ -2533,7 +2533,7 @@ end
 -- or a destination surface beyond the reachable step) answers nil so the
 -- controller waits it out; any other failure propagates.
 ---@param entry FieldActorManager.Entry
----@param spec FieldActorManager.PartnerSpec
+---@param spec { fieldX: integer, fieldZ: integer, worldY: number? } the placed object's own source position
 ---@return table<string, unknown>? surface
 local function resolvePartnerSurface(entry, spec)
   local runtimeMap = entry.runtimeMap
@@ -2739,10 +2739,7 @@ local function checkReservedSpec(self, spec)
       { facing = spec.facing }
     )
   end
-  assert(
-    type(spec.movementType) == "string",
-    "reserved objects name their source movement profile"
-  )
+  assert(type(spec.movementType) == "string", "reserved objects name their source movement profile")
   assert(
     type(spec.fieldX) == "number" and spec.fieldX % 1 == 0 and type(spec.fieldZ) == "number" and spec.fieldZ % 1 == 0,
     "reserved object integer field coordinates required"
@@ -3145,10 +3142,7 @@ end
 -- before the object exists; that write lands on this view.
 ---@param runtimeMap RuntimeFieldMap
 function FieldActorManager:beginEntry(runtimeMap)
-  assert(
-    type(runtimeMap) == "table" and runtimeMap.fieldData ~= nil,
-    "field actor entry needs the entering map view"
-  )
+  assert(type(runtimeMap) == "table" and runtimeMap.fieldData ~= nil, "field actor entry needs the entering map view")
   self.entryMap = runtimeMap
 end
 

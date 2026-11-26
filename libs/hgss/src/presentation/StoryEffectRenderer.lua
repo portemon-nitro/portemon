@@ -61,6 +61,14 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field renderMeshesById table<string, unknown>
 ---@field wraps table<number, { x: string, y: string }>
 
+-- One prepared scene part: the runtime model, its pooled draws and the
+-- material wraps the scene's phases resolve images through. A scene part has no
+-- single clip, unlike the mechanism props above.
+---@class StoryEffectSceneResource
+---@field model ModelDefinition
+---@field renderMeshesById table<string, unknown>
+---@field wraps table<number, { x: string, y: string }>
+
 -- The live record one claim holds: the claimed model instance and, for a
 -- spider, the one-shot clip its ride is playing.
 ---@class StoryEffectCarRecord
@@ -84,7 +92,7 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field traps table<string, table<string, unknown>>
 ---@field overlay StoryEffectOverlay?
 ---@field _trap table<string, unknown>?
----@field _sceneResources table<string, table<integer, StoryEffectResource>>?
+---@field _sceneResources table<string, table<integer, StoryEffectSceneResource>>?
 ---@field _montageImages table<string, unknown>?
 local StoryEffectRenderer = {}
 StoryEffectRenderer.__index = StoryEffectRenderer
@@ -366,7 +374,7 @@ end
 -- an owner's own per-tick record of where each source prop stands: the gym
 -- mechanism's placements and the hideout's trap travel through this one draw,
 -- and an absent prop draws nothing.
----@param status GymMechanism.Presentation|RocketHideoutEffects.Presentation
+---@param status GymMechanism.Presentation|RocketHideoutEffects.Presentation|LegendEventScene.Presentation
 ---@return table[]
 function StoryEffectRenderer:drawItems(status)
   assert(type(status) == "table", "story effect status is required")
@@ -489,14 +497,15 @@ end
 -- One legendary-story scene part realized over the shared pool: the source
 -- model with every clip record its phases declare. Unlike the mechanism props,
 -- a scene part carries several clips and the scene plays them phase by phase.
----@param self StoryEffectRenderer
 ---@param kind string scene definition key
 ---@param index integer one-based part index
----@return StoryEffectResource
-local function sceneResource(self, kind, index, partOverride)
+---@param partOverride table<string, unknown>? an effect that publishes one model instead of keyed parts
+---@return StoryEffectSceneResource
+function StoryEffectRenderer:_sceneResource(kind, index, partOverride)
   local definitions = assert(self.definitions and self.definitions.legend, "the renderer carries no legend scenes")
   local definition = assert(definitions[kind], "the renderer has no " .. tostring(kind) .. " scene definition")
-  local part = partOverride or assert(definition.parts and definition.parts[index], "the scene definition has no such part")
+  local part = partOverride
+    or assert(definition.parts and definition.parts[index], "the scene definition has no such part")
   self._sceneResources = self._sceneResources or {}
   local resources = self._sceneResources[kind]
   if resources == nil then
@@ -531,7 +540,7 @@ end
 ---@param partOverride table<string, unknown>? an effect that publishes one model instead of keyed parts
 ---@return table<string, unknown> handle
 function StoryEffectRenderer:newSceneModel(kind, index, partOverride)
-  local resource = sceneResource(self, kind, index, partOverride)
+  local resource = self:_sceneResource(kind, index, partOverride)
   local pool = self.pool
   local function resolveImage(path, materialId)
     local wrap = assert(resource.wraps[materialId], "scene material wrap is missing")
@@ -560,7 +569,8 @@ function StoryEffectRenderer:newMontage(definition)
   assert(type(definition) == "table" and type(definition.layers) == "table", "a montage definition is required")
   local images = { layers = {}, sprite = nil }
   for fileId, layer in pairs(definition.layers) do
-    images.layers[fileId] = { image = self.pool:sharedImage(layer.path, "clamp", "clamp"), width = layer.width, height = layer.height }
+    images.layers[fileId] =
+      { image = self.pool:sharedImage(layer.path, "clamp", "clamp"), width = layer.width, height = layer.height }
   end
   if definition.sprite ~= nil then
     images.sprite = {
@@ -583,6 +593,7 @@ end
 -- own sprite at its source position. Layer and sprite pixels are prepared; this
 -- path only applies the snapshot.
 ---@param status LegendEventScene.CinematicPresentation?
+---@return boolean whether the montage painted this tick
 function StoryEffectRenderer:drawMontage(status)
   local images = self._montageImages
   if images == nil or status == nil then

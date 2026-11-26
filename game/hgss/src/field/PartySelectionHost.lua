@@ -91,10 +91,8 @@ function PartySelectionHost:open(request)
   local service = assert(self._service, "the script party host requires the live mon service")
   assert(type(service.partyCount) == "function", "the script party host requires the live mon service")
   local focus = checkFocus(request.focus)
-  local context = assert(
-    CONTEXT_BY_POLICY[request.policy],
-    "the script selection open carries a known selection policy"
-  )
+  local context =
+    assert(CONTEXT_BY_POLICY[request.policy], "the script selection open carries a known selection policy")
   if service:partyCount() == 0 then
     if not request.allowCancel then
       Errors.raise(

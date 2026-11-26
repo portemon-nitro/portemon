@@ -491,12 +491,7 @@ function GameStats:prepareChanges(changes)
         end
       end
       local amount = staged.amount
-      if
-        type(amount) ~= "number"
-        or amount % 1 ~= 0
-        or amount < 0
-        or amount > GameStats.BATTLE_POINTS_REQUEST_MAX
-      then
+      if type(amount) ~= "number" or amount % 1 ~= 0 or amount < 0 or amount > GameStats.BATTLE_POINTS_REQUEST_MAX then
         fail("stats battle-point amount must be an integer in 0.." .. tostring(GameStats.BATTLE_POINTS_REQUEST_MAX), {
           amount = amount,
         })

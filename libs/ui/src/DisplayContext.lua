@@ -23,6 +23,7 @@ DisplayContext.__index = DisplayContext
 ---@field topology ScreenTopology validated caller-owned copy of the actual surfaces
 ---@field pixelRatio number framebuffer pixels per host unit
 ---@field signature string stable structural identity (never a timestamp)
+---@field auxiliary { x: number, y: number, width: number, height: number }? the attached auxiliary surface a case-placed child fits inside
 
 -- The actual host default: one main/world surface over the whole drawable
 -- with the current mobile touch capability. This is the previous

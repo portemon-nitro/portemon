@@ -51,14 +51,16 @@ local function namingSubject(mons, slot0)
   local mon = assert(mons:partyMon(slot0), "the hatched record occupies its slot")
   local catalog = mons:catalog()
   local species = catalog:species(mon.species)
-  local gender = Personality.gender(species.genderRatio, assert(mon.personality, "a hatched record carries its personality"))
+  local gender =
+    Personality.gender(species.genderRatio, assert(mon.personality, "a hatched record carries its personality"))
   return {
     kind = "pokemon",
     species = species.nativeId,
     form = mon.form,
     iconKey = catalog:iconSelection(mon),
     gender = gender,
-  }, mon.species
+  },
+    mon.species
 end
 
 ---@param spec table<string, unknown>
@@ -108,6 +110,7 @@ end
 
 ---@param state table<string, unknown>
 ---@param ctx table<string, unknown>
+---@param reason string the source cancellation the child answers
 local function closeChild(state, ctx, reason)
   local care = ctx.services and ctx.services.pokemonCare
   if type(care) == "table" and care:isActive() then

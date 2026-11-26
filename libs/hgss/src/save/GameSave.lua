@@ -622,7 +622,7 @@ function GameSave.migrateV18(record)
       bucket = "playerData",
     })
   end
-  ---@cast playerData table
+  ---@cast playerData table<string, unknown>
   local profile = playerData.profile --[[@as table<string, unknown>]]
   if profile.coins ~= nil then
     Errors.raise(GameSaveErrors.GAME_SAVE_INVALID, "v18 profile cannot contain a coin balance", {})
