@@ -27,6 +27,7 @@
 ---@field private _audio table<string, unknown>|nil
 ---@field private _vsRed integer
 ---@field private _previouslyCleared boolean
+---@field private _partySize integer?
 local GameClearState = {}
 GameClearState.__index = GameClearState
 
@@ -50,12 +51,12 @@ end
 ---@param input table<string, unknown>|nil
 ---@return boolean pressed the source A key this tick
 local function pressedAction(input)
-  return input ~= nil and input.pressedAction == true
+  return input ~= nil and input.actionPressed == true
 end
 
 -- A touch is the source's third accept input (gSystem.touchNew). The field
--- forwards normalized pointer events only while a presented surface owns
--- input, so an unmapped touch simply never arrives.
+-- hands its modal pointer batch to the ending only while the ending owns the
+-- input lifetime, so an unmapped touch simply never arrives.
 ---@param input table<string, unknown>|nil
 ---@return boolean touched this tick
 local function touched(input)
@@ -63,19 +64,26 @@ local function touched(input)
     return false
   end
   for _, event in ipairs(input.uiEvents) do
-    if event.type == "pointer_down" or event.type == "touch" then
+    if type(event) == "table" and event.type == "pointer_down" then
       return true
     end
   end
   return false
 end
 
----@param options { vsRed: integer, previouslyCleared: boolean, presentation: table<string, unknown>|nil, audio: table<string, unknown>|nil }
+---@param options { vsRed: integer, previouslyCleared: boolean, presentation: table<string, unknown>|nil, audio: table<string, unknown>|nil, partySize: integer? }
 ---@return GameClearState
 function GameClearState.new(options)
   assert(type(options) == "table", "the game-clear state needs its source facts")
   local vsRed = options.vsRed
   assert(type(vsRed) == "number" and vsRed % 1 == 0 and vsRed >= 0, "the game-clear state needs its raw vsRed word")
+  local partySize = options.partySize
+  if partySize ~= nil then
+    assert(
+      type(partySize) == "number" and partySize % 1 == 0 and partySize >= 0,
+      "the game-clear state needs its recorded party size"
+    )
+  end
   local state = setmetatable({
     _phase = vsRed == 0 and "congratulations" or "saving",
     _timer = 0,
@@ -85,6 +93,7 @@ function GameClearState.new(options)
     _audio = options.audio,
     _vsRed = vsRed,
     _previouslyCleared = options.previouslyCleared == true,
+    _partySize = partySize,
   }, GameClearState)
   return state
 end
@@ -107,6 +116,18 @@ end
 ---@return boolean whether the source save sound still owns the tick
 function GameClearState:isSaveSoundRunning()
   return self._phase == "save_se"
+end
+
+-- Whether the composed presentation bundle is still pending: a composed
+-- owner without its generated sections gates both frames and input, while a
+-- composition without any presentation owner keeps the headless timeline.
+---@return boolean
+function GameClearState:_presentationBlocked()
+  local presentation = self._presentation
+  if presentation == nil or type(presentation.isReady) ~= "function" then
+    return false
+  end
+  return not presentation:isReady()
 end
 
 -- The prepared bundle's frame count for one surface, or zero when no bundle is
@@ -137,6 +158,34 @@ function GameClearState:_fadeFrames(frames)
     return 0
   end
   return math.floor(resolved)
+end
+
+-- The credit roll's own source frame count: the prepared bundle owns the
+-- timeline when composed, otherwise the source constant applies.
+---@return integer
+function GameClearState:_creditFrames()
+  local presentation = self._presentation
+  if presentation ~= nil and type(presentation.creditFrames) == "function" then
+    local resolved = presentation:creditFrames()
+    if type(resolved) == "number" and resolved > 0 then
+      return math.floor(resolved)
+    end
+  end
+  return GameClearState.CREDITS_FRAMES
+end
+
+-- The End's own source music-box wait: the prepared bundle owns it when
+-- composed, otherwise the source constant applies.
+---@return integer
+function GameClearState:_musicBoxWaitFrames()
+  local presentation = self._presentation
+  if presentation ~= nil and type(presentation.musicBoxWaitFrames) == "function" then
+    local resolved = presentation:musicBoxWaitFrames()
+    if type(resolved) == "number" and resolved > 0 then
+      return math.floor(resolved)
+    end
+  end
+  return GameClearState.MUSIC_BOX_WAIT_FRAMES
 end
 
 ---@param phase string
@@ -187,10 +236,21 @@ function GameClearState:step(input)
   end
   if phase == "congratulations" then
     -- The registration application shows the recorded party and returns after
-    -- the player acknowledges it. A headless composition has no frames to
-    -- play, so the acknowledgement alone advances the sequence.
+    -- the player acknowledges it. A pending bundle gates both the reveal
+    -- frames and the input; a headless composition has no frames to play,
+    -- so the acknowledgement alone advances the sequence.
+    if self:_presentationBlocked() then
+      return "wait"
+    end
     self._timer = self._timer + 1
-    local frames = self:_presentationFrames("congratulationsFrames")
+    local presentation = self._presentation
+    local frames = 0
+    if presentation ~= nil and type(presentation.congratulationsFrames) == "function" then
+      local resolved = presentation:congratulationsFrames(self._partySize)
+      if type(resolved) == "number" and resolved >= 0 then
+        frames = math.floor(resolved)
+      end
+    end
     if self._timer > frames and (pressedStart(input) or pressedAction(input) or touched(input)) then
       self._phase = "saving"
       return "publish"
@@ -214,6 +274,11 @@ function GameClearState:step(input)
     return "wait"
   end
   if phase == "credits" then
+    -- A pending bundle holds the roll: the first clear's full timeline and
+    -- a later clear's START/touch skip both need their prepared surfaces.
+    if self:_presentationBlocked() then
+      return "wait"
+    end
     -- The first clear never skips; a later clear ends on START or a touch.
     if self._previouslyCleared and (pressedStart(input) or touched(input)) then
       self._skipped = true
@@ -221,17 +286,20 @@ function GameClearState:step(input)
       return "wait"
     end
     self._timer = self._timer + 1
-    if self._timer >= GameClearState.CREDITS_FRAMES then
+    if self._timer >= self:_creditFrames() then
       self:_beginFade("credits_fade", CREDITS_FADE_FRAMES)
     end
     return "wait"
   end
   if phase == "the_end" then
+    if self:_presentationBlocked() then
+      return "wait"
+    end
     if pressedStart(input) or pressedAction(input) or touched(input) then
       self:_beginFade("the_end_fade_out", THE_END_FADE_FRAMES)
       return "wait"
     end
-    if self._musicBoxTimer >= GameClearState.MUSIC_BOX_WAIT_FRAMES then
+    if self._musicBoxTimer >= self:_musicBoxWaitFrames() then
       self:_playMusic("SEQ_GS_ENDING2")
       self._phase = "the_end_music_box"
       return "wait"
@@ -240,6 +308,9 @@ function GameClearState:step(input)
     return "wait"
   end
   if phase == "the_end_music_box" then
+    if self:_presentationBlocked() then
+      return "wait"
+    end
     if pressedStart(input) or pressedAction(input) or touched(input) then
       self:_beginFade("the_end_fade_out", THE_END_FADE_FRAMES)
     end

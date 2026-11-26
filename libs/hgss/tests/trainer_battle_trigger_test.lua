@@ -16,6 +16,12 @@ local function clear()
   end
 end
 
+-- The source double mark the engagement shape reads, resolved only for the
+-- first sighted trainer.
+local function noDoubles()
+  return false
+end
+
 ---@param overrides table<string, unknown>|nil
 ---@return table<string, unknown> a sighted forward-looking trainer eight tiles away
 local function trainer(overrides)
@@ -28,7 +34,6 @@ local function trainer(overrides)
     sightType = 1,
     direction = "south",
     range = 6,
-    sightBlocked = clear(),
   }
   for key, value in pairs(overrides or {}) do
     record[key] = value
@@ -39,12 +44,18 @@ end
 ---@param trainers table[]
 ---@param doublesEligible boolean?
 ---@return { player: table<string, unknown>, trainers: table[], doublesEligible: boolean? }
-local function facts(trainers, doublesEligible)
-  return {
+local function facts(trainers, doublesEligible, overrides)
+  local record = {
     player = { fieldX = 10, fieldZ = 10, facing = "north" },
     trainers = trainers,
     doublesEligible = doublesEligible,
+    sightBlocked = clear(),
+    isDouble = noDoubles,
   }
+  for key, value in pairs(overrides or {}) do
+    record[key] = value
+  end
+  return record
 end
 
 function T.a_forward_sighting_trainer_engages_along_its_own_ray()
@@ -62,7 +73,7 @@ end
 function T.a_forward_trainer_needs_the_exact_row_and_range()
   Assert.isNil(Trigger.check(facts({ trainer({ range = 5 }) })), "one tile beyond the range")
   Assert.isNil(
-    Trigger.check({ player = { fieldX = 11, fieldZ = 10 }, trainers = { trainer() }, doublesEligible = false }),
+    Trigger.check(facts({ trainer() }, false, { player = { fieldX = 11, fieldZ = 10 } })),
     "one tile off the sight row"
   )
   Assert.isNil(
@@ -84,10 +95,11 @@ function T.an_all_direction_trainer_scans_four_ways_and_other_types_never_sight(
   plan = assert(plan)
   Assert.equal(plan.slots[1].direction, "south", "the scan starts at north and reaches south")
 
-  local west = Trigger.check({
-    player = { fieldX = 4, fieldZ = 10 },
-    trainers = { trainer({ fieldX = 10, fieldZ = 10, sightType = 2, range = 6 }) },
-  })
+  local west = Trigger.check(facts(
+    { trainer({ fieldX = 10, fieldZ = 10, sightType = 2, range = 6 }) },
+    nil,
+    { player = { fieldX = 4, fieldZ = 10 } }
+  ))
   west = assert(west)
   Assert.equal(west.slots[1].direction, "west")
   Assert.equal(west.slots[1].distance, 6)
@@ -100,13 +112,11 @@ end
 -- player endpoint.
 function T.intermediate_obstruction_and_a_blocked_endpoint_stop_the_sight()
   local calls = {}
-  local plan = Trigger.check(facts({
-    trainer({
-      sightBlocked = function(direction, distance)
-        calls[#calls + 1] = { direction, distance }
-        return true
-      end,
-    }),
+  local plan = Trigger.check(facts({ trainer() }, nil, {
+    sightBlocked = function(_, direction, distance)
+      calls[#calls + 1] = { direction, distance }
+      return true
+    end,
   }))
   Assert.isNil(plan, "an obstructed ray never sights the player")
   Assert.equal(#calls, 1)
@@ -122,11 +132,17 @@ end
 -- party mons, and then together with its own pair partner as one trainer.
 function T.a_double_trainer_needs_two_usable_mons_and_its_pair_partner()
   local pair = {
-    trainer({ id = "a", isDouble = true }),
-    trainer({ id = "b", partner = "second", isDouble = true }),
+    trainer({ id = "a" }),
+    trainer({ id = "b", partner = "second" }),
   }
-  Assert.isNil(Trigger.check(facts(pair, false)), "one usable mon keeps a double trainer from engaging")
-  local plan = Trigger.check(facts(pair, true))
+  local function doubles(trainerId)
+    return trainerId == 46
+  end
+  Assert.isNil(
+    Trigger.check(facts(pair, false, { isDouble = doubles })),
+    "one usable mon keeps a double trainer from engaging"
+  )
+  local plan = Trigger.check(facts(pair, true, { isDouble = doubles }))
   plan = assert(plan)
   Assert.equal(plan.encounterType, Trigger.ENCOUNTER_DOUBLE_PAIR)
   Assert.equal(#plan.slots, 2)

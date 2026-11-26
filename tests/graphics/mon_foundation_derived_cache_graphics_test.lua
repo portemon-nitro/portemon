@@ -331,6 +331,13 @@ local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
   "field-runtime",
+  "field-font:global",
+  "field-ui:global",
+  "mon-catalog:global",
+  "mon-layout:global",
+  "party:global",
+  "mon-icon-page:0",
+  "mon-icon-page:4",
   "audio-bank:700",
   "audio-bank:702",
   "audio-bank:709",

@@ -709,7 +709,7 @@ local function compileTradeBalloon(archive, dependencies, assets)
     assets[PokemonCareCache.tradeGeometryPath(sha1)] = mesh
   end
   for key, texture in pairs(textures) do
-    assets[PokemonCareCache.tradeTexturePath(key)] = texture.data
+    assets[PokemonCareCache.tradeTexturePath(key)] = texture
   end
   local descriptor = {
     schema = ModelAsset.SCHEMA,
@@ -719,13 +719,11 @@ local function compileTradeBalloon(archive, dependencies, assets)
     materials = compiled.materials,
   }
   for _, batch in ipairs(descriptor.batches) do
-    local sha1 = assert(batch.geometry:match("/([^/]+)%.g4mesh$"), "compiled balloon geometry path is malformed")
-    batch.geometry = PokemonCareCache.tradeGeometryPath(sha1)
+    batch.geometry = ModelAsset.retargetGeometry(batch.geometry, PokemonCareCache.tradeGeometryPath)
   end
   for _, material in ipairs(descriptor.materials) do
     if material.texture ~= nil then
-      local sha1 = assert(material.texture:match("/([^/]+)%.png$"), "compiled balloon texture path is malformed")
-      material.texture = PokemonCareCache.tradeTexturePath(sha1)
+      material.texture = ModelAsset.retargetTexture(material.texture, PokemonCareCache.tradeTexturePath)
     end
   end
   ModelAsset.validate(descriptor)

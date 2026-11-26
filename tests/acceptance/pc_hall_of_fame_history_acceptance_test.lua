@@ -14,6 +14,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
+local GameStatsSave = require("libs.hgss.src.save.GameStatsSave")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 
 local T = {
@@ -32,6 +33,8 @@ local T = {
       "map:306",
       "message-bank:528",
       "pc:global",
+      -- The showcase reads the League ending's generated bundle.
+      "ending:global",
     },
     tags = { "field", "pc", "ending", "save" },
   },
@@ -49,8 +52,8 @@ local CENTER_SPAWN = { fieldX = 8, fieldZ = 13, facing = "north" }
 -- owner keeps across it.
 local LEGACY_GAME_SCHEMA = "g4-game-save-v15"
 local LEGACY_SYS_INFO_SCHEMA = "hgss-sys-info-v1"
-local LEGACY_GAME_STATS_SCHEMA = "hgss-stats-v2"
-local LEGACY_GAME_STATS_STATE_VERSION = 2
+local LEGACY_GAME_STATS_SCHEMA = "hgss-stats-v3"
+local LEGACY_GAME_STATS_STATE_VERSION = 3
 
 local HOF_BUCKET_SCHEMA = "hgss-hall-of-fame-v1"
 
@@ -569,7 +572,11 @@ function T.tests.previous_save_envelope_keeps_prior_owners_and_an_unknown_first_
     )
     Assert.equal(restored.sysInfo.mysteryGiftActive, false, "the prior system-info flag survives the migration")
     Assert.equal(restored.gameStats.leagueWins, 0, "the League-win counter starts from the value the save had")
-    Assert.equal(restored.gameStats.stateVersion, 5, "the game-stats bucket moves to its current state version")
+    Assert.equal(
+      restored.gameStats.stateVersion,
+      GameStatsSave.STATE_VERSION,
+      "the game-stats bucket moves to its current state version"
+    )
     Assert.equal(restored.hallOfFame.schema, HOF_BUCKET_SCHEMA, "the migrated save owns a current history bucket")
     Assert.equal(restored.hallOfFame.total, 0, "the migration invents no recorded clear")
     Assert.equal(#restored.hallOfFame.records, 0, "the migration invents no retained record")

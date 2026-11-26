@@ -9,6 +9,7 @@ local BankAssetCompiler = require("romdump.src.digest.ui.BankAssetCompiler")
 local BankCache = require("libs.assets.src.BankCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
@@ -75,7 +76,9 @@ T["a published bundle is ready and a cold cache is not"] = function(romFs)
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   Assert.isFalse(BankCache.isReady(cache, bundle.marker), "a cold cache is never ready")
   local BankCacheWriter = require("romdump.src.digest.ui.BankCacheWriter")
-  BankCacheWriter.write(cache, bundle)
+  ResidentArtifactFixture.publish(cache, "bank", "global", function(artifact)
+    return BankCacheWriter.stage(artifact, bundle)
+  end)
   Assert.isTrue(BankCache.isReady(cache, bundle.marker), "the published bundle is ready")
   Assert.isFalse(BankCache.isReady(cache, bundle.marker .. "-stale"), "a stale marker is never ready")
 

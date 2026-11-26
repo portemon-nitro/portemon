@@ -127,7 +127,7 @@ end
 ---@param marker string
 ---@return string
 function PokemonCareCacheWriter.stage(artifact, catalog, hatch, trade, reminder, marker)
-  assert(artifact and artifact.stageFs, "care staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "care staging requires a PreparedArtifact")
   assert(type(marker) == "string" and marker ~= "", "care staging requires its completion marker")
   validateBundle(hatch, "hatch", PokemonCareAssetSchema.assertHatchManifest, PokemonCareCache.referencedHatchPaths)
   validateBundle(trade, "trade", PokemonCareAssetSchema.assertTradeManifest, PokemonCareCache.tradeStagedPaths)
@@ -138,7 +138,7 @@ function PokemonCareCacheWriter.stage(artifact, catalog, hatch, trade, reminder,
     PokemonCareCache.referencedReminderPaths
   )
   artifact:addOwnedRoot(PokemonCareCache.dir())
-  local stage = artifact:stageFs()
+  local stage = artifact
   stageBundle(stage, artifact:cacheFs(), catalog, hatch, trade, reminder)
   stage:write(PokemonCareCache.markerPath(), marker)
   return marker

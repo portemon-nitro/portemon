@@ -61,7 +61,7 @@ local TRADE_TEXT_PALETTE = {
   background = { r = 0, g = 0, b = 0, a = 255 },
 }
 
----@param opts { graphics: table<string, unknown>, cacheFs: table<string, unknown>?, manifest: table<string, unknown>, images: table<string, table<string, unknown>>, pictures: table<string, table<string, unknown>>?, text: table<string, unknown>, window: table<string, unknown>?, frameIndex: integer? }
+---@param opts { graphics: table<string, unknown>, cacheFs: table<string, unknown>?, imageAssets: table<string, unknown>?, manifest: table<string, unknown>, images: table<string, table<string, unknown>>, pictures: table<string, table<string, unknown>>?, text: table<string, unknown>, window: table<string, unknown>?, frameIndex: integer? }
 ---@return NpcTradeRenderer
 function NpcTradeRenderer.new(opts)
   assert(type(opts) == "table", "the trade renderer requires its options")
@@ -81,6 +81,7 @@ function NpcTradeRenderer.new(opts)
     balloon = TradeBalloonModel.new({
       graphics = graphics,
       cacheFs = opts.cacheFs,
+      imageAssets = assert(opts.imageAssets, "the trade balloon model borrows the session image owner"),
       model = assert(model --[[@as table<string, unknown>]]),
     })
   end

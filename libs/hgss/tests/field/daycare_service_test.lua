@@ -549,6 +549,57 @@ function T.the_cycle_counter_follows_the_source_date()
   Assert.equal(world.mons:partyMon(1).friendship, 8, "every party Egg loses the same decrement")
 end
 
+-- The cycle that hatches an earlier Egg: HandleDaycareStep stops on the first
+-- Egg already at zero, then Party_GetMonToHatch picks the first zero-friendship
+-- Egg of the post-decrement party, so an Egg this very cycle brought to zero
+-- hatches instead of the one that triggered the walk.
+function T.the_completed_cycle_hatches_the_first_zero_friendship_egg()
+  local world = fixture()
+  Assert.isTrue(world.mons:giveEgg({ species = "PICHU", locationOffset = 14 }), "the party takes its first Egg")
+  Assert.isTrue(world.mons:giveEgg({ species = "PICHU", locationOffset = 14 }), "the party takes its second Egg")
+  Assert.isTrue(world.mons:giveEgg({ species = "PICHU", locationOffset = 14 }), "the party takes its third Egg")
+  stageMon(world, 0, function(mon)
+    mon.friendship = 1
+  end)
+  stageMon(world, 1, function(mon)
+    mon.friendship = 0
+  end)
+  stageMon(world, 2, function(mon)
+    mon.friendship = 2
+  end)
+  for _ = 1, 255 do
+    world.service:noteCommittedStep()
+  end
+  local hatch = assert(world.service:activeHatch(), "the completed cycle requests one hatch")
+  Assert.equal(hatch.slot, 0, "the Egg this cycle brought to zero hatches, as the source selects it")
+  Assert.equal(hatch.subject.species, "PICHU", "the subject is the selected Egg's own record")
+  Assert.isFalse(world.mons:partyMon(0).isEgg == true, "the selected Egg publishes as its hatched record")
+  Assert.equal(world.mons:partyMon(1).friendship, 0, "the triggering Egg stays at zero")
+  Assert.equal(world.mons:partyMon(2).friendship, 2, "the walk stops before later Eggs, exactly like the source")
+  world.service:finishHatch()
+  world.service:releaseHatch()
+end
+
+-- A cycle whose last decrement reaches zero without an already-zero Egg
+-- requests no hatch: only an Egg already waiting triggers the source walk.
+function T.a_cycle_that_only_reaches_zero_requests_no_hatch()
+  local world = fixture()
+  Assert.isTrue(world.mons:giveEgg({ species = "PICHU", locationOffset = 14 }), "the party takes its first Egg")
+  Assert.isTrue(world.mons:giveEgg({ species = "PICHU", locationOffset = 14 }), "the party takes its second Egg")
+  stageMon(world, 0, function(mon)
+    mon.friendship = 1
+  end)
+  stageMon(world, 1, function(mon)
+    mon.friendship = 2
+  end)
+  for _ = 1, 255 do
+    world.service:noteCommittedStep()
+  end
+  Assert.isNil(world.service:activeHatch(), "no Egg was waiting, so the source hatches nothing")
+  Assert.equal(world.mons:partyMon(0).friendship, 0, "the decrement still reaches the first Egg")
+  Assert.equal(world.mons:partyMon(1).friendship, 1, "every visited Egg loses the decrement before the walk ends")
+end
+
 function T.egg_collection_appends_the_resolved_egg_and_clears_the_identity()
   local world = fixture()
   depositPair(world, {

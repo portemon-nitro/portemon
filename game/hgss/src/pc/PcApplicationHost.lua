@@ -105,6 +105,14 @@ function PcApplicationHost:activeHandle()
   return self._active and self._active.handle or nil
 end
 
+-- The live child behind the active handle, for presented preparation that
+-- owns per-open leases (the host still owns readiness, results and draw).
+---@return table<string, unknown>? child
+function PcApplicationHost:activeChild()
+  local active = self._active
+  return active ~= nil and active.child or nil
+end
+
 local function activeFor(self, handle)
   local active = assert(self._active, "no PC application is open")
   assert(handle == active.handle, "PC application handle is stale or foreign")

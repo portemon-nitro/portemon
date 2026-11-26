@@ -152,8 +152,7 @@ end
 function T.absent_region_fails_readiness()
   local bundle = compile(60)
   bundle.field.region = nil
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  FieldMapDataCacheWriter.write(cache, bundle)
+  local cache = publishedCache(bundle)
   Assert.isFalse(FieldMapDataCache.hasRegion(nil))
   Assert.isFalse(FieldMapDataCache.isReady(cache, 60, bundle.marker))
 end

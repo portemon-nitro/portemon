@@ -610,7 +610,7 @@ function T.inline_cursor_offsets_are_consumed_by_the_line_printer()
     { kind = "glyph", code = 0x012C, raw = { 0x012C }, text = "B" },
     { kind = "eos", raw = { 0xFFFF } },
   }
-  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local provider = providerWith(cacheWith({}))
   local formatted = provider:format({ bankId = 191, messageId = 136, tokens = tokens }, {})
   Assert.isFalse(formatted.hadUnresolvedSubstitutions)
   local texts = {}

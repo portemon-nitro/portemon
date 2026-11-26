@@ -543,5 +543,24 @@ end
 
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "field-runtime", "map:60" }
+suite.metadata.derivedAssets = {
+  "field-runtime",
+  -- The finalized game sits in New Bark; the composed field admits the
+  -- surrounding maps' logical data with it.
+  "map-data:60",
+  "map-data:48",
+  "map-data:31",
+  "map-data:47",
+  "map-data:33",
+  "map-data:67",
+  "map-data:99",
+  "map:60",
+  "map:48",
+  "map:31",
+  "map:47",
+  "map:33",
+  "map:67",
+  "map:99",
+  "message-bank:542",
+}
 return suite

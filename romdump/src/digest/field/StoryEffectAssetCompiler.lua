@@ -215,7 +215,7 @@ local function compileHideoutEffects(romFs, meshes, textures, memberHashes)
   textures[sha1] = { data = png, width = image.width, height = image.height }
   definitions[overlay.key] = {
     overlay = {
-      texture = FieldEffectAssetCache.texturePath(sha1),
+      texture = FieldEffectAssetCache.imagePath(sha1),
       width = image.width,
       height = image.height,
     },
@@ -1043,7 +1043,7 @@ local function compileMontageLayers(archive, fileIds, textures, memberHashes)
     local png = PngWriter.encode(image.width, image.height, image.pixels)
     local sha1 = Hashing.sha1hex(png)
     textures[sha1] = { data = png, width = image.width, height = image.height }
-    layers[fileId] = { path = FieldEffectAssetCache.texturePath(sha1), width = image.width, height = image.height }
+    layers[fileId] = { path = FieldEffectAssetCache.imagePath(sha1), width = image.width, height = image.height }
   end
   return layers
 end
@@ -1107,7 +1107,7 @@ local function compileMontageSprite(archive, textures, memberHashes)
   local png = PngWriter.encode(image.width, image.height, image.pixels)
   local sha1 = Hashing.sha1hex(png)
   textures[sha1] = { data = png, width = image.width, height = image.height }
-  return { path = FieldEffectAssetCache.texturePath(sha1), width = image.width, height = image.height }
+  return { path = FieldEffectAssetCache.imagePath(sha1), width = image.width, height = image.height }
 end
 
 -- A source animation record that keys no target carries no visual state: the

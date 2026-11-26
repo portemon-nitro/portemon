@@ -23,6 +23,7 @@ local MonCache = require("libs.assets.src.MonCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local PngEncoder = require("romdump.src.digest.PngEncoder")
 local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
 local HgssFieldFog = require("romdump.src.digest.field.HgssFieldFog")
 local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
@@ -1152,6 +1153,30 @@ local function publishEffectFamily(cache)
   local function constant(value)
     return { source = "constant", value = value }
   end
+  -- The gym mechanism props the field drives: three animated build models with
+  -- their source joint clip, and the Blackthorn platforms' plain static models.
+  for _, prop in ipairs({ "violet_gym_car", "azalea_gym_spinarak" }) do
+    bundle.index.effects[prop] = {
+      path = EffectCache.definitionPath(prop),
+      definition = prop,
+      kind = "animated_model",
+    }
+    local model = dynamicModel("field-effect:" .. prop)
+    local clip = model.animations[1]
+    clip.id = prop .. ".clip-1"
+    clip.name = clip.id
+    clip.semanticNames = { clip.id }
+    model.animations = { clip }
+    bundle.effects[prop] = { model = model }
+  end
+  for _, prop in ipairs({ "blackthorn_gym_platform_wide", "blackthorn_gym_platform_narrow" }) do
+    bundle.index.effects[prop] = {
+      path = EffectCache.definitionPath(prop),
+      definition = prop,
+      kind = "model",
+    }
+    bundle.effects[prop] = { model = staticModel("field-effect:" .. prop) }
+  end
   local trapMaterialPayload = {
     color = {
       targets = {
@@ -1221,7 +1246,7 @@ local function publishEffectFamily(cache)
     kind = "overlay",
   }
   bundle.effects.rocket_alarm_overlay = {
-    overlay = { texture = EffectCache.texturePath("a1a1a1"), width = 256, height = 256 },
+    overlay = { texture = EffectCache.imagePath("a1a1a1"), width = 256, height = 256 },
   }
   -- The legendary-story scenes this field drives, and the Arceus montage whose
   -- layers come out as prepared effect textures.
@@ -1253,18 +1278,13 @@ local function publishEffectFamily(cache)
   bundle.effects.arceus_cinematic = {
     bgm = "SEQ_GS_E_ARCEUS",
     timeline = { { 12 }, { 6, 0, 58 }, { 0, 2 }, { 19 } },
-    layers = { [58] = { path = EffectCache.texturePath("a1a1a1"), width = 256, height = 256 } },
-    sprite = { path = EffectCache.texturePath("a1a1a1"), width = 64, height = 64 },
+    layers = { [58] = { path = EffectCache.imagePath("a1a1a1"), width = 256, height = 256 } },
+    sprite = { path = EffectCache.imagePath("a1a1a1"), width = 64, height = 64 },
   }
-  bundle.textures["a1a1a1"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") }
-  local oldEncode = MeshWriter.encode
-  MeshWriter.encode = function()
-    return "encoded-mesh"
-  end
+  bundle.textures["a1a1a1"] = { data = PngEncoder.encode(8, 8, string.rep("\0", 8 * 8 * 4)) }
   local ok, err = pcall(ResidentArtifactFixture.publish, cache, "field-effects", "global", function(artifact)
     return Writer.stage(artifact, bundle)
   end)
-  MeshWriter.encode = oldEncode
   Assert.isTrue(ok, tostring(err))
   local ready, readyErr = EffectCache.isReady(cache, marker)
   Assert.isTrue(ready, tostring(readyErr))

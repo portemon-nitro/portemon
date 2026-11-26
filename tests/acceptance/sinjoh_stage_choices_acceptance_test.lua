@@ -11,6 +11,7 @@
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
@@ -107,12 +108,13 @@ local GIFT_FANFARE = "SEQ_ME_SHINKAOME"
 ---@return table
 local function stageWorldState()
   local worldState = FieldEventState.new()
-  NewGameInitialization.apply({
-    versionId = AcceptanceHarness.defaultVersion(),
-    worldState = worldState,
-  }, { randomU16 = function()
-    return 0
-  end })
+  local versionId = AcceptanceHarness.defaultVersion()
+  NewGameInitialization.apply({ versionId = versionId, worldState = worldState }, {
+    cacheFs = GeneratedCacheFixture.reader(versionId),
+    randomU16 = function()
+      return 0
+    end,
+  })
   return worldState
 end
 

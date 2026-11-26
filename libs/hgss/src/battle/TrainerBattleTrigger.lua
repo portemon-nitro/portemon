@@ -12,16 +12,18 @@
 --     trainers = {
 --       { id: string, fieldX: integer, fieldZ: integer, trainerId: integer,
 --         partner: "first"|"second", sightType: integer, direction: string?,
---         range: integer, defeated: boolean?, isDouble: boolean?,
---         sightBlocked: fun(direction: string, distance: integer): boolean }, ...
+--         range: integer, defeated: boolean? }, ...
 --     },
+--     -- Resolved only for candidates that actually reach the geometry:
+--     sightBlocked = fun(trainer: table, direction: string, distance: integer): boolean,
+--     isDouble = fun(trainerId: integer): boolean,
 --   }
 -- Sight is the source's own directional rule, never tile proximity: a trainer
 -- of sight type 1 looks along its facing, a type 2 trainer looks in all four
 -- directions, and types 0 and 3 never sight. The player must stand on that
 -- exact row or column inside the trainer's range, and every tile between the
--- two must stay clear (the caller resolves collision through sightBlocked,
--- which also verifies the player endpoint).
+-- two must stay clear (the caller resolves collision through the one
+-- sightBlocked resolver, which also verifies the player endpoint).
 --
 -- Selection follows TryGetSeenByNpcTrainers: the first sighted trainer in
 -- source order decides the shape. A trainer whose own record marks a double
@@ -71,7 +73,6 @@ local function checkTrainer(trainer, index)
     "trainer sight ranges stay integral"
   )
   assert(type(entry.sightType) == "number", "trainer facts carry their sight type")
-  assert(type(entry.sightBlocked) == "function", "trainer facts resolve their sight occlusion")
   assert(index >= 1, "trainer order follows the facts array")
 end
 
@@ -119,8 +120,9 @@ end
 -- it does not see the player at all (TrainerSight_FindPlayer).
 ---@param trainer table<string, unknown>
 ---@param player table<string, unknown>
+---@param sightBlocked fun(trainer: table<string, unknown>, direction: string, distance: integer): boolean
 ---@return { direction: string, distance: integer }?
-local function sightOf(trainer, player)
+local function sightOf(trainer, player, sightBlocked)
   local sightType = trainer.sightType
   local directions
   if sightType == 1 then
@@ -136,11 +138,8 @@ local function sightOf(trainer, player)
   end
   for _, direction in ipairs(directions) do
     local distance = rayDistance(trainer, player, direction)
-    if distance ~= nil then
-      local blocked = trainer.sightBlocked --[[@as fun(direction: string, distance: integer): boolean]]
-      if not blocked(direction, distance) then
-        return { direction = direction, distance = distance }
-      end
+    if distance ~= nil and not sightBlocked(trainer, direction, distance) then
+      return { direction = direction, distance = distance }
     end
   end
   return nil
@@ -169,6 +168,10 @@ function TrainerBattleTrigger.check(facts)
   assert(type(player) == "table", "trainer sight reads the player tile")
   assert(isTile(player.fieldX) and isTile(player.fieldZ), "the player tile stays integral")
   assert(type(facts.trainers) == "table", "trainer sight reads the trainer list")
+  local sightBlocked = facts.sightBlocked --[[@as fun(trainer: table<string, unknown>, direction: string, distance: integer): boolean]]
+  assert(type(sightBlocked) == "function", "trainer sight resolves its occlusion through one resolver")
+  local isDouble = facts.isDouble --[[@as fun(trainerId: integer): boolean]]
+  assert(type(isDouble) == "function", "trainer sight resolves the double mark through one resolver")
   local doublesEligible = facts.doublesEligible == true
 
   local sighted = {} ---@type table<integer, { direction: string, distance: integer }?>
@@ -177,7 +180,7 @@ function TrainerBattleTrigger.check(facts)
     checkTrainer(trainer, index)
     local entry = trainer --[[@as table<string, unknown>]]
     if entry.defeated ~= true and TRAINER_SIGHT_TYPES[entry.sightType] == true then
-      local sight = sightOf(entry, player)
+      local sight = sightOf(entry, player, sightBlocked)
       if sight ~= nil then
         sighted[index] = sight
         firstIndex = firstIndex or index
@@ -189,7 +192,9 @@ function TrainerBattleTrigger.check(facts)
   end
   local first = facts.trainers[firstIndex] --[[@as table<string, unknown>]]
   local firstSight = sighted[firstIndex] --[[@as { direction: string, distance: integer }]]
-  if first.isDouble == true then
+  local firstTrainerId = first.trainerId
+  ---@cast firstTrainerId integer
+  if isDouble(firstTrainerId) == true then
     if not doublesEligible then
       return nil
     end

@@ -7,8 +7,9 @@
 -- renderer never loads an asset or advances a clock.
 
 local Assert = require("tests.support.Assert")
-local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
+local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local MonCache = require("libs.assets.src.MonCache")
 local NpcTradeRenderer = require("libs.hgss.src.ui.NpcTradeRenderer")
@@ -46,7 +47,7 @@ end
 local function readyVersion()
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
-      local cacheFs = CacheFs.forVersion(versionId)
+      local cacheFs = GeneratedCacheFixture.reader(versionId)
       local marker = cacheFs:read(PokemonCareCache.markerPath())
       if marker ~= nil and PokemonCareCache.isReady(cacheFs, marker) then
         return versionId
@@ -169,7 +170,7 @@ local function openScene(scope)
   local versionId = readyVersion()
   Assert.notNil(versionId, "the prepared cache publishes the care family")
   assert(versionId ~= nil)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local manifest = PokemonCareCache.loadHatchManifest(cacheFs)
   local images = realizeFamily(scope, cacheFs, manifest)
   local window, text, recorded = recordingCollaborators()
@@ -284,6 +285,56 @@ function T.the_nickname_question_draws_its_answers(scope)
   Assert.equal(#scene.recorded.focus, 1, "the selected answer carries the field focus indicator")
 end
 
+-- The session image owner the trade balloon model borrows: a real preparation
+-- queue and decoded budget over a resident view of the model's own published
+-- assets, owned by the graphics scope. The preparation queue only serves the
+-- selected resident view, while this suite's other surfaces read the cache
+-- directly.
+---@param scope table graphics ownership scope
+---@param cacheFs table version cache reader
+---@param model table balloon model descriptor
+---@return table image owner
+local function tradeImageOwner(scope, cacheFs, model)
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  local ModelAsset = require("libs.assets.src.model.ModelAsset")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local ResidentCache = require("libs.storage.src.ResidentCache")
+  local store = ResidentCache.new(cacheFs.versionId, "base:trade-graphics")
+  local entries = {}
+  for _, path in ipairs(ModelAsset.referencedPaths(model)) do
+    local bytes = assert(cacheFs:read(path), "the published trade asset is readable: " .. path)
+    entries[#entries + 1] = {
+      path = path,
+      data = assert(love.data.newByteData(bytes)),
+      size = #bytes,
+      sourceId = "base:trade-graphics",
+      contentId = cacheFs.versionId .. " " .. path,
+    }
+  end
+  store:commit(store:prepare(entries))
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 32 * 1024 * 1024,
+    release = function(value)
+      if type(value) == "table" and type(value.release) == "function" then
+        value:release()
+      end
+    end,
+  })
+  local residentCache = CacheFs.fromStore(store)
+  local queue = AssetPreparationQueue.new(residentCache, { decoded = decoded })
+  local owner = ImageAssetPool.new(residentCache, { graphics = love.graphics, queue = queue, decoded = decoded })
+  -- The graphics scope releases every owned resource, so the session-shaped
+  -- owners hand it one release path that retires the pool before its queue.
+  return scope:own({
+    pool = owner,
+    release = function(self)
+      self.pool:dispose()
+      queue:release()
+    end,
+  })
+end
+
 -- One prepared trade sequence: the real trade manifest, every staged surface it
 -- references, and the production renderer over recording window/text
 -- collaborators.
@@ -293,7 +344,7 @@ local function openTradeScene(scope)
   local versionId = readyVersion()
   Assert.notNil(versionId, "the prepared cache publishes the care family")
   assert(versionId ~= nil)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local manifest = PokemonCareCache.loadTradeManifest(cacheFs)
   local images = {}
   for _, path in ipairs(PokemonCareCache.referencedTradePaths(manifest)) do
@@ -316,16 +367,19 @@ local function openTradeScene(scope)
     }
   end
   local window, text, recorded = recordingCollaborators()
-  local renderer = NpcTradeRenderer.new({
+  local renderer = scope:own(NpcTradeRenderer.new({
     graphics = love.graphics,
     cacheFs = cacheFs,
+    -- The balloon model's textures realize through a real session image owner:
+    -- the preparation queue and decoded budget are the simulated session's.
+    imageAssets = tradeImageOwner(scope, cacheFs, assert(manifest.balloon).model).pool,
     manifest = manifest,
     images = images,
     pictures = pictures,
     text = text,
     window = window,
     frameIndex = 0,
-  })
+  }))
   return {
     manifest = manifest,
     images = images,
@@ -897,7 +951,7 @@ local function openReminderScene(scope)
   local versionId = readyVersion()
   Assert.notNil(versionId, "the prepared cache publishes the care family")
   assert(versionId ~= nil)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local manifest = PokemonCareCache.loadReminderManifest(cacheFs)
   local images = {}
   for _, path in ipairs(PokemonCareCache.referencedReminderPaths(manifest)) do
@@ -1124,5 +1178,14 @@ end
 
 local suite = GraphicsSmoke.suite(T, { tags = { "mons", "hatch", "trade", "move-relearner" } })
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "field-runtime" }
+suite.metadata.derivedAssets = {
+  "field-runtime",
+  "pokemon-care:global",
+  "mon-catalog:global",
+  "mon-layout:global",
+  -- The trade scene's subject pictures: the portrait pages the recorded
+  -- Bellspout entries live on.
+  "mon-portrait-page:18",
+  "mon-portrait-page:149",
+}
 return suite

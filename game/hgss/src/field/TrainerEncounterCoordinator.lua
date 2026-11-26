@@ -61,13 +61,6 @@ local APPROACH_ARRIVED_TICKS = 8
 -- facing the player (movement commands 0x33..0x36 of the source table).
 local REVEAL_MOVEMENT_SELECTORS = { [51] = true, [52] = true, [53] = true, [54] = true }
 
-local FACING_DELTAS = {
-  north = { x = 0, z = -1 },
-  south = { x = 0, z = 1 },
-  west = { x = -1, z = 0 },
-  east = { x = 1, z = 0 },
-}
-
 ---@param index unknown
 ---@return integer
 local function checkSlotIndex(index)
@@ -230,68 +223,110 @@ function TrainerEncounterCoordinator:_scriptTrainer(trigger)
   return assert(subject, "a running trainer script belongs to a trainer object"), scriptActorId
 end
 
--- The source's sight occlusion test (TrainerSight_IsPathBlocked): every tile
--- between the two must stay clear, and the player endpoint must be a walkable
--- tile. A blocked intermediate tile is either a wall in the collision mask or
--- another standing object.
----@param self TrainerEncounterCoordinator
----@param trainer table<string, unknown> produced trainer actor facts
----@param at { fieldX: integer, fieldZ: integer } the trainer's own tile
----@return fun(direction: string, distance: integer): boolean
-function TrainerEncounterCoordinator:_occlusionProbe(trainer, at)
-  local actors = self._actors --[[@as table<string, unknown>]]
-  local map = self._currentMap()
-  local mapId = self:_liveMapId()
-  local fieldX = at.fieldX
-  local fieldZ = at.fieldZ
-  local sourceY = nil
-  if type(trainer) == "table" and type(trainer.actorId) == "string" then
-    local actor = (actors.getActor --[[@as fun(self: table, id: string): table<string, unknown>?]])(
-      actors,
-      trainer.actorId
-    )
-    local event = type(actor) == "table" and actor.sourceEvent or nil
-    if type(event) == "table" then
-      sourceY = FieldActorPlacement.eventHeight(event --[[@as table<string, unknown>]])
-    end
+-- One ray step's resolved cursor over the movement owner's own placement
+-- resolution: the committed height, surface and cell identity carry from tile
+-- to tile, exactly like a walking actor, so a sight ray never invents a second
+-- terrain model. The endpoint table is the placement owner's own record.
+---@param actor table<string, unknown> the trainer's live actor
+---@return { actor: table<string, unknown>, advance: fun(endpoint: table<string, unknown>) }
+local function newSightCursor(actor)
+  local state = actor:numericState()
+  ---@return table<string, unknown> the committed state the next step resolves from
+  local function committedState()
+    return state
   end
-  local function probeSightOcclusion(direction, distance)
-    if distance <= 0 or type(map) ~= "table" or mapId == nil then
-      return true
-    end
-    local delta = FACING_DELTAS[direction]
-    local collision = map.collision
-    if delta == nil or type(collision) ~= "table" then
-      return true
-    end
-    local origin = assert(map.coordinateOrigin, "the sight check requires the map coordinate origin")
-    for step = 1, distance do
-      local x = fieldX + delta.x * step
-      local z = fieldZ + delta.z * step
-      if collision:getLocal(x - origin.x, z - origin.z).blocked == true then
-        return true
-      end
-      if step < distance and sourceY ~= nil then
-        local ok, sample = pcall(FieldActorPlacement.resolveSurfaceAt, map, x, z, sourceY, trainer.actorId)
-        if ok and sample ~= nil then
-          local getCollisionAt = actors.getCollisionAt --[[@as fun(self: table, id: integer, candidate: table): table?]]
-          local occupant = getCollisionAt(actors, mapId, {
-            fieldX = x,
-            fieldZ = z,
-            surfaceId = sample.surfaceId,
-          })
-          if occupant ~= nil then
-            return true
-          end
-        end
-      end
-    end
-    return false
+  local view = {
+    sourceEvent = actor.sourceEvent,
+    cellKey = actor.cellKey,
+    numericState = committedState,
+  }
+  local cursor = { actor = view }
+  ---@param endpoint table<string, unknown>
+  local function advance(endpoint)
+    state = {
+      fieldX = endpoint.fieldX,
+      fieldZ = endpoint.fieldZ,
+      worldX = endpoint.worldX,
+      worldY = endpoint.worldY,
+      worldZ = endpoint.worldZ,
+      hasWorldPosition = 1,
+      surfaceId = endpoint.surfaceId,
+      hasSurfaceId = endpoint.surfaceId ~= nil and 1 or 0,
+      sourceSurfaceId = endpoint.sourceSurfaceId,
+      hasSourceSurfaceId = endpoint.sourceSurfaceId ~= nil and 1 or 0,
+      resident = endpoint.resident == true and 1 or 0,
+    }
+    view.cellKey = endpoint.cellKey
   end
-  return probeSightOcclusion
+  cursor.advance = advance
+  return cursor
 end
 
--- Every produced trainer actor of the live map, in source object order.
+-- The source's sight occlusion test (TrainerSight_IsPathBlocked): starting on
+-- the tile after the trainer, every intermediate tile must be reachable and
+-- unoccupied, and the player endpoint must be reachable too. The movement
+-- owner resolves each step from the previous tile's committed height, so a
+-- walkway one level above or below the trainer is occluded exactly like the
+-- source's slope check. A surface the field cannot resolve right now is not
+-- admissible; any other resolution failure propagates as its own attributed
+-- error instead of being read as clear sight.
+---@param actorId string the sighting trainer's actor
+---@param direction string
+---@param distance integer
+---@return boolean blocked
+function TrainerEncounterCoordinator:_sightBlocked(actorId, direction, distance)
+  if distance <= 0 then
+    return true
+  end
+  local map = self._currentMap()
+  local mapId = self:_liveMapId()
+  if type(map) ~= "table" or mapId == nil then
+    return true
+  end
+  local actors = self._actors --[[@as table<string, unknown>]]
+  local getActor = actors.getActor --[[@as fun(self: table, id: string): table<string, unknown>?]]
+  local actor = getActor(actors, actorId)
+  if type(actor) ~= "table" then
+    return true
+  end
+  local getCollisionAt = actors.getCollisionAt --[[@as fun(self: table, id: integer, candidate: table): table?]]
+  local cursor = newSightCursor(actor)
+  for step = 1, distance do
+    -- The movement owner raises ordinary placement rejections (a step beyond
+    -- the reachable height, a tile outside coverage) as structured errors.
+    -- Those are exactly the tiles a walking actor cannot cross, so the sight
+    -- line is blocked; any other failure is corrupt or ambiguous state and
+    -- keeps its own attribution.
+    local ok, endpoint, blocked =
+      pcall(FieldActorPlacement.resolveAdjacentDestination, map, cursor.actor, direction, true, true)
+    if not ok then
+      if FieldActorPlacement.isPlacementRejection(endpoint) then
+        return true
+      end
+      error(endpoint, 0)
+    end
+    if endpoint == nil or blocked then
+      return true
+    end
+    if step < distance then
+      local occupant = getCollisionAt(actors, mapId, {
+        fieldX = endpoint.fieldX,
+        fieldZ = endpoint.fieldZ,
+        surfaceId = endpoint.surfaceId,
+      })
+      if occupant ~= nil then
+        return true
+      end
+    end
+    cursor.advance(endpoint)
+  end
+  return false
+end
+
+-- Every produced trainer actor of the live map, in source object order. Only
+-- the cheap source facts are carried here: the catalog's double mark and any
+-- collision resolution are asked for by the selection module once a trainer
+-- actually reaches the sight geometry.
 ---@param self TrainerEncounterCoordinator
 ---@return table<string, unknown>[]
 function TrainerEncounterCoordinator:_trainerFacts()
@@ -300,7 +335,7 @@ function TrainerEncounterCoordinator:_trainerFacts()
   if mapId == nil then
     return {}
   end
-  local world = self._world()
+  local world = self:_world()
   local facts = {}
   local actorsOf = actors.actorsOf --[[@as fun(self: table, id: integer): table[] ]]
   local getPosition = actors.getPosition --[[@as fun(self: table, id: string): table<string, unknown>?]]
@@ -320,12 +355,26 @@ function TrainerEncounterCoordinator:_trainerFacts()
         direction = getFacing(actors, actor.actorId),
         range = subject.sightRange,
         defeated = world:isFlagSet(RuntimeValues.trainerFlagId(trainerId)),
-        isDouble = HgssTrainerCatalog.isDouble(self:_requireCatalog(), trainerId),
-        sightBlocked = self:_occlusionProbe(actor, position),
       }
     end
   end
   return facts
+end
+
+-- The two resolvers the pure selection module asks for only once a trainer
+-- reaches the geometry: the catalog's double mark by native trainer identity,
+-- and this owner's one sight occlusion probe.
+---@return fun(trainerId: integer): boolean doubles
+---@return fun(trainer: table<string, unknown>, direction: string, distance: integer): boolean sightBlocked
+function TrainerEncounterCoordinator:_sightResolvers()
+  local self_ = self
+  local function doubles(trainerId)
+    return HgssTrainerCatalog.isDouble(self_:_requireCatalog(), trainerId) == true
+  end
+  local function sightBlocked(trainer, direction, distance)
+    return self_:_sightBlocked(assert(trainer.id), direction, distance)
+  end
+  return doubles, sightBlocked
 end
 
 ---@return string? actorId of engagement slot 0, nil when nothing is engaged
@@ -381,10 +430,13 @@ function TrainerEncounterCoordinator:tryEngage()
     return false
   end
   local position = playerTile(player)
+  local doubles, sightBlocked = self:_sightResolvers()
   local plan = TrainerBattleTrigger.check({
     player = { fieldX = position.fieldX, fieldZ = position.fieldZ, facing = player.facing },
     trainers = self:_trainerFacts(),
     doublesEligible = self._doublesEligible(),
+    isDouble = doubles,
+    sightBlocked = sightBlocked,
   })
   if plan == nil then
     return false

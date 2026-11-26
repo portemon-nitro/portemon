@@ -627,28 +627,42 @@ function DaycareService:_raiseEggCall()
   state:setTrigger(phone.eggTriggerKey, true)
 end
 
--- Move the party's unhatched Eggs one completed cycle closer to hatching:
--- every Egg loses the source decrement (or one point when its friendship is
--- below it), and the first Egg already at zero friendship requests its hatch
--- and stops the walk, leaving later Eggs untouched. Answers the staged party
--- changes and the zero-based slot of the Egg that hatches.
+-- Move the party's unhatched Eggs one completed cycle closer to hatching
+-- (src/get_egg.c::HandleDaycareStep): every Egg loses the source decrement (or
+-- one point when its friendship is below it), and the first Egg already at
+-- zero friendship requests its hatch and stops the walk, leaving later Eggs
+-- untouched. The hatched subject is then the first zero-friendship Egg of the
+-- post-decrement party (Party_GetMonToHatch), which can be an earlier Egg this
+-- very cycle brought to zero. Answers the staged party changes and the
+-- zero-based slot of the Egg that hatches.
 ---@param party table[]
 ---@return table<string, unknown>[] changes, integer? hatchSlot0
 function DaycareService:_advanceEggFriendship(party)
   local decrement = Breeding.cycleDecrement(party)
   local changes = {}
-  local hatchSlot0 = nil
+  local triggered = false
   for slot0, mon in ipairs(party) do
     if mon.isEgg == true then
       local friendship = mon.friendship
       if friendship == 0 then
-        hatchSlot0 = slot0 - 1
+        triggered = true
         break
       end
       mon.friendship = friendship >= decrement and friendship - decrement or friendship - 1
       changes[#changes + 1] = { slot = slot0 - 1, mon = mon }
     end
   end
+  if not triggered then
+    return changes, nil
+  end
+  local hatchSlot0 = nil
+  for slot0, mon in ipairs(party) do
+    if mon.isEgg == true and mon.friendship == 0 then
+      hatchSlot0 = slot0 - 1
+      break
+    end
+  end
+  assert(hatchSlot0 ~= nil, "a triggered egg cycle leaves an Egg at zero friendship")
   return changes, hatchSlot0
 end
 
@@ -697,7 +711,20 @@ function DaycareService:noteCommittedStep()
       -- waiting in the party.
       local egg = assert(party[hatchSlot0 + 1], "the hatching slot carries its egg")
       local hatched = self._mons:buildHatchedMon(egg)
-      changes[#changes + 1] = { slot = hatchSlot0, mon = hatched }
+      -- The selected Egg may be one this same cycle decremented: its staged
+      -- change becomes the hatched record instead of a second change for the
+      -- slot.
+      local replaced = false
+      for _, change in ipairs(changes) do
+        if change.slot == hatchSlot0 then
+          change.mon = hatched
+          replaced = true
+          break
+        end
+      end
+      if not replaced then
+        changes[#changes + 1] = { slot = hatchSlot0, mon = hatched }
+      end
     end
   end
   local partyPrep = nil

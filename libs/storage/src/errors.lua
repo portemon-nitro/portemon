@@ -1,8 +1,8 @@
--- Stable error codes for the storage package (SaveFs, CacheFs,
--- ArtifactPublisher). Modules must reference the named constants, never bare
--- literals, so a rename stays in one place. Save and cache keep separate
--- namespaces: the two scoped filesystem types share mechanics but never
--- error codes. Pure domain module: no love dependency.
+-- Stable error codes for the storage package (SaveFs, CacheFs). Modules must
+-- reference the named constants, never bare literals, so a rename stays in one
+-- place. Save and cache keep separate namespaces: the two scoped filesystem
+-- types share mechanics but never error codes. Pure domain module: no love
+-- dependency.
 
 local Errors = {}
 

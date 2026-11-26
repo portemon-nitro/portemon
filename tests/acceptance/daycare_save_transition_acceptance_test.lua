@@ -29,10 +29,10 @@ local T = {
 local MAP = "MAP_BURNED_TOWER_1F"
 local PREVIOUS_GAME_SCHEMA = "g4-game-save-v16"
 local EARLIER_GAME_SCHEMA = "g4-game-save-v15"
-local PREVIOUS_STATS_SCHEMA = "hgss-stats-v3"
-local PREVIOUS_STATS_STATE_VERSION = 3
-local EARLIER_STATS_SCHEMA = "hgss-stats-v2"
-local EARLIER_STATS_STATE_VERSION = 2
+local PREVIOUS_STATS_SCHEMA = "hgss-stats-v4"
+local PREVIOUS_STATS_STATE_VERSION = 4
+local EARLIER_STATS_SCHEMA = "hgss-stats-v3"
+local EARLIER_STATS_STATE_VERSION = 3
 local HOF_BUCKET_SCHEMA = "hgss-hall-of-fame-v1"
 local DAYCARE_BUCKET_SCHEMA = "hgss-daycare-v1"
 
@@ -145,7 +145,8 @@ local function earlierEnvelope(captured, schema)
   legacy.playerData.profile.coins = nil
   if schema == PREVIOUS_GAME_SCHEMA then
     -- v16 predates custody and the Battle Point wallet, so its own statistics
-    -- release carries neither the care counters nor the point counters.
+    -- release carries the League-win total but neither the care counters nor
+    -- the point counters.
     legacy.gameStats.schema = PREVIOUS_STATS_SCHEMA
     legacy.gameStats.stateVersion = PREVIOUS_STATS_STATE_VERSION
     legacy.gameStats.daycareDeposits = nil
@@ -153,7 +154,8 @@ local function earlierEnvelope(captured, schema)
     legacy.gameStats.battlePointsReceived = nil
     legacy.gameStats.battlePointsSpent = nil
   else
-    -- v15 predates the Hall of Fame history and the League-win counter.
+    -- v15 predates the Hall of Fame history and the League-win counter, so its
+    -- statistics release stops at the steps-biked total.
     legacy.hallOfFame = nil
     legacy.gameStats.schema = EARLIER_STATS_SCHEMA
     legacy.gameStats.stateVersion = EARLIER_STATS_STATE_VERSION

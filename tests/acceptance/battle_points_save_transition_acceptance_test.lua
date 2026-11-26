@@ -29,8 +29,8 @@ local T = {
 
 local MAP = "MAP_BURNED_TOWER_1F"
 local PREVIOUS_GAME_SCHEMA = "g4-game-save-v17"
-local PREVIOUS_STATS_SCHEMA = "hgss-stats-v4"
-local PREVIOUS_STATS_STATE_VERSION = 4
+local PREVIOUS_STATS_SCHEMA = "hgss-stats-v5"
+local PREVIOUS_STATS_STATE_VERSION = 5
 local BATTLE_POINTS_SCHEMA = "hgss-battle-points-v1"
 local HOF_BUCKET_SCHEMA = "hgss-hall-of-fame-v1"
 
@@ -115,8 +115,8 @@ local function settledCapture(game, label)
 end
 
 -- Rewrites one captured save as the previous envelope: the release before the
--- Battle Point owner never wrote that bucket, and its statistics format
--- carried no point counters.
+-- Battle Point owner never wrote that bucket, and its Day Care statistics
+-- format (v5) carried no point counters.
 ---@param captured table the journey's own capture
 ---@return table
 local function previousEnvelope(captured)

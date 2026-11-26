@@ -295,6 +295,7 @@ function PokemonCarePresentationResources:_prepareLease(lease, request)
   local rendererOptions = {
     graphics = self._graphics,
     cacheFs = self._cacheFs,
+    imageAssets = self._imagePool,
     manifest = manifest,
     images = images,
     pictures = lease._pictures,

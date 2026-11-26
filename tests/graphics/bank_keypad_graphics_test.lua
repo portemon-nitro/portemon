@@ -169,4 +169,8 @@ T["the compiled keypad paints its source layer, digits and feedback"] = function
   owner.release()
 end
 
-return RomSuite.fromFacts(T)
+local suite = RomSuite.fromFacts(T)
+-- The keypad draws through the real graphics device: the suite only runs where
+-- a GPU context is available.
+suite.metadata.capabilities = { "graphics", "rom_dump" }
+return suite

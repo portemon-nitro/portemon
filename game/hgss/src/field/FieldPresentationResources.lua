@@ -105,7 +105,6 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field rocketHideoutEffects RocketHideoutEffects? the runtime hideout effects whose presented trap this composition owns
 ---@field legendEventScene LegendEventScene? the runtime legend scenes whose presented parts and montage this composition owns
 ---@field pokemonCareHost PokemonCareScriptHost? the runtime's script-owned care child host
----@field presentationDisplay DisplayMeasurement? the runtime's own measured display facts
 ---@field bindPokemonCarePresentation fun(runtime: FieldPresentationResourcesRuntime, acquire: fun(request: table<string, unknown>): table<string, unknown>): integer runtime care preparation binding in presented composition
 ---@field unbindPokemonCarePresentation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime care preparation unbinding in presented composition
 
@@ -1383,6 +1382,88 @@ function FieldPresentationResources:drawPcApplication(host, runtime)
       plan
     )
   end
+end
+
+-- Draws the active League ending through its prepared presentation owner:
+-- the registration party, the save-status message, the credit roll and
+-- The End, from the coordinator's immutable snapshot plus the live party
+-- the congratulations phase registers. A pending bundle draws nothing; the
+-- field world stays visible behind it. Never acquires resources or advances
+-- clocks: all leases were admitted by preparation before the first draw.
+---@param runtime FieldRuntime the live field runtime owning the ending
+function FieldPresentationResources:drawEnding(runtime)
+  local coordinator = runtime.gameClear
+  if coordinator == nil or not coordinator:isActive() then
+    return
+  end
+  local presentation = runtime.endingPresentation
+  if presentation == nil or not presentation:isReady() then
+    return
+  end
+  local status = coordinator:status()
+  assert(type(status) == "table", "the active ending publishes its status")
+  status.saveMessage = runtime.saveStatus
+  if status.phase == "congratulations" and type(status.party) ~= "table" then
+    status.party = self:_endingRegistrationParty(runtime)
+  end
+  presentation:draw({
+    graphics = assert(love and love.graphics, "ending drawing requires its host graphics namespace"),
+    textRenderer = assert(self.textRenderer, "ending drawing borrows the field text renderer"),
+    windowRenderer = assert(self.windowRenderer, "ending drawing borrows the shared window renderer"),
+    icons = self.monIconProvider,
+    monCatalog = runtime.monCatalog,
+    messageProvider = runtime.messageProvider,
+    images = self._imagePool,
+  }, status)
+end
+
+-- The live non-Egg party the congratulations surface registers, snapshotted
+-- for one draw. The staged candidate owns the durable record; this snapshot
+-- only paints the surface the transaction is about to store.
+---@param runtime FieldRuntime the live field runtime owning the party
+---@return table<string, unknown>[] party
+function FieldPresentationResources:_endingRegistrationParty(runtime)
+  local party = {}
+  local monService = runtime.monService
+  if monService == nil or type(monService.partyCount) ~= "function" then
+    return party
+  end
+  local countOk, count = pcall(monService.partyCount, monService)
+  if not countOk or type(count) ~= "number" then
+    return party
+  end
+  local catalog = monService.catalog and monService:catalog() or nil
+  for slot0 = 0, count - 1 do
+    local monOk, mon = pcall(monService.partyMon, monService, slot0)
+    if monOk and type(mon) == "table" and mon.isEgg ~= true and type(mon.species) == "string" then
+      local level = mon.level
+      if type(monService.partyMonDerived) == "function" then
+        local derivedOk, derived = pcall(monService.partyMonDerived, monService, slot0)
+        if derivedOk and type(derived) == "table" and type(derived.level) == "number" then
+          level = derived.level
+        end
+      end
+      local nickname = mon.nickname
+      if (nickname == nil or nickname == "") and catalog ~= nil and type(catalog.species) == "table" then
+        local speciesOk, species = pcall(catalog.species, catalog, mon.species)
+        if speciesOk and type(species) == "table" and type(species.name) == "string" then
+          nickname = species.name
+        end
+      end
+      local otName
+      if type(mon.origin) == "table" and type(mon.origin.trainerName) == "string" then
+        otName = mon.origin.trainerName
+      end
+      party[#party + 1] = {
+        species = mon.species,
+        level = level,
+        form = mon.form,
+        nickname = nickname or mon.species,
+        otName = otName,
+      }
+    end
+  end
+  return party
 end
 
 ---@param status table<string, unknown> Kurt selector status carrying its resolved plan

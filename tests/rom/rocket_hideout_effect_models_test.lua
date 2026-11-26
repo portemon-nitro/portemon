@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldEffects = require("romdump.src.config.FieldEffects")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local RomSuite = require("tests.rom.support.RomSuite")
 local StoryEffectAssetCompiler = require("romdump.src.digest.field.StoryEffectAssetCompiler")
 
@@ -48,7 +49,7 @@ local suite = RomSuite.fromFacts({
       end
       for _, batch in ipairs(model.dynamic.batches) do
         local sha1 = assert(
-          batch.geometry:match("^assets/generated/field/effects/geometry/([0-9a-f]+)%.g4mesh$"),
+          ModelAsset.geometryFile(batch.geometry):match("^assets/generated/field/effects/geometry/([0-9a-f]+)%.g4gx$"),
           trap.key .. " geometry publishes under the effect root"
         )
         Assert.notNil(meshes[sha1], trap.key .. " geometry bytes are compiled")
@@ -56,7 +57,7 @@ local suite = RomSuite.fromFacts({
       for _, material in ipairs(model.materials) do
         if material.texture then
           local sha1 = assert(
-            material.texture:match("^assets/generated/field/effects/textures/([0-9a-f]+)%.png$"),
+            ModelAsset.textureFile(material.texture):match("^assets/generated/field/effects/textures/([0-9a-f]+)%.g4tx$"),
             trap.key .. " texture publishes under the effect root"
           )
           Assert.notNil(textures[sha1], trap.key .. " texture bytes are compiled")

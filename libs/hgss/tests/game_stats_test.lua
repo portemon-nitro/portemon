@@ -211,6 +211,8 @@ function T.score_accumulates_per_registration_and_caps_at_the_retail_ceiling()
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   local clamped = nearCap:prepareChanges({ observations = registerObservations("CHIKORITA") })
   Assert.isTrue(clamped.changed, "a registration below the ceiling still reports a change")
@@ -227,6 +229,8 @@ function T.score_accumulates_per_registration_and_caps_at_the_retail_ceiling()
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   local revision = capped:revision()
   local held = capped:prepareChanges({ observations = { scoreObservation("CHIKORITA") } })
@@ -249,6 +253,8 @@ function T.restore_rebuilds_from_a_bucket_and_missing_starts_empty()
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   Assert.isTrue(restored:isCounted("CHIKORITA"), "every saved registration survives restore")
   Assert.isTrue(restored:isCounted("TOTODILE"), "every saved registration survives restore")
@@ -295,6 +301,8 @@ function T.biked_steps_count_once_each_up_to_the_retail_ceiling()
     daycareDeposits = 0,
     eggsHatched = 0,
     stepsBiked = GameStats.STEPS_BIKED_CAP,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   local cappedRevision = capped:revision()
   capped:countBikedStep()
@@ -325,6 +333,8 @@ function T.written_mail_caps_at_its_retail_ceiling_without_resetting_score()
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   owner:prepareChanges({ observations = { { kind = "mail_written" } } }):publish()
   Assert.equal(owner:mailWrittenCount(), 999999, "writes stop at the retail count ceiling")
@@ -340,6 +350,8 @@ function T.written_mail_caps_at_its_retail_ceiling_without_resetting_score()
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   local revision = capped:revision()
   local held = capped:prepareChanges({ observations = registerObservations("CHIKORITA") })
@@ -448,6 +460,8 @@ function T.script_score_event_saturates_at_the_retail_ceiling()
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   local revision = nearCap:revision()
   nearCap:awardScriptScoreEvent(21)
@@ -464,6 +478,8 @@ function T.script_score_event_saturates_at_the_retail_ceiling()
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   revision = capped:revision()
   capped:awardScriptScoreEvent(21)
@@ -508,6 +524,8 @@ function T.league_win_counts_once_per_clear_and_caps_at_the_source_ceiling()
     leagueWins = GameStats.LEAGUE_WINS_CAP,
     daycareDeposits = 0,
     eggsHatched = 0,
+    battlePointsReceived = 0,
+    battlePointsSpent = 0,
   }, refs())
   Assert.equal(capped:leagueWins(), GameStats.LEAGUE_WINS_CAP, "the saved total restores")
   local cappedRevision = capped:revision()
@@ -612,12 +630,13 @@ end
 
 function T.battle_point_statistics_saturate_at_the_extra_wide_ceiling()
   local owner = GameStats.restore({
-    schema = "hgss-stats-v5",
-    stateVersion = 5,
+    schema = "hgss-stats-v6",
+    stateVersion = 6,
     uniqueCaught = {},
     uniqueTotal = 0,
     score = 0,
     mailWritten = 0,
+    stepsBiked = 0,
     leagueWins = 0,
     daycareDeposits = 0,
     eggsHatched = 0,

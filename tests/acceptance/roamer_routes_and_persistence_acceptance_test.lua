@@ -19,6 +19,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local FakeAudioOutput = require("tests.acceptance.support.FakeAudioOutput")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
@@ -79,10 +80,10 @@ local T = {
 local CURRENT_GAME_SCHEMA = "g4-game-save-v15"
 local CURRENT_ENCOUNTER_SCHEMA = "hgss-encounter-v2"
 local CURRENT_ENCOUNTER_STATE_VERSION = 2
--- The statistics bucket that envelope release shipped: no League-win, care,
--- or Battle Point counters existed yet.
-local CURRENT_GAME_STATS_SCHEMA = "hgss-stats-v2"
-local CURRENT_GAME_STATS_STATE_VERSION = 2
+-- The statistics bucket that envelope release shipped: the steps-biked total
+-- existed, but no League-win, care, or Battle Point counters yet.
+local CURRENT_GAME_STATS_SCHEMA = "hgss-stats-v3"
+local CURRENT_GAME_STATS_STATE_VERSION = 3
 
 local NEW_BARK = "MAP_NEW_BARK"
 local ROUTE_29 = "MAP_ROUTE_29"
@@ -430,11 +431,13 @@ function T.tests.connection_entry_moves_active_roamers_while_ordinary_warps_do_n
   local versionId = AcceptanceHarness.defaultVersion()
   local romFs, romSource = RomSourcePath.openReader(versionId)
   assert(romFs, tostring(romSource))
-  local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
+  local facts = NavigationFacts.discover(GeneratedCacheFixture.reader(versionId), romFs)
   romFs:close()
   romSource:release()
 
-  local loaded = publishedNativeJourney({ ["native.latias"] = "caught", ["native.latios"] = "defeated" })
+  -- Latias is terminal while Latios, the last source slot, still roams: the
+  -- last slot must both move and stay terminal-aware in source order.
+  local loaded = publishedNativeJourney({ ["native.latias"] = "caught" })
   local game = continueJourney(loaded)
   local ok, err = xpcall(function()
     OpeningLifecycle.seedNewBarkWestExitScene(game)
@@ -705,9 +708,10 @@ function T.tests.fly_field_move_reaches_the_source_fly_warp()
 end
 
 function T.tests.fly_warp_randomizes_every_active_roamer()
-  -- Latios is already caught, so the terminal slot also proves that a fly warp
-  -- leaves the inactive slots alone.
-  local loaded = publishedNativeJourney({ ["native.latios"] = "caught" })
+  -- Latias is already caught, so the terminal slot proves that a fly warp
+  -- leaves inactive slots alone while the last source slot, Latios, still
+  -- randomizes.
+  local loaded = publishedNativeJourney({ ["native.latias"] = "caught" })
   local game = continueJourney(loaded)
   local ok, err = xpcall(function()
     local mons = assert(game.runtime.monService, "the field owns its mon service")

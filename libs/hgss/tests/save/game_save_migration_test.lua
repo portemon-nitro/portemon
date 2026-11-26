@@ -970,7 +970,7 @@ function T.v16_migration_adds_only_the_empty_day_care()
       uniqueTotal = 0,
       score = 0,
       mailWritten = 0,
-      leagueWins = 1,
+      stepsBiked = 0,
     },
     gymmick = { schema = "hgss-gymmick-v1", kind = "none", data = {} },
     followingMon = { schema = "hgss-following-mon-v1", inhibited = true },
@@ -990,7 +990,7 @@ function T.v16_migration_adds_only_the_empty_day_care()
   Assert.equal(migrated.gameStats.schema, GameStatsSave.SCHEMA, "the nested stats bucket advances with the envelope")
   Assert.equal(migrated.gameStats.daycareDeposits, 0, "no deposit count is invented")
   Assert.equal(migrated.gameStats.eggsHatched, 0, "no hatch count is invented")
-  Assert.equal(migrated.gameStats.leagueWins, 1, "the League-win total survives the care step")
+  Assert.equal(migrated.gameStats.leagueWins, 0, "a v3 bucket predates the League-win total")
   Assert.equal(migrated.gameStats.score, 0, "the score survives the care step")
   Assert.isFalse(pcall(GameSave.migrateV16, GameSave.migrateV16(source)), "a v16 record that carries a Day Care is rejected")
   local normalized = assert(GameSave.normalize(source))
@@ -1031,9 +1031,8 @@ function T.v17_migration_adds_only_the_empty_battle_point_wallet()
       uniqueTotal = 0,
       score = 0,
       mailWritten = 0,
+      stepsBiked = 0,
       leagueWins = 3,
-      daycareDeposits = 2,
-      eggsHatched = 1,
     },
     gymmick = { schema = "hgss-gymmick-v1", kind = "none", data = {} },
     followingMon = { schema = "hgss-following-mon-v1", inhibited = true },
@@ -1041,6 +1040,20 @@ function T.v17_migration_adds_only_the_empty_battle_point_wallet()
   })))
   assert(source.schema == GameSave.LEGACY_V17_SCHEMA, "the fixture reaches the v17 envelope")
   Assert.isNil(source.battlePoints, "a v17 record carries no Battle Point wallet")
+  -- A v17 save on disk carries the Day Care statistics bucket that release
+  -- wrote: real deposit and hatch totals, and no Battle Point counters.
+  source.gameStats = {
+    schema = GameStatsSave.V5_SCHEMA,
+    stateVersion = GameStatsSave.V5_STATE_VERSION,
+    uniqueCaught = {},
+    uniqueTotal = 0,
+    score = 0,
+    mailWritten = 0,
+    stepsBiked = 0,
+    leagueWins = 3,
+    daycareDeposits = 2,
+    eggsHatched = 1,
+  }
 
   local walletStep = GameSave.migrateV17(source)
   Assert.equal(walletStep.schema, GameSave.LEGACY_V18_SCHEMA, "the v17 step advances the envelope to the v18 schema")

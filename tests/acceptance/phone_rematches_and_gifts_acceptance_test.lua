@@ -11,6 +11,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local CivilDate = require("libs.hgss.src.field.CivilDate")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
@@ -133,7 +134,7 @@ local SEED_STEP = 1
 ---@return { x: integer, z: integer } the map's generated field tile origin
 local function mapOrigin(versionId, mapSymbol)
   local world = assert(
-    CacheFs.forVersion(versionId):loadLua(MapAssetCache.worldPath()),
+    GeneratedCacheFixture.reader(versionId):loadLua(MapAssetCache.worldPath()),
     "the generated world catalog is available"
   )
   for _, record in pairs(world.maps) do
@@ -151,7 +152,7 @@ end
 local function generatedObjects(versionId, mapSymbol)
   local mapId = MapCatalog.require(mapSymbol).id
   local field = assert(
-    CacheFs.forVersion(versionId):loadLua(FieldMapDataCache.fieldPath(mapId)),
+    GeneratedCacheFixture.reader(versionId):loadLua(FieldMapDataCache.fieldPath(mapId)),
     "the map's generated field record is available"
   )
   return assert(field.events.objects, "the generated field record carries its object events")
@@ -160,7 +161,7 @@ end
 ---@param versionId string
 ---@return table[] the generated phonebook contacts
 local function generatedContacts(versionId)
-  local manifest = PokegearCache.loadManifest(CacheFs.forVersion(versionId))
+  local manifest = PokegearCache.loadManifest(GeneratedCacheFixture.reader(versionId))
   local catalog = assert(manifest.catalog, "the generated companion manifest carries its catalog")
   return assert(catalog.contacts, "the generated companion catalog carries its contacts")
 end

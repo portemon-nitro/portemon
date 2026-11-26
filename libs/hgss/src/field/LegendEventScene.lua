@@ -394,12 +394,16 @@ end
 ---@param choice integer
 function LegendEventScene:_beginEggCutscene(choice)
   local definition = self:_requireDefinition("sinjoh_egg")
-  local part = assert(definition.parts and definition.parts[choice + 1], "the egg cutscene names its source variant")
+  -- The generated parts are the three distinct source egg variants, not layers
+  -- of one egg: the active claim keeps its own source index.
+  local choiceIndex = choice + 1
+  local part = assert(definition.parts and definition.parts[choiceIndex], "the egg cutscene names its source variant")
   local player = self._playerOf()
   assert(player ~= nil, "the egg cutscene needs the live field player")
   self._active = {
     kind = "egg_cutscene",
     definition = definition,
+    choiceIndex = choiceIndex,
     part = part,
     phase = "fade_out",
     ticks = 0,
@@ -639,16 +643,17 @@ end
 ---@return string
 function LegendEventScene:_stepWing(active)
   local part = active.part
-  -- The wing definition keys one part per source kind, so every phase plays the
-  -- one part its own kind claimed.
+  -- The wing definition keys one part per source kind, so the claim holds only
+  -- the selected part as one dense instance.
   local kindIndex = active.sourceKind + 1
   if active.phase == "load" then
     local definition = active.definition
     if definition.sound ~= nil then
       self._audio:play(definition.sound)
     end
-    active.models = self:_claimModels(definition, "legend_wing", kindIndex)
-    playRole(active.models[kindIndex], part, "intro")
+    local claimed = self:_claimModels(definition, "legend_wing", kindIndex)
+    active.models = { claimed[kindIndex] }
+    playRole(active.models[1], part, "intro")
     active.phase = "intro"
     active.ticks = 0
     return "wait"
@@ -656,7 +661,7 @@ function LegendEventScene:_stepWing(active)
   if active.phase == "intro" then
     active.ticks = active.ticks + 1
     if active.ticks >= clipFrames(part, "intro") then
-      playRole(active.models[kindIndex], part, "loop", true)
+      playRole(active.models[1], part, "loop", true)
       active.phase = "child"
       active.childRequested = true
       active.ticks = 0
@@ -667,7 +672,7 @@ function LegendEventScene:_stepWing(active)
   if active.phase == "loop" then
     active.ticks = active.ticks + 1
     if active.ticks >= clipFrames(part, "loop") then
-      playRole(active.models[kindIndex], part, "end")
+      playRole(active.models[1], part, "end")
       active.phase = "end"
       active.ticks = 0
     end
@@ -765,7 +770,10 @@ function LegendEventScene:_stepEggCutscene(active)
     if not self:_coverDone() then
       return "wait"
     end
-    active.models = self:_claimModels(active.definition, "sinjoh_egg")
+    -- Only the selected source variant is claimed and drawn; the other two
+    -- belong to choices this scene did not make.
+    local claimed = self:_claimModels(active.definition, "sinjoh_egg", active.choiceIndex)
+    active.models = { claimed[active.choiceIndex] }
     self:_startCover("in", "white", LegendEventScene.WHITE_FADE_STEPS, LegendEventScene.WHITE_FADE_SPEED)
     active.phase = "fade_in_wait"
     return "wait"
@@ -774,6 +782,7 @@ function LegendEventScene:_stepEggCutscene(active)
     if not self:_coverDone() then
       return "wait"
     end
+    playRole(active.models[1], active.part, "all")
     active.phase = "animate"
     active.ticks = 0
     return "wait"

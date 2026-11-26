@@ -2,7 +2,8 @@
 -- output, and evidence-preserving migration from a missing bucket or an
 -- exact earlier bucket. Each step adds bounded counters (v2 the written Mail
 -- total, v3 the steps-biked total, v4 the League-win total, v5 the Day Care
--- deposit and hatch totals); migration never invents a historical count.
+-- deposit and hatch totals, v6 the Battle Point totals); migration never
+-- invents a historical count.
 -- Uses literal buckets plus small synthetic species sets; no ROM, GPU, or
 -- product cache is touched.
 
@@ -19,8 +20,8 @@ end
 
 local function validBucket()
   return {
-    schema = "hgss-stats-v5",
-    stateVersion = 5,
+    schema = "hgss-stats-v6",
+    stateVersion = 6,
     uniqueCaught = { "TOTODILE", "CHIKORITA" },
     uniqueTotal = 3,
     score = 40,
@@ -33,6 +34,23 @@ local function validBucket()
     battlePointsSpent = 64,
   }
 end
+-- The exact bucket a v17 save carries: the Day Care counters are real and the
+-- Battle Point counters do not exist yet.
+local function v5Bucket()
+  return {
+    schema = "hgss-stats-v5",
+    stateVersion = 5,
+    uniqueCaught = { "TOTODILE", "CHIKORITA" },
+    uniqueTotal = 3,
+    score = 40,
+    mailWritten = 7,
+    stepsBiked = 1500,
+    leagueWins = 2,
+    daycareDeposits = 5,
+    eggsHatched = 1,
+  }
+end
+
 local function v4Bucket()
   return {
     schema = "hgss-stats-v4",
@@ -87,7 +105,7 @@ end
 
 function T.valid_buckets_canonicalize_deterministically()
   local canonical = GameStatsSave.validate(validBucket(), refs())
-  Assert.equal(canonical.schema, "hgss-stats-v5", "validation publishes the current schema")
+  Assert.equal(canonical.schema, "hgss-stats-v6", "validation publishes the current schema")
   Assert.equal(canonical.stateVersion, GameStatsSave.STATE_VERSION, "validation publishes the current state version")
   Assert.deepEqual(canonical.uniqueCaught, { "CHIKORITA", "TOTODILE" }, "validation sorts its registrations")
   Assert.equal(canonical.uniqueTotal, 3, "validation keeps the blind total")
@@ -178,6 +196,29 @@ function T.exact_v3_buckets_migrate_with_zero_later_counts()
   Assert.deepEqual(GameStats.restore(migrated, refs()):bucket(), migrated, "v3 migration output round-trips")
 end
 
+-- The v6 step adds the two Battle Point counters at zero and keeps every
+-- earlier statistic, including the Day Care counters a v17 save really
+-- carries.
+function T.exact_v5_buckets_migrate_with_zero_point_counters()
+  local migrated = GameStatsSave.migrate(v5Bucket(), refs())
+  Assert.equal(migrated.schema, GameStatsSave.SCHEMA, "migration publishes the current schema")
+  Assert.equal(migrated.stateVersion, GameStatsSave.STATE_VERSION, "migration publishes the current state version")
+  Assert.equal(migrated.battlePointsReceived, 0, "migration invents no received point")
+  Assert.equal(migrated.battlePointsSpent, 0, "migration invents no spent point")
+  Assert.deepEqual(migrated.uniqueCaught, { "CHIKORITA", "TOTODILE" }, "earlier registrations survive")
+  Assert.equal(migrated.uniqueTotal, 3, "migration preserves the blind total")
+  Assert.equal(migrated.score, 40, "migration keeps the score")
+  Assert.equal(migrated.mailWritten, 7, "migration keeps the written-Mail total")
+  Assert.equal(migrated.stepsBiked, 1500, "migration keeps the steps-biked total")
+  Assert.equal(migrated.leagueWins, 2, "migration keeps the League-win total")
+  Assert.equal(migrated.daycareDeposits, 5, "migration keeps the real Day Care deposit total")
+  Assert.equal(migrated.eggsHatched, 1, "migration keeps the real hatch total")
+  local owner = GameStats.restore(v5Bucket(), refs())
+  Assert.equal(owner:daycareDeposits(), 5, "a v5 bucket restores its deposit total")
+  Assert.equal(owner:battlePointsReceived(), 0, "a v5 bucket restores no received point")
+  Assert.deepEqual(GameStats.restore(migrated, refs()):bucket(), migrated, "v5 migration output round-trips")
+end
+
 -- The v5 step adds the two Day Care counters at zero and keeps every earlier
 -- statistic: no historical deposit or hatch can be inferred, and the hatch
 -- total stays at zero until its own owner lands.
@@ -193,6 +234,7 @@ function T.exact_v4_buckets_migrate_with_zero_care_counters()
   Assert.equal(migrated.mailWritten, 7, "migration keeps the written-Mail total")
   Assert.equal(migrated.stepsBiked, 1500, "migration keeps the steps-biked total")
   Assert.equal(migrated.leagueWins, 2, "the League-win total survives the care step")
+  Assert.equal(migrated.battlePointsReceived, 0, "the point counters this bucket predates arrive at zero")
 end
 
 -- The save envelope's own step has no catalog: it advances the schema and the
@@ -206,6 +248,7 @@ function T.envelope_advance_keeps_the_stored_registrations_without_a_catalog()
   Assert.deepEqual(advanced.uniqueCaught, { "CUSTOM_SPECIES", "CHIKORITA" }, "the stored set is copied verbatim")
   Assert.equal(advanced.daycareDeposits, 0)
   Assert.equal(advanced.eggsHatched, 0)
+  Assert.equal(advanced.battlePointsReceived, 0)
   assertInvalid(function()
     GameStatsSave.validate({
       schema = GameStatsSave.SCHEMA,
@@ -379,6 +422,11 @@ function T.malformed_buckets_fail_with_attribution()
     bucket.eggsHatched = 1
     GameStatsSave.migrate(bucket, refs())
   end, "a v4 bucket carrying a care counter never migrates")
+  assertInvalid(function()
+    local bucket = v5Bucket()
+    bucket.battlePointsReceived = 1
+    GameStatsSave.migrate(bucket, refs())
+  end, "a v5 bucket carrying a point counter never migrates")
   assertInvalid(function()
     local bucket = validBucket()
     bucket.uniqueCaught = { "MISSINGNO" }

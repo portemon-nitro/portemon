@@ -291,6 +291,8 @@ end
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
+  "audio-bank:133",
+  "audio-bank:136",
   "battle-presentation:global",
   "battle-evolution:global",
   "field-font:global",

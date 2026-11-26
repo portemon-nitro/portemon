@@ -330,4 +330,120 @@ function T.step_encounters_meet_only_a_roaming_slot_standing_on_the_player_map()
   end, "ENCOUNTER_INVALID_INPUT")
 end
 
+-- The compiled source graph this suite drives: two adjacent eligible routes,
+-- four created slots inside them.
+---@return table native, table mapIdBySymbol, table refs
+local function nativeGraph()
+  local native = {
+    routes = { "R1", "R2" },
+    adjacency = { { 1 }, { 0 } },
+    slots = {
+      { slot = 0, key = "native.zero", species = "EEVEE", level = 20, regionMin = 0, regionCount = 2 },
+      { slot = 1, key = "native.one", species = "EEVEE", level = 20, regionMin = 0, regionCount = 2 },
+      { slot = 2, key = "native.two", species = "EEVEE", level = 20, regionMin = 0, regionCount = 2 },
+      { slot = 3, key = "native.three", species = "EEVEE", level = 20, regionMin = 0, regionCount = 2 },
+    },
+  }
+  local mapIdBySymbol = { R1 = 11, R2 = 12 }
+  return native, mapIdBySymbol, { species = { EEVEE = true }, maps = { [11] = true, [12] = true } }
+end
+
+---@param state table roamer owner over a native graph
+---@param native table the source graph whose slot order the owner must follow
+---@param created table<string, unknown>[] created records
+local function createAllSlots(state, native, created)
+  -- A zero draw places every created slot on the graph's first route.
+  local rng = rawStream({ 0, 0, 0, 0 })
+  for index, fact in ipairs(native.slots) do
+    created[#created + 1] = state:createNativeSlot(fact.slot, function(slotFact)
+      return Fixture.mon(slotFact.species, slotFact.level, 90 + index)
+    end, rng)
+  end
+end
+
+function T.every_source_slot_moves_on_a_connection_including_the_last()
+  local Roamers = Fixture.requirePresent(ROAMER_MODULE, "stable roaming state and lifecycle")
+  local native, mapIdBySymbol, refs = nativeGraph()
+  local state = Roamers.new({ records = {}, species = refs.species, maps = refs.maps, native = native, mapIdBySymbol = mapIdBySymbol })
+  local created = {}
+  createAllSlots(state, native, created)
+  Assert.equal(#created, 4, "every source slot is created")
+  -- The single neighbour of route zero is route one, so no draw is needed; one
+  -- draw per slot answers the 1/16 randomize roll.
+  local rng, draws = rawStream({ 1, 1, 1, 1 })
+  state:updateOnConnectionEntry(rng)
+  Assert.equal(draws(), 4, "every active slot takes its own source roll")
+  local captured = state:capture().roamers
+  for slot = 0, 3 do
+    local record = assert(captured[assert(native.slots[slot + 1]).key], "the slot keeps its record")
+    Assert.equal(record.native.routeIndex, 1, "slot " .. slot .. " moves onto its single neighbour")
+    Assert.equal(record.revision, 1, "slot " .. slot .. " advances exactly one revision")
+  end
+end
+
+function T.every_source_slot_randomizes_on_a_fly_warp_including_the_last()
+  local Roamers = Fixture.requirePresent(ROAMER_MODULE, "stable roaming state and lifecycle")
+  local native, mapIdBySymbol, refs = nativeGraph()
+  local state = Roamers.new({ records = {}, species = refs.species, maps = refs.maps, native = native, mapIdBySymbol = mapIdBySymbol })
+  local created = {}
+  createAllSlots(state, native, created)
+  -- Each slot starts on route zero: candidate zero names its own route and is
+  -- rejected, so each slot consumes two draws to reach route one.
+  local rng, draws = rawStream({ 0, 1, 0, 1, 0, 1, 0, 1 })
+  state:randomizeLocations(rng)
+  Assert.equal(draws(), 8, "every active slot takes its own in-region draws")
+  local captured = state:capture().roamers
+  for slot = 0, 3 do
+    local record = assert(captured[assert(native.slots[slot + 1]).key], "the slot keeps its record")
+    Assert.equal(record.native.routeIndex, 1, "slot " .. slot .. " randomizes onto the other route")
+    Assert.equal(record.revision, 1, "slot " .. slot .. " advances exactly one revision")
+  end
+end
+
+function T.a_defeated_source_slot_is_recreated_in_place_by_the_league_ending()
+  local Roamers = Fixture.requirePresent(ROAMER_MODULE, "stable roaming state and lifecycle")
+  local native, mapIdBySymbol, refs = nativeGraph()
+  local state = Roamers.new({ records = {}, species = refs.species, maps = refs.maps, native = native, mapIdBySymbol = mapIdBySymbol })
+  local first = state:createNativeSlot(1, function(fact)
+    return Fixture.mon(fact.species, fact.level, 5)
+  end, rawStream({ 1 }))
+  Assert.equal(first.lifecycle, "roaming", "the source slot starts roaming")
+  local defeated = state:prepareResult("native.one", "defeated", 0, {})
+  Assert.equal(defeated.lifecycle, "defeated", "a committed defeat closes the slot")
+  Assert.equal(defeated.revision, 1, "the defeat advances the revision")
+  local recreated = state:createNativeSlot(1, function(fact)
+    return Fixture.mon(fact.species, fact.level, 6)
+  end, rawStream({ 1 }))
+  Assert.equal(recreated.lifecycle, "roaming", "the ending recreates the defeated slot as roaming")
+  Assert.equal(recreated.revision, 2, "the recreation invalidates the defeated revision")
+  Assert.equal(recreated.native.slot, 1, "the recreation keeps its source slot")
+  Assert.isTrue(recreated.mon.personality ~= first.mon.personality, "the recreation materializes a fresh identity")
+  rejectionCode(function()
+    state:prepareResult("native.one", "defeated", 1, {})
+  end, "ENCOUNTER_INVALID_INPUT")
+  local captured = state:capture()
+  Assert.equal(captured.roamers["native.one"].revision, 2, "the stale defeated outcome can never overwrite the recreation")
+  local stored = 0
+  for _ in pairs(captured.roamers) do
+    stored = stored + 1
+  end
+  Assert.equal(stored, 1, "the recreation replaces its existing record")
+  rejectionCode(function()
+    state:createNativeSlot(1, function(fact)
+      return Fixture.mon(fact.species, fact.level, 7)
+    end, rawStream({ 1 }))
+  end, "ENCOUNTER_INVALID_INPUT")
+  -- A captured slot is not a recreation target either.
+  local captureState = Roamers.new({ records = {}, species = refs.species, maps = refs.maps, native = native, mapIdBySymbol = mapIdBySymbol })
+  captureState:createNativeSlot(0, function(fact)
+    return Fixture.mon(fact.species, fact.level, 8)
+  end, rawStream({ 1 }))
+  captureState:prepareResult("native.zero", "captured", 0, {})
+  rejectionCode(function()
+    captureState:createNativeSlot(0, function(fact)
+      return Fixture.mon(fact.species, fact.level, 9)
+    end, rawStream({ 1 }))
+  end, "ENCOUNTER_INVALID_INPUT")
+end
+
 return { tests = T }

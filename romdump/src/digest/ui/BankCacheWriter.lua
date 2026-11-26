@@ -2,7 +2,6 @@
 -- transaction. The family marker is written after payload readback succeeds.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local BankAssetSchema = require("libs.assets.src.BankAssetSchema")
 local BankCache = require("libs.assets.src.BankCache")
 
@@ -97,27 +96,11 @@ end
 ---@param bundle table<string, unknown>
 ---@return string
 function BankCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "bank staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "bank staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(BankCache.assetDir())
   artifact:addOwnedRoot(BankCache.dir())
-  stageBundle(artifact:stageFs(), bundle)
-  return bundle.marker
-end
-
----@param cacheFs CacheFs
----@param bundle table<string, unknown>
----@return string
-function BankCacheWriter.write(cacheFs, bundle)
-  assert(cacheFs and bundle, "bank publication requires a cache and a bundle")
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "bank", { BankCache.assetDir(), BankCache.dir() })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
+  stageBundle(artifact, bundle)
   return bundle.marker
 end
 

@@ -23,7 +23,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@field private _species table<string, boolean> selected species reference set
 ---@field private _maps table<integer, boolean> selected map reference set
 ---@field private _native table<string, unknown>? the source roamer slot/route graph
----@field private _nativeSlots table<integer, { key: string, species: string, level: integer, regionMin: integer, regionCount: integer }>? the compiled source slots behind the graph
+---@field private _nativeSlots { key: string, slot: integer, species: string, level: integer, regionMin: integer, regionCount: integer }[]? the compiled source slots behind the graph in source order
 ---@field private _routeMaps integer[] route index to map identity
 ---@field private _steps integer
 ---@field private _repelSteps integer
@@ -115,7 +115,7 @@ end
 -- unknown slot identity is corrupt generated data, never a guess.
 ---@param native unknown
 ---@param mapIdBySymbol table<string, integer>
----@return table<integer, table<string, unknown>>, integer[]
+---@return table<string, unknown>[], integer[]
 local function resolveNative(native, mapIdBySymbol)
   if type(native) ~= "table" then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer state requires the source roamer graph", {})
@@ -137,14 +137,20 @@ local function resolveNative(native, mapIdBySymbol)
     assert(type(mapId) == "number", "roamer routes resolve to map identities")
     routeMaps[index] = mapId
   end
-  local bySlot = {}
-  for _, fact in ipairs(slots) do
-    assert(type(fact) == "table" and type(fact.slot) == "number", "roamer slots carry their source index")
-    bySlot[
-      fact.slot --[[@as integer]]
-    ] = fact --[[@as table<string, unknown>]]
+  -- The validated source array is the one ordering owner: entry n+1 is source
+  -- slot n, so callers never restate the slot count or iterate a zero-based
+  -- key table.
+  local ordered = {}
+  for index, fact in ipairs(slots) do
+    if type(fact) ~= "table" or type(fact.slot) ~= "number" or fact.slot ~= index - 1 then
+      Errors.raise("ENCOUNTER_INVALID_INPUT", "the source roamer graph orders its slots by source index", {
+        slot = type(fact) == "table" and fact.slot or nil,
+      })
+    end
+    assert(type(fact) == "table", "roamer slots carry their source facts")
+    ordered[index] = fact --[[@as table<string, unknown>]]
   end
-  return bySlot, routeMaps
+  return ordered, routeMaps
 end
 
 ---@param args { records: table<string, unknown>[], species: table<string, boolean>, maps: table<integer, boolean>, native: table<string, unknown>?, mapIdBySymbol: table<string, integer>?, steps?: integer, repelSteps?: integer, swarm?: boolean, playerRoutes?: table<string, unknown> }
@@ -474,12 +480,12 @@ function HgssRoamerState:nativeSlot(slot)
     Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer creation names a source slot index", { slot = slot })
   end
   local slots = self._nativeSlots
-  if slots == nil then
-    Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer creation requires the source roamer graph", {})
+  if type(slots) ~= "table" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer creation requires the source roamer graph", { slot = slot })
   end
   ---@cast slots -nil
   assert(type(slots) == "table", "roamer creation reads the source slots")
-  local fact = slots[slot]
+  local fact = slots[slot + 1]
   if type(fact) ~= "table" then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "no source roamer slot " .. tostring(slot), { slot = slot })
   end
@@ -570,8 +576,7 @@ function HgssRoamerState:updateOnConnectionEntry(rng)
   local adjacency = assert(self._native, "roamer movement reads the adjacency table")
   local neighbours = adjacency.adjacency --[[@as table<integer, integer[]>]]
   assert(type(neighbours) == "table", "the source graph carries its adjacency table")
-  for slotIndex = 0, #slots - 1 do
-    local fact = slots[slotIndex]
+  for _, fact in ipairs(slots) do
     assert(type(fact) == "table", "the source graph carries its slots")
     local record = self._records[
       self._index[
@@ -623,8 +628,7 @@ function HgssRoamerState:randomizeLocations(rng)
   local slots = assert(self._nativeSlots, "roamer randomization requires the source roamer graph")
   ---@cast slots -nil
   assert(type(slots) == "table", "roamer randomization reads the source slots")
-  for slotIndex = 0, #slots - 1 do
-    local fact = slots[slotIndex]
+  for _, fact in ipairs(slots) do
     assert(type(fact) == "table", "the source graph carries its slots")
     local record = self._records[
       self._index[
@@ -672,16 +676,34 @@ function HgssRoamerState:playerRoutes()
   return { current = self._playerRoutes.current, previous = self._playerRoutes.previous }
 end
 
--- Source slot creation: records the freshly materialized roaming mon with
--- its maximum battle health, the active status word, full hit points and an
--- eligible in-region route. A slot that already exists is a programming
--- error, never a silent second creation.
+-- Source slot creation (field_roamer.c::Save_CreateRoamerByID): the created
+-- mon's identity, battle health and route replace whatever the slot held. The
+-- League ending recreates exactly the slots a previous battle defeated, so a
+-- terminal defeated record is a legitimate creation target; a slot that is
+-- still roaming or already captured is never recreated and is a caller error.
+-- The owner admits the target before anything is materialized, and recreates
+-- in the record's existing position with an advanced revision, so a stale
+-- outcome of the defeated encounter can never overwrite the new one.
 ---@param slot integer source slot index
----@param mon table<string, unknown> the created roaming mon
+---@param materialize fun(fact: { species: string, level: integer }): table<string, unknown>|nil the ordinary creation owner
 ---@param rng { nextRaw: fun(self: table<string, unknown>): integer } world random stream
 ---@return table<string, unknown> the created record
-function HgssRoamerState:createNativeSlot(slot, mon, rng)
+function HgssRoamerState:createNativeSlot(slot, materialize, rng)
   local fact = self:nativeSlot(slot)
+  if type(materialize) ~= "function" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer creation requires its creation owner", { slot = slot })
+  end
+  assert(type(materialize) == "function", "roamer creation materializes through the ordinary owner")
+  local position = self._index[fact.key]
+  local existing = position ~= nil and self._records[position] or nil
+  if existing ~= nil and existing.lifecycle ~= "defeated" then
+    Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer slot " .. tostring(slot) .. " is already created", {
+      slot = slot,
+      roamer = fact.key,
+      lifecycle = existing.lifecycle,
+    })
+  end
+  local mon = materialize({ species = fact.species, level = fact.level })
   if type(mon) ~= "table" or type(mon.species) ~= "string" then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer creation requires a materialized mon", { slot = slot })
   end
@@ -690,12 +712,6 @@ function HgssRoamerState:createNativeSlot(slot, mon, rng)
     Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer creation materialized the wrong species", {
       slot = slot,
       species = mon.species,
-    })
-  end
-  if self._index[fact.key] ~= nil then
-    Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer slot " .. tostring(slot) .. " is already created", {
-      slot = slot,
-      roamer = fact.key,
     })
   end
   local condition = mon.condition
@@ -710,7 +726,7 @@ function HgssRoamerState:createNativeSlot(slot, mon, rng)
     mon = {},
     location = self:_routeMap(chosen),
     lifecycle = "roaming",
-    revision = 0,
+    revision = existing ~= nil and existing.revision --[[@as integer]] + 1 or 0,
     native = { slot = slot, routeIndex = chosen },
   }
   local stored = record.mon --[[@as table<string, unknown>]]
@@ -719,9 +735,16 @@ function HgssRoamerState:createNativeSlot(slot, mon, rng)
   end
   local storedCondition = stored.condition --[[@as table<string, unknown>]]
   storedCondition.currentHp = condition.currentHp
-  local recordTables = self._records
-  recordTables[#recordTables + 1] = record
-  self._index[fact.key] = #recordTables
+  if existing ~= nil then
+    assert(type(position) == "number", "the roamer index carries its position")
+    self._records[
+      position --[[@as integer]]
+    ] = record
+  else
+    local records = self._records
+    records[#records + 1] = record
+    self._index[fact.key] = #records
+  end
   return copyValue(record)
 end
 

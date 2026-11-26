@@ -577,6 +577,7 @@ end
 ---@field returnToMainMenu (fun())? the host's own main-menu route the League ending hands back
 ---@field endingPresentation table<string, unknown>? the ending's prepared presentation bundle owner
 ---@field gameClear table<string, unknown>? the League ending coordinator (nil before composition / after teardown)
+---@field private _endingUi boolean? whether the League ending owns the field's modal input lane
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
 ---@field savePublished boolean whether the reserved record has been published
 ---@field saveCoordinator FieldSaveCoordinator required save capture/publication owner
@@ -1973,14 +1974,20 @@ function FieldRuntime:_composeFieldServices(boot)
   end
   -- The source Hall of Fame showcase child: the immutable recorded history
   -- snapshotted at open and its own presentation owner. The generated
-  -- presentation bundle is installed by the League ending once its artifact
-  -- exists, so the child opens with an unready presentation today.
+  -- presentation bundle is admitted at open when the artifact is ready and
+  -- retries through the presented preparation until it is; a cold bundle
+  -- leaves the child unready and input-gated until the artifact arrives.
   local function createHallOfFame()
     local HallOfFameScreenState = require("game.hgss.src.ending.HallOfFameScreenState")
     local HallOfFamePresentation = require("game.hgss.src.ending.HallOfFamePresentation")
+    local presentation = HallOfFamePresentation.new(nil)
+    if self.derivedAssets ~= nil and type(self.derivedAssets.requestEnding) == "function" then
+      pcall(self.derivedAssets.requestEnding, "required")
+    end
+    self:_prepareEndingPresentation(presentation)
     return HallOfFameScreenState.new({ app = "hallOfFame" }, {
       hallOfFame = assert(self.hallOfFame, "the PC showcase needs the saved Hall of Fame history"),
-      presentation = HallOfFamePresentation.new(nil),
+      presentation = presentation,
     })
   end
   self.pcApplicationHost = PcApplicationHost.new({
@@ -2050,23 +2057,23 @@ function FieldRuntime:_composeFieldServices(boot)
     return self.monService:countAliveMons() >= 2
   end
   -- The source checks trainer sight from the field's own input frame: map
-  -- entry, transitions, a held field, and any script ownership all precede
-  -- the check, so none of them may start an engagement.
+  -- entry, transitions, a held field, and any modal, script or battle ownership
+  -- all precede the check, so none of them may start an engagement. The
+  -- session's own roaming admission is the authoritative modal policy; this
+  -- gate adds only the transition and map-entry facts it does not own.
   local function trainerFieldReady()
-    if self.session == nil then
+    local session = self.session
+    if session == nil then
       return false
     end
     if self.transition == nil or self.transition.phase ~= FieldTransition.PHASES.idle then
       return false
     end
-    local entry = self.session.mapEntryController
+    local entry = session.mapEntryController
     if entry ~= nil and entry:isActive() then
       return false
     end
-    if self.scripts ~= nil and self.scripts.scheduler:playerInputOwned() then
-      return false
-    end
-    return true
+    return session:isRoamingFree()
   end
   local function currentTrainerRegion()
     local map = currentTrainerMap()
@@ -2218,8 +2225,9 @@ function FieldRuntime:_composeGameClear()
     fieldTravel = assert(self.fieldTravel, "the League ending needs the travel state"),
     date = nowLocal,
     locate = locate,
-    -- The generated ending bundle is not produced yet, so the ending's own
-    -- presentation is unready: it publishes no frames and draws nothing.
+    -- The ending's own presentation admits the generated bundle on demand
+    -- and retries until it is ready; congratulations and the roll hold
+    -- their phases meanwhile instead of playing with no surfaces.
     presentation = self.endingPresentation,
     requestAssets = requestEndingAssets,
     loadPresentation = loadEndingPresentation,
@@ -2227,11 +2235,13 @@ function FieldRuntime:_composeGameClear()
   })
 end
 
--- Admit the generated ending bundle into the ending's own presentation owner.
--- The bundle is one selector-free artifact the ending demands for itself; while
--- it is absent the ending keeps its source timeline and draws nothing.
-function FieldRuntime:_loadEndingPresentation()
-  local presentation = self.endingPresentation
+-- Admit the generated ending bundle into one presentation owner. The bundle
+-- is one selector-free artifact the ending demands for itself; while it is
+-- absent the owner stays unready and its surfaces hold. Failures to read a
+-- ready-marked bundle attribute without preparing partial art.
+---@param presentation table<string, unknown>|nil the presentation owner to prepare
+---@return table<string, unknown>|nil presentation
+function FieldRuntime:_prepareEndingPresentation(presentation)
   if presentation == nil or presentation:isReady() then
     return presentation
   end
@@ -2240,12 +2250,24 @@ function FieldRuntime:_loadEndingPresentation()
     return presentation
   end
   local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
-  local ready = EndingAssetCache.isReady(cacheFs)
-  if not ready then
+  local readyOk, ready = pcall(EndingAssetCache.isReady, cacheFs)
+  if not readyOk or not ready then
     return presentation
   end
-  presentation:prepare(EndingAssetCache.load(cacheFs))
+  local loadOk, bundle = pcall(EndingAssetCache.load, cacheFs)
+  if not loadOk or type(bundle) ~= "table" then
+    return presentation
+  end
+  local prepareOk = pcall(presentation.prepare, presentation, bundle)
+  if not prepareOk then
+    return presentation
+  end
   return presentation
+end
+
+-- Admit the generated ending bundle into the ending's own presentation owner.
+function FieldRuntime:_loadEndingPresentation()
+  return self:_prepareEndingPresentation(self.endingPresentation)
 end
 
 -- Publish the ending's one candidate: the same record identity the ordinary
@@ -2839,14 +2861,28 @@ function FieldRuntime:update(dt)
     self.session:updateFixed(inputSnapshot)
     self.fishingHost:updateFixed()
     -- The League ending owns the field from 163 until it published and rolled
-    -- the source credits: it advances on this same fixed tick with the same
-    -- input edges, and a completed ending releases the suspended source script
-    -- before it could resume, then hands the host its main-menu route.
+    -- the source credits: it is one blocking application, so it acquires the
+    -- field's modal input lane and advances on this same fixed tick from that
+    -- lane's canonical edges. A completed ending releases the suspended source
+    -- script before it could resume, then hands the host its main-menu route.
     if self.gameClear ~= nil and self.gameClear:isActive() then
-      local endingStatus = self.gameClear:updateFixed(inputSnapshot)
+      if not self._endingUi then
+        self.input:beginUi(self.session.tick + 1)
+        self._endingUi = true
+      end
+      local endingStatus = self.gameClear:updateFixed({
+        actionPressed = inputSnapshot.actionPressed == true,
+        menuPressed = inputSnapshot.menuPressed == true,
+        uiEvents = self.input:uiSnapshot(self.session.tick + 1),
+      })
       if endingStatus == "complete" then
         self:_finishLeagueEnding()
       end
+    elseif self._endingUi then
+      -- The ending closed without completing (the application exited): its
+      -- modal lifetime ends with it.
+      self.input:clearUi()
+      self._endingUi = false
     end
     if self.hoOhAppearanceScene then
       self.hoOhAppearanceScene:updateFixed()
@@ -3585,6 +3621,10 @@ end
 -- leases, and only then hands the host its main-menu route. The field is
 -- disposed by that route's own state transition, never here.
 function FieldRuntime:_finishLeagueEnding()
+  if self._endingUi then
+    self.input:clearUi()
+    self._endingUi = false
+  end
   local coordinator = assert(self.gameClear, "a completed ending owns its coordinator")
   local scheduler = self.session ~= nil and self.session.scriptScheduler or nil
   if scheduler ~= nil then
@@ -5060,19 +5100,20 @@ function FieldRuntime:_materializeNativeRoamer(fact)
 end
 
 -- Source ScrCmd_CreateRoamer: creates one native roamer slot from the compiled
--- source slot facts. The roaming mon materializes once, the roamer owner
--- records it with its route and full battle health, and the slot's status word
--- publishes in the same step. A slot that already exists is the owner's own
--- programming error, never a silent second creation.
+-- source slot facts. The roamer owner admits the target first, the roaming mon
+-- materializes once through the ordinary creation owner, the owner records it
+-- with its route and full battle health, and the slot's status word publishes
+-- in the same step. A defeated slot is the ending's legitimate recreation
+-- target; a roaming or captured one is never silently created twice.
 ---@param slot integer source slot index
 ---@return table<string, unknown> the created record
 function FieldRuntime:createNativeRoamer(slot)
   local roamers = assert(self.roamerState, "roamer creation requires the field roamer owner")
-  local fact = roamers:nativeSlot(slot)
   local scripts = assert(self.scripts, "roamer creation requires the field scripts")
   local rng = assert(scripts.worldState and scripts.worldState.rng, "roamer creation draws from the world stream")
-  local mon = assert(self:_materializeNativeRoamer(fact), "roamer creation requires the composed mon catalogs")
-  local record = roamers:createNativeSlot(slot, mon, rng)
+  local record = roamers:createNativeSlot(slot, function(fact)
+    return assert(self:_materializeNativeRoamer(fact), "roamer creation requires the composed mon catalogs")
+  end, rng)
   self:_publishRoamerStatus(record)
   return record
 end

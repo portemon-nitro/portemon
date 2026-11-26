@@ -86,12 +86,15 @@ local function tradeManifest()
     },
     balloon = {
       model = {
-        schema = "g4-model-v6",
+        schema = "g4-model-v7",
         key = "trade-balloon",
         kind = "static",
         batches = {
           {
-            geometry = "data/generated/pokemon-care/trade/geometry/abc.g4mesh",
+            geometry = {
+              file = "data/generated/pokemon-care/trade/geometry/abc.g4gx",
+              drawIndex = 0,
+            },
             material = 0,
             node = 0,
             alphaClass = "opaque",
@@ -129,7 +132,11 @@ local function tradeManifest()
             wrap = { x = "clamp", y = "clamp" },
             flip = { x = false, y = false },
             diffuse = { r = 255, g = 255, b = 255, a = 255 },
-            texture = "data/generated/pokemon-care/trade/textures/abc.png",
+            texture = {
+              file = "data/generated/pokemon-care/trade/textures/abc.g4tx",
+              textureName = "ball",
+              paletteName = "ball",
+            },
             textureFormat = 7,
             alphaUsage = { zeroTransparent = false, oneTransparent = false },
           },

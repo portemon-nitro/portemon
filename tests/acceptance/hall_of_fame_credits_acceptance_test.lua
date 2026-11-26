@@ -25,14 +25,18 @@ local T = {
       "map:306",
       "map-data:306",
       "message-bank:528",
-      -- The post-clear destination the committed save restores.
-      "map:59",
-      "map-data:59",
+      -- The post-clear destination the committed save restores: the player's
+      -- own room (map 64), not Saffron (map 59).
+      "map:64",
+      "map-data:64",
       "message-bank:14",
       -- Mount Silver's summit, where the source Red ending lives.
       "map:465",
       "map-data:465",
       "message-bank:126",
+      -- The League ending's own generated bundle: registration, showcase
+      -- and credit-roll sections the congratulations and roll draw.
+      "ending:global",
     },
     tags = { "field", "script", "ending", "save" },
   },
@@ -64,9 +68,8 @@ local VAR_ROAMER_LATIAS_STATUS = assert(FieldScriptSymbols.variablesByName.VAR_R
 -- it off lets a scenario publish the save the player carried into the League.
 local VAR_HOF_FRAME_ENTRY = assert(FieldScriptSymbols.variablesByName.VAR_TEMP_x4001)
 
--- Source roamer status words: 2 is a defeated roamer the ending recreates, 1 a
--- captured one it leaves alone, 3 one the player never met.
-local ROAMER_DEFEATED = 2
+-- Source roamer status words: 1 marks a captured roamer the ending leaves
+-- alone, 3 one the player never met.
 local ROAMER_CAPTURED = 1
 local ROAMER_UNMET = 3
 
@@ -83,7 +86,10 @@ local SOURCE_CREDITS_FRAMES = 4976
 -- 31 walked tiles at the source 8 ticks each, its printed name message, the
 -- 514 machine effect and its fade. The clear is only reachable after it.
 local SCENE_AND_ENDING_TICKS = 1200
-local SKIP_WINDOW_TICKS = 120
+-- The skip window after the retried publication: the save-status sound (32)
+-- and fades (8+30+1+60) run on the source timeline before the host route,
+-- so the window covers the roll skip plus The End's own fade-out.
+local SKIP_WINDOW_TICKS = 400
 -- The ending's own source dialogue and The End screen answer these inputs.
 local START_PRESS_INTERVAL = 30
 
@@ -580,25 +586,75 @@ function T.tests.repeat_clear_appends_a_record_and_allows_skipping_the_source_cr
 end
 
 -- The source ending recreates only the roamers a previous battle defeated, so
--- the post-League graph matches what the player actually left behind.
+-- the post-League graph matches what the player actually left behind. The
+-- journey creates the slots through the production creation owner, settles a
+-- defeat and a capture through the battle commit owner, publishes and continues
+-- from that save, and only then runs the room's own scene.
 function T.tests.post_league_ending_recreates_only_the_defeated_roamers()
   local game, routes = bootHofEnding(harnessAt({
     mapSymbol = HOF_ROOM,
     fieldX = HOF_APPROACH.fieldX,
     fieldZ = HOF_APPROACH.fieldZ,
     facing = HOF_APPROACH.facing,
+    holdFrameScene = true,
     variables = {
-      [VAR_ROAMER_ENTEI_STATUS] = ROAMER_DEFEATED,
-      [VAR_ROAMER_RAIKOU_STATUS] = ROAMER_CAPTURED,
       [VAR_ROAMER_LATIAS_STATUS] = ROAMER_UNMET,
     },
   }))
   local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+    game:waitForFieldReady(480)
     local roamers = assert(game.runtime.roamerState, "the field runtime owns its roamer state")
-    local before = roamers:capture()
-    Assert.isNil(before.roamers["native.entei"], "the defeated Entei starts with no live record")
-    Assert.isNil(before.roamers["native.raikou"], "the captured Raikou starts with no live record")
+    local HgssBattleCommitter = require("libs.hgss.src.battle.HgssBattleCommitter")
+    -- The two source slots the player already met: Raikou enters the journey
+    -- and is captured, Entei enters and is defeated. Both outcomes stage
+    -- through the battle commit owner and publish their source status word.
+    local function commitOutcome(key, outcome, revision, result)
+      local receipt = HgssBattleCommitter.commit(HgssBattleCommitter.prepare({
+        outcome = { id = "acceptance:" .. key .. ":" .. outcome, result = result },
+        roamer = {
+          owner = roamers,
+          key = key,
+          outcome = outcome,
+          expectedRevision = revision,
+          details = {},
+        },
+      }))
+      game.runtime:_publishRoamerStatus(receipt.roamer)
+      return receipt.roamer
+    end
+    game.runtime:createNativeRoamer(0)
+    game.runtime:createNativeRoamer(1)
+    commitOutcome("native.raikou", "captured", 0, "capture")
+    local defeated = commitOutcome("native.entei", "defeated", 0, "win")
+    Assert.equal(defeated.lifecycle, "defeated", "the committed battle leaves the defeated Entei record")
+    local defeatedIdentity = defeated.mon.personality
 
+    -- Publish and continue from that settled state: the restored owner owns the
+    -- terminal records, not a live launch artifact.
+    local store = assert(game.runtime.saveStore, "the field runtime owns its save store")
+    Assert.isTrue(
+      store:publishFirst(assert(game.runtime:captureGameSave(), "the defeated journey captures its save")),
+      "the defeated journey publishes its save"
+    )
+    game:restart()
+    game:waitForFieldEntry()
+    game:waitForFieldReady(480)
+    roamers = assert(game.runtime.roamerState, "the continued runtime owns its roamer state")
+    local before = roamers:capture()
+    Assert.equal(
+      assert(before.roamers["native.entei"], "Continue restores the defeated Entei").lifecycle,
+      "defeated",
+      "Continue restores the defeated record instead of a bare status word"
+    )
+    Assert.equal(
+      assert(before.roamers["native.raikou"], "Continue restores the captured Raikou").lifecycle,
+      "caught",
+      "Continue restores the captured record"
+    )
+    Assert.isNil(before.roamers["native.latias"], "a roamer never met starts with no live record")
+
+    game:setWorldState({ variable = VAR_HOF_FRAME_ENTRY, value = 0 })
     advanceEnding(game, ENDING_SCRIPT, "its published save", function()
       return routes.count > 0
     end, SOURCE_CREDITS_FRAMES + 900)
@@ -621,8 +677,14 @@ function T.tests.post_league_ending_recreates_only_the_defeated_roamers()
     local entei = assert(after.roamers["native.entei"], "the ending recreates the defeated Entei")
     Assert.equal(entei.lifecycle, "roaming", "the recreated Entei roams again")
     Assert.equal(entei.mon.species, "ENTEI", "the recreated Entei keeps its source species")
-    Assert.isNil(after.roamers["native.raikou"], "the ending never recreates a captured roamer")
-    Assert.isNil(after.roamers["native.latias"], "the ending never recreates an unmet roamer")
+    Assert.equal(entei.revision, 2, "the recreation invalidates the defeated revision")
+    Assert.isTrue(entei.mon.personality ~= defeatedIdentity, "the recreation materializes a fresh identity")
+    Assert.equal(
+      assert(after.roamers["native.raikou"], "the ending keeps the captured record").lifecycle,
+      "caught",
+      "the ending never recreates a captured roamer"
+    )
+    Assert.isNil(after.roamers["native.latias"], "the ending never creates a roamer the player never met")
   end, debug.traceback)
   game:close()
   if not ok then

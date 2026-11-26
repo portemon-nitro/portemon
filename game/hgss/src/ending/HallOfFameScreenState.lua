@@ -107,20 +107,91 @@ function HallOfFameScreenState:_navigate(direction)
   end
 end
 
+-- Prepares the showcase's presented dependencies: the generated ending
+-- bundle through the shared demand, then the recorded party's own icon
+-- pages through the shared provider. A cold bundle stays pending with no
+-- failure; a malformed bundle or icon demand attributes its failure.
+-- Readiness here is data plus icon admission; drawing stays wait-free.
+---@param env { cacheFs: table<string, unknown>|nil, icons: table<string, unknown>|nil, monCatalog: table<string, unknown>|nil, requestEnding: (fun(urgency: string): unknown)|nil }
+---@return boolean ready
+---@return string? failure
+function HallOfFameScreenState:preparePresentation(env)
+  assert(not self.disposed, "disposed Hall of Fame showcase cannot prepare")
+  assert(type(env) == "table", "the showcase preparation needs its environment")
+  local presentation = assert(self.presentation, "the showcase needs its presentation")
+  if not presentation:isReady() then
+    if env.requestEnding ~= nil then
+      pcall(env.requestEnding, "required")
+    end
+    if env.cacheFs ~= nil then
+      local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
+      local readyOk, ready = pcall(EndingAssetCache.isReady, env.cacheFs)
+      if readyOk and ready then
+        local loadOk, bundle = pcall(EndingAssetCache.load, env.cacheFs)
+        if loadOk and type(bundle) == "table" then
+          local prepareOk, prepareErr = pcall(presentation.prepare, presentation, bundle)
+          if not prepareOk then
+            return false, "Hall of Fame bundle failed: " .. tostring(prepareErr)
+          end
+        end
+      end
+    end
+    if not presentation:isReady() then
+      return false, nil
+    end
+  end
+  local record = self:_record()
+  if record == nil then
+    return true
+  end
+  local icons = env.icons
+  local catalog = env.monCatalog
+  if icons == nil or catalog == nil then
+    return false, "Hall of Fame showcase needs its shared icon owner"
+  end
+  if type(icons.prepareKeys) ~= "function" or type(catalog.iconSelection) ~= "function" then
+    return false, "Hall of Fame showcase needs its shared icon owner"
+  end
+  local keys = {}
+  for _, mon in ipairs(record.party) do
+    if type(mon) == "table" and type(mon.species) == "string" then
+      local ok, key = pcall(catalog.iconSelection, catalog, mon)
+      if ok and type(key) == "string" and key ~= "" then
+        keys[#keys + 1] = key
+      end
+    end
+  end
+  local ok, ready, failure = pcall(icons.prepareKeys, icons, keys)
+  if not ok then
+    return false, "Hall of Fame icons failed: " .. tostring(ready)
+  end
+  if ready then
+    return true
+  end
+  return false, failure
+end
+
 ---@return table<string, unknown> read-only showcase view
 function HallOfFameScreenState:status()
   local record = self:_record()
   local view = {
     app = "hallOfFame",
+    section = "showcase",
     phase = self.closed and "closed" or "browsing",
     recordNumber = self:_recordNumber(),
     total = self.total,
     retained = #self.records,
     date = record ~= nil and record.date or nil,
     partySize = record ~= nil and #record.party or 0,
+    party = {},
     selectedMon = self.monIndex0,
     page = self.monIndex0 == nil and "team" or "mon",
   }
+  if record ~= nil then
+    for _, mon in ipairs(record.party) do
+      view.party[#view.party + 1] = { species = mon.species, level = mon.level, form = mon.form }
+    end
+  end
   if record ~= nil and self.monIndex0 ~= nil then
     local mon = record.party[self.monIndex0 + 1]
     if mon ~= nil then

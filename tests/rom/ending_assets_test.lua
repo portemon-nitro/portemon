@@ -10,6 +10,7 @@ local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
 local EndingAssetCompiler = require("romdump.src.digest.ending.EndingAssetCompiler")
 local EndingCacheWriter = require("romdump.src.digest.ending.EndingCacheWriter")
 local FakeCache = require("tests.support.FakeCache")
+local ResidentArtifactFixture = require("tests.support.ResidentArtifactFixture")
 local RomSuite = require("tests.rom.support.RomSuite")
 
 local PNG_MAGIC = "\137PNG\r\n\26\n"
@@ -55,7 +56,9 @@ local function testEndingBundle(romFs)
   -- Publish it and admit it back through the strict contract.
   local fs = FakeCache.new()
   local cacheFs = CacheFs.forVersion("soulsilver", fs)
-  local marker = EndingCacheWriter.write(cacheFs, bundle)
+  local marker = ResidentArtifactFixture.publish(cacheFs, "ending", "global", function(artifact)
+    return EndingCacheWriter.stage(artifact, bundle)
+  end)
   Assert.equal(marker, bundle.marker, "the published marker is the bundle's own")
   Assert.equal(fs:read("soulsilver/" .. EndingAssetCache.markerPath()), marker, "the marker file is published")
   local loaded = EndingAssetCache.load(cacheFs)

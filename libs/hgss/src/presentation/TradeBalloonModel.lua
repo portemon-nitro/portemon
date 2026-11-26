@@ -20,7 +20,6 @@
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FixedPoint = require("libs.math.src.FixedPoint")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
-local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local Matrix3 = require("libs.math.src.Matrix3")
 local Matrix4 = require("libs.math.src.Matrix4")
 local Rgb555 = require("libs.codec.src.Rgb555")
@@ -170,13 +169,17 @@ end
 local TradeBalloonModel = {}
 TradeBalloonModel.__index = TradeBalloonModel
 
----@param opts { graphics: table<string, unknown>, cacheFs: table<string, unknown>, model: table<string, unknown> }
+---@param opts { graphics: table<string, unknown>, cacheFs: table<string, unknown>, model: table<string, unknown>, imageAssets: table<string, unknown> }
 ---@return TradeBalloonModel
 function TradeBalloonModel.new(opts)
   assert(type(opts) == "table", "the trade balloon model requires its options")
   local graphics = assert(opts.graphics, "the trade balloon model draws through the graphics namespace")
   local cacheFs = assert(opts.cacheFs, "the trade balloon model reads its generated assets")
   assert(type(opts.model) == "table", "the trade balloon model requires its compiled descriptor")
+  assert(
+    opts.imageAssets ~= nil and type(opts.imageAssets.request) == "function",
+    "the trade balloon model borrows the session image owner for its textures"
+  )
   local self = setmetatable({
     _graphics = graphics,
     _view = Matrix4.identity(),
@@ -197,10 +200,7 @@ function TradeBalloonModel.new(opts)
       self._pool:release()
       self._pool = nil
     end
-    if self._images ~= nil then
-      self._images:dispose()
-      self._images = nil
-    end
+    self._images = nil
     error(failure, 0)
   end
   return self
@@ -209,13 +209,13 @@ end
 -- Realizes the owned image, pool, prepared batches, renderer and canvas. A
 -- failure releases nothing: the constructor drops whatever this method had
 -- already assigned, so the completed acquisitions stay the only owned state.
----@param opts { graphics: table<string, unknown>, cacheFs: table<string, unknown>, model: table<string, unknown> }
+---@param opts { graphics: table<string, unknown>, cacheFs: table<string, unknown>, model: table<string, unknown>, imageAssets: table<string, unknown> }
 ---@param cacheFs table<string, unknown>
 function TradeBalloonModel:_realize(opts, cacheFs)
   local graphics = self._graphics
-  -- The model's own textures realize through a private image owner: the
-  -- trade overlay composes this model outside the field's session pool.
-  local images = ImageAssetPool.new(cacheFs, { graphics = graphics })
+  -- The model's textures realize through the session image owner the care
+  -- composition already borrows: the pool returns every lease it takes.
+  local images = assert(opts.imageAssets, "the trade balloon model borrows the session image owner")
   self._images = images
   local pool = GpuAssetPool.new(cacheFs, { graphics = graphics, imageAssets = images })
   self._pool = pool
@@ -360,10 +360,8 @@ function TradeBalloonModel:release()
     self._pool:release()
     self._pool = nil
   end
-  if self._images ~= nil then
-    self._images:dispose()
-    self._images = nil
-  end
+  -- The image owner is borrowed from the session, never disposed here.
+  self._images = nil
   self._prepared = nil
 end
 

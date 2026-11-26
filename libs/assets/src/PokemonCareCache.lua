@@ -66,7 +66,7 @@ end
 ---@param sha1 string
 ---@return string
 function PokemonCareCache.tradeGeometryPath(sha1)
-  return TRADE_DIR .. "/geometry/" .. sha1 .. ".g4mesh"
+  return TRADE_DIR .. "/geometry/" .. sha1 .. ".g4gx"
 end
 
 -- One trade layer's palette-index plane (one byte per pixel), staged beside
@@ -81,7 +81,7 @@ end
 ---@param sha1 string
 ---@return string
 function PokemonCareCache.tradeTexturePath(sha1)
-  return TRADE_DIR .. "/textures/" .. sha1 .. ".png"
+  return TRADE_DIR .. "/textures/" .. sha1 .. ".g4tx"
 end
 
 -- Every staged image the hatch manifest references, in a stable order so the

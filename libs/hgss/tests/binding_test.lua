@@ -299,6 +299,7 @@ T["a standard script sentinel is never a map-bank identity"] = function()
       return p.composition:effective(id)
     end,
     scheduler = p.scheduler,
+    worldState = p.services.world,
   })
   Assert.equal(client:consume(sentinel, 100), ScriptInteractionClient.RESULTS.unavailable)
   Assert.isNil(p.scheduler:foregroundEnvironmentId(), "an unavailable interaction starts nothing")

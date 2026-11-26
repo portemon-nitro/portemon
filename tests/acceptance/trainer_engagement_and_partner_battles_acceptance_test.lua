@@ -10,6 +10,7 @@
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local CacheFs = require("libs.storage.src.CacheFs")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
@@ -455,7 +456,7 @@ end
 ---@param objectEventId integer
 ---@return integer flagId
 local function objectEventFlag(versionId, mapSymbol, objectEventId)
-  local cacheFs = CacheFs.forVersion(versionId)
+  local cacheFs = GeneratedCacheFixture.reader(versionId)
   local mapId = MapCatalog.require(mapSymbol).id
   local field = assert(cacheFs:loadLua(FieldMapDataCache.fieldPath(mapId)), "the map's field record is generated")
   for _, object in ipairs(field.events.objects) do

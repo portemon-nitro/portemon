@@ -1,13 +1,16 @@
--- Persisted game-stats bucket: strict v5 shape, canonical detached
+-- Persisted game-stats bucket: strict v6 shape, canonical detached
 -- output, and evidence-preserving migration from a missing bucket or an
--- exact earlier bucket. v5 keeps the sorted registration set (freshness
+-- exact earlier bucket. v6 keeps the sorted registration set (freshness
 -- authority), the blind unique-registration total (retail increments per
 -- evolution publish, even for re-registrations), the bounded trainer-card
 -- score, the bounded written-Mail total, the bounded steps-biked total
 -- (GAME_STAT_STEPS_BIKED 1, behind the Bike Shop call), the bounded
 -- League-win counter, the two Day Care statistics, and the two Battle Point
--- statistics. Migration never invents historical counts; each exact earlier
--- bucket receives zeroes for statistics it did not track.
+-- statistics. Each counter group owns its own schema identity because the
+-- saved envelope released them in separate steps: v5 is the Day Care shape a
+-- v17 save carries, and v6 adds only the Battle Point counters of v18.
+-- Migration never invents historical counts; each exact earlier bucket
+-- receives zeroes for statistics it did not track.
 -- Pure data owner: no live state, no love dependency.
 --
 -- Retail sources (tmp/refs/pokeheartgold):
@@ -25,8 +28,10 @@ local Errors = require("libs.errors.src.Errors")
 ---@class GameStatsSave
 local GameStatsSave = {}
 
-GameStatsSave.SCHEMA = "hgss-stats-v5"
-GameStatsSave.STATE_VERSION = 5
+GameStatsSave.SCHEMA = "hgss-stats-v6"
+GameStatsSave.STATE_VERSION = 6
+GameStatsSave.V5_SCHEMA = "hgss-stats-v5"
+GameStatsSave.V5_STATE_VERSION = 5
 GameStatsSave.V4_SCHEMA = "hgss-stats-v4"
 GameStatsSave.V4_STATE_VERSION = 4
 GameStatsSave.V3_SCHEMA = "hgss-stats-v3"
@@ -253,7 +258,7 @@ end
 
 ---@param bucket table<string, unknown> validated shape record
 ---@param refs table<string, unknown>?
----@return table<string, unknown> detached canonical v5 bucket
+---@return table<string, unknown> detached canonical current bucket
 local function canonicalize(bucket, refs)
   return {
     schema = GameStatsSave.SCHEMA,
@@ -285,7 +290,7 @@ end
 
 ---@param bucket table<string, unknown>
 ---@param refs { species: table<string, boolean> }
----@return table<string, unknown> detached canonical v5 bucket
+---@return table<string, unknown> detached canonical current bucket
 function GameStatsSave.validate(bucket, refs)
   checkRefs(refs)
   if type(bucket) ~= "table" then
@@ -313,7 +318,7 @@ end
 -- save envelope's own schema advance takes that path.
 ---@param bucket table<string, unknown>?
 ---@param refs { species: table<string, boolean> }?
----@return table<string, unknown> detached canonical v5 bucket
+---@return table<string, unknown> detached canonical current bucket
 function GameStatsSave.migrate(bucket, refs)
   if refs ~= nil then
     checkRefs(refs)
@@ -335,7 +340,23 @@ function GameStatsSave.migrate(bucket, refs)
   local mailWritten = 0
   local stepsBiked = 0
   local leagueWins = 0
-  if bucket.schema == GameStatsSave.V4_SCHEMA and bucket.stateVersion == GameStatsSave.V4_STATE_VERSION then
+  local daycareDeposits = 0
+  local eggsHatched = 0
+  if bucket.schema == GameStatsSave.V5_SCHEMA and bucket.stateVersion == GameStatsSave.V5_STATE_VERSION then
+    -- The Day Care shape a v17 save carries: its two counters are real and
+    -- ride along; only the Battle Point counters this step introduces are
+    -- initialized.
+    legacyFields.mailWritten = true
+    legacyFields.stepsBiked = true
+    legacyFields.leagueWins = true
+    legacyFields.daycareDeposits = true
+    legacyFields.eggsHatched = true
+    mailWritten = bucket.mailWritten
+    stepsBiked = bucket.stepsBiked
+    leagueWins = bucket.leagueWins
+    daycareDeposits = bucket.daycareDeposits
+    eggsHatched = bucket.eggsHatched
+  elseif bucket.schema == GameStatsSave.V4_SCHEMA and bucket.stateVersion == GameStatsSave.V4_STATE_VERSION then
     legacyFields.mailWritten = true
     legacyFields.stepsBiked = true
     legacyFields.leagueWins = true
@@ -365,8 +386,8 @@ function GameStatsSave.migrate(bucket, refs)
     mailWritten = mailWritten,
     stepsBiked = stepsBiked,
     leagueWins = leagueWins,
-    daycareDeposits = 0,
-    eggsHatched = 0,
+    daycareDeposits = daycareDeposits,
+    eggsHatched = eggsHatched,
     battlePointsReceived = 0,
     battlePointsSpent = 0,
   }, refs)

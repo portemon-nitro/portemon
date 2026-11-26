@@ -59,8 +59,8 @@ local T = {
 -- The shipped envelope and encounter bucket this migration starts from.
 local LEGACY_GAME_SCHEMA = "g4-game-save-v14"
 local LEGACY_ENCOUNTER_SCHEMA = "hgss-encounter-v1"
-local LEGACY_GAME_STATS_SCHEMA = "hgss-stats-v2"
-local LEGACY_GAME_STATS_STATE_VERSION = 2
+local LEGACY_GAME_STATS_SCHEMA = "hgss-stats-v3"
+local LEGACY_GAME_STATS_STATE_VERSION = 3
 
 local LAKE_OF_RAGE = "MAP_LAKE_OF_RAGE"
 local LAKE_OF_RAGE_ORIGIN = { x = 512, z = 32 }

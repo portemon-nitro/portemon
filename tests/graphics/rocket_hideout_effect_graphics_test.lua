@@ -14,8 +14,11 @@ local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
+local ResidentCache = require("libs.storage.src.ResidentCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local StoryEffectAssetCompiler = require("romdump.src.digest.field.StoryEffectAssetCompiler")
@@ -106,28 +109,75 @@ local function compiledEffects(context)
 end
 
 -- One compiled effect bundle realized through the production pool: the compiled
--- bytes live in a disposable artifact-stage root the pool can read, while the
--- camera profiles come from the live generated cache.
+-- bytes and the camera profiles the renderer needs live in one disposable
+-- resident view, exactly the reader a selected epoch installs.
 local function stageCompiledAssets(versionId, compiled)
-  -- A disposable version root of its own: the image-derivative preparation owns
-  -- a confined cache entry, so the compiled bytes never land in the product
-  -- cache the user's derived data lives in.
-  local staged = CacheFs.forVersion("rocket-effect-graphics-test")
-  staged:removeTree("")
-  staged:createDirectory("assets/generated/field/effects")
+  local sourceId = "base:rocket-effect-graphics-test"
+  local store = ResidentCache.new(versionId, sourceId)
+  local function entry(path, bytes)
+    assert(type(bytes) == "string", "staged compiled asset is bytes: " .. path)
+    return {
+      path = path,
+      data = assert(love.data.newByteData(bytes)),
+      size = #bytes,
+      sourceId = sourceId,
+      contentId = versionId .. "\0" .. path,
+    }
+  end
+  local entries = {}
   for sha1, mesh in pairs(compiled.meshes) do
-    -- A compiled mesh is either finalized bytes (a string or LÖVE Data) or a
-    -- raw batch the writer encodes here, exactly like the effect bundle writer.
+    -- A compiled mesh is either finalized native bank bytes or a raw batch the
+    -- writer encodes here, exactly like the effect bundle writer.
     local bytes = mesh
     if type(mesh) == "table" and type(mesh.getSize) ~= "function" then
       bytes = MeshWriter.encode(mesh)
     end
-    staged:write("assets/generated/field/effects/geometry/" .. sha1 .. ".g4mesh", bytes)
+    entries[#entries + 1] = entry(FieldEffectAssetCache.geometryPath(sha1), bytes)
   end
   for sha1, texture in pairs(compiled.textures) do
-    staged:write("assets/generated/field/effects/textures/" .. sha1 .. ".png", texture.data)
+    if type(texture) == "table" then
+      entries[#entries + 1] = entry(FieldEffectAssetCache.imagePath(sha1), assert(texture.data))
+    else
+      entries[#entries + 1] = entry(FieldEffectAssetCache.texturePath(sha1), texture)
+    end
   end
-  return staged
+  local cameraProfiles = assert(
+    GeneratedCacheFixture.reader(versionId):loadLua("data/generated/field/camera/profiles.lua"),
+    "the prepared cache carries its camera profiles"
+  )
+  entries[#entries + 1] = entry(
+    "data/generated/field/camera/profiles.lua",
+    require("libs.codec.src.LuaWriter").encode(cameraProfiles)
+  )
+  store:commit(store:prepare(entries))
+  return CacheFs.fromStore(store)
+end
+
+-- The shared image owner the pooled renderer borrows: a real preparation queue
+-- and decoded budget over the staged resident view.
+---@param scope table graphics ownership scope
+---@param cache table resident staged view
+---@return table image owner
+local function stagedImageOwner(scope, cache)
+  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+  local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
+  local decoded = ResidentAssetCache.new({
+    idleByteLimit = 32 * 1024 * 1024,
+    release = function(value)
+      if type(value) == "table" and type(value.release) == "function" then
+        value:release()
+      end
+    end,
+  })
+  local queue = AssetPreparationQueue.new(cache, { decoded = decoded })
+  local owner = ImageAssetPool.new(cache, { graphics = love.graphics, queue = queue, decoded = decoded })
+  return scope:own({
+    pool = owner,
+    release = function(self)
+      self.pool:dispose()
+      queue:release()
+    end,
+  }).pool
 end
 
 function T.the_trap_models_render_at_their_published_anchor(scope, context)
@@ -136,12 +186,7 @@ function T.the_trap_models_render_at_their_published_anchor(scope, context)
     return
   end
   local cache = stageCompiledAssets(versionId, compiled)
-  local imagePool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      imagePool:dispose()
-    end,
-  })
+  local imagePool = stagedImageOwner(scope, cache)
   local pool = scope:own(GpuAssetPool.new(cache, { imageAssets = imagePool }))
   local renderer = StoryEffectRenderer.new(definitions, pool)
   scope:own({
@@ -149,8 +194,7 @@ function T.the_trap_models_render_at_their_published_anchor(scope, context)
       renderer:dispose()
     end,
   })
-  local cameraProfiles =
-    assert(CacheFs.forVersion(versionId):loadLua("data/generated/field/camera/profiles.lua"))
+  local cameraProfiles = assert(cache:loadLua("data/generated/field/camera/profiles.lua"))
   local camera = FieldCamera.new(cameraProfiles.profiles[0], { canonicalAspect = 4 / 3 })
   local fieldRenderer =
     scope:own(FieldRenderer.new({ clearColor = { BACKGROUND[1], BACKGROUND[2], BACKGROUND[3], 1 } }))
@@ -197,12 +241,7 @@ function T.the_alarm_overlay_paints_its_source_tilemap(scope, context)
     return
   end
   local cache = stageCompiledAssets(versionId, compiled)
-  local imagePool = ImageAssetPool.new(cache)
-  scope:own({
-    release = function()
-      imagePool:dispose()
-    end,
-  })
+  local imagePool = stagedImageOwner(scope, cache)
   local pool = scope:own(GpuAssetPool.new(cache, { imageAssets = imagePool }))
   local renderer = StoryEffectRenderer.new(definitions, pool)
   scope:own({
@@ -241,4 +280,6 @@ function T.the_alarm_overlay_paints_its_source_tilemap(scope, context)
   Assert.isTrue(brightPixels > darkPixels, "a stronger source pulse covers the screen with more overlay pixels")
 end
 
-return GraphicsSmoke.suite(T)
+local suite = GraphicsSmoke.suite(T)
+suite.metadata.derivedAssets = { "field-camera:global" }
+return suite

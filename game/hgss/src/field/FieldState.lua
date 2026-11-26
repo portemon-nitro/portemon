@@ -350,7 +350,13 @@ function FieldState:update(dt)
   if pcHost ~= nil and pcHost:isActive() then
     local handle = assert(pcHost:activeHandle(), "active PC host publishes its handle")
     local resources = assert(self.presentationResources, "PC presentation resources are unavailable")
-    local ready, failure = resources:preparePcApplication(assert(pcHost:status()), self.runtime)
+    local hostStatus = assert(pcHost:status(), "active PC host publishes its status")
+    local ready, failure
+    if hostStatus.app == "hallOfFame" then
+      ready, failure = self:_prepareHallOfFameShowcase()
+    else
+      ready, failure = resources:preparePcApplication(hostStatus, self.runtime)
+    end
     pcHost:setPresentationReady(handle, ready == true)
     if failure ~= nil then
       self.runtime:failPcApplicationPresentation("PC application presentation failed: " .. tostring(failure))
@@ -553,6 +559,31 @@ function FieldState:_toggleDevelopmentOverlay()
   self._fpsElapsed = 0
   self._fpsFrames = 0
   self._fps = 0
+end
+
+-- Prepares the open Hall of Fame showcase through its own child: the
+-- generated ending bundle through the shared semantic demand, then the
+-- recorded party's own icon pages. A cold bundle stays pending with no
+-- failure and input stays gated; a malformed bundle attributes its failure.
+---@return boolean ready
+---@return string? failure
+function FieldState:_prepareHallOfFameShowcase()
+  local runtime = assert(self.runtime, "Hall of Fame preparation needs its runtime")
+  local pcHost = assert(runtime.pcApplicationHost, "Hall of Fame preparation needs its PC host")
+  local child = assert(pcHost:activeChild(), "active PC host publishes its showcase child")
+  assert(type(child.preparePresentation) == "function", "the Hall of Fame showcase prepares its own presentation")
+  local resources = assert(self.presentationResources, "Hall of Fame preparation needs its resources")
+  local derived = runtime.derivedAssets
+  local requestEnding
+  if derived ~= nil and type(derived.requestEnding) == "function" then
+    requestEnding = derived.requestEnding
+  end
+  return child:preparePresentation({
+    cacheFs = runtime.cacheFs,
+    icons = resources.monIconProvider,
+    monCatalog = runtime.monCatalog,
+    requestEnding = requestEnding,
+  })
 end
 
 -- Advances the open starter chooser's presentation preparation by one
@@ -1918,6 +1949,16 @@ function FieldState:draw()
       elseif careStatus.presentation ~= nil then
         resources:drawCareSummary(careStatus)
       end
+    end
+  end
+  -- The League ending is the field's own screen takeover like the hatch
+  -- application: its prepared registration, save-status, credit roll and
+  -- The End surfaces paint over the cleared screen. A pending bundle draws
+  -- nothing, so the field world stays visible behind the held phases.
+  do
+    local gameClear = self.runtime.gameClear
+    if gameClear ~= nil and gameClear:isActive() then
+      resources:drawEnding(self.runtime)
     end
   end
   -- The retained Start Menu draws first and the foreground child second,

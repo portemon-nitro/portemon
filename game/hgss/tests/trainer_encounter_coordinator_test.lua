@@ -6,6 +6,7 @@
 local Assert = require("tests.support.Assert")
 local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
 local TrainerBattleTrigger = require("libs.hgss.src.battle.TrainerBattleTrigger")
+local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local TrainerEncounterCoordinator = require("game.hgss.src.field.TrainerEncounterCoordinator")
 
 local T = {}
@@ -116,6 +117,7 @@ local function fakeActors(options)
   manager.getCollisionAt = opts.getCollisionAt or function()
     return nil
   end
+
   local function add(actor)
     actors[actor.actorId] = actor
     return actor
@@ -159,6 +161,26 @@ local function eventWithTrainer(trainer)
   }
 end
 
+-- The movement owner resolves each sight step from the actor's committed
+-- numeric state; the fake keeps that state current with its scripted walks.
+---@param actor table<string, unknown>
+---@return table<string, unknown> committed numeric record
+local function numeric(actor)
+  return {
+    fieldX = actor.fieldX,
+    fieldZ = actor.fieldZ,
+    worldX = actor.fieldX,
+    worldY = 0,
+    worldZ = actor.fieldZ,
+    hasWorldPosition = 1,
+    surfaceId = 0,
+    hasSurfaceId = 1,
+    sourceSurfaceId = 0,
+    hasSourceSurfaceId = 1,
+    resident = 1,
+  }
+end
+
 ---@param overrides table<string, unknown>|nil
 ---@return table harness state: coordinator, actors, calls, player, started scenes
 local function harness(overrides)
@@ -187,6 +209,10 @@ local function harness(overrides)
     facing = "south",
     movementType = "look_south",
     sourceEvent = eventWithTrainer(subject),
+    cellKey = "map:80:object:5:cell",
+    numericState = function(self)
+      return numeric(self)
+    end,
   }
   actor.scriptedAction = nil
   actors2[actor.actorId] = actor
@@ -202,9 +228,26 @@ local function harness(overrides)
   local map = {
     mapId = 80,
     coordinateOrigin = { x = 0, z = 0 },
+    terrain = opts.terrain or TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = -8,
+          minZ = -8,
+          maxX = 64,
+          maxZ = 64,
+          normal = { x = 0, y = 1, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
     collision = {
-      getLocal = function(_, localX, localZ)
-        return { blocked = opts.blockedAt ~= nil and opts.blockedAt(localX, localZ) == true }
+      containsLocal = function(_, localX, localZ)
+        return localX >= -8 and localX < 64 and localZ >= -8 and localZ < 64
+      end,
+      isBlockedLocal = function(_, localX, localZ)
+        return opts.blockedAt ~= nil and opts.blockedAt(localX, localZ) == true
       end,
     },
   }
@@ -294,6 +337,54 @@ function T.a_blocked_intermediate_tile_stops_the_sight()
 
   local clear = harness()
   Assert.isTrue(clear.coordinator:tryEngage(), "an open ray engages")
+end
+
+-- A walkway one level above the trainer is not a sight line: the movement
+-- owner's own step rejection proves the ray crosses a height the trainer
+-- cannot walk.
+function T.a_height_change_on_the_ray_stops_the_sight()
+  local raised = TerrainSurface.new({
+    plates = {
+      {
+        id = 0,
+        minX = -8,
+        minZ = -8,
+        maxX = 64,
+        maxZ = 21,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 0,
+        slopeClass = "flat",
+      },
+      {
+        id = 1,
+        minX = -8,
+        minZ = 21,
+        maxX = 64,
+        maxZ = 64,
+        normal = { x = 0, y = 1, z = 0 },
+        distance = 4,
+        slopeClass = "flat",
+      },
+    },
+  })
+  local h = harness({ terrain = raised })
+  Assert.isFalse(h.coordinator:tryEngage(), "a different height never sights the player")
+  Assert.deepEqual(h.started, {})
+end
+
+-- Another standing object on an intermediate tile blocks the ray exactly like
+-- a wall: the source's occupancy bit is part of the same collision word.
+function T.an_occupied_intermediate_tile_stops_the_sight()
+  local h = harness({
+    getCollisionAt = function(_, _, candidate)
+      if candidate.fieldX == 11 and candidate.fieldZ == 20 then
+        return { actorId = "map:80:object:9" }
+      end
+      return nil
+    end,
+  })
+  Assert.isFalse(h.coordinator:tryEngage(), "an occupied tile between the two blocks the sight")
+  Assert.deepEqual(h.started, {})
 end
 
 -- The source approach walks the trainer to one tile from the player: the sight

@@ -9,6 +9,7 @@
 local AreaData = require("romdump.src.digest.map.AreaData")
 local Assert = require("tests.support.Assert")
 local BinaryReader = require("libs.codec.src.BinaryReader")
+local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -107,7 +108,7 @@ local function assertCompiledSource(compiled, definition, source, meshes, textur
   end
   for _, batch in ipairs(model.kind == "static" and model.batches or model.dynamic.batches) do
     local sha1 = assert(
-      batch.geometry:match("^assets/generated/field/effects/geometry/([0-9a-f]+)%.g4mesh$"),
+      ModelAsset.geometryFile(batch.geometry):match("^assets/generated/field/effects/geometry/([0-9a-f]+)%.g4gx$"),
       source.key .. " geometry publishes under the effect root"
     )
     Assert.notNil(meshes[sha1], source.key .. " geometry bytes are compiled")
@@ -115,7 +116,7 @@ local function assertCompiledSource(compiled, definition, source, meshes, textur
   for _, material in ipairs(model.materials) do
     if material.texture then
       local sha1 = assert(
-        material.texture:match("^assets/generated/field/effects/textures/([0-9a-f]+)%.png$"),
+        ModelAsset.textureFile(material.texture):match("^assets/generated/field/effects/textures/([0-9a-f]+)%.g4tx$"),
         source.key .. " texture publishes under the effect root"
       )
       Assert.notNil(textures[sha1], source.key .. " texture bytes are compiled")

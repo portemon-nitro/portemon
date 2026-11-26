@@ -4,7 +4,6 @@
 -- never publishes.
 
 local Errors = require("libs.errors.src.Errors")
-local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 local EndingAssetCache = require("libs.assets.src.ending.EndingAssetCache")
 local Validate = require("libs.assets.src.Validate")
 
@@ -83,6 +82,20 @@ local function stageBundle(stage, bundle)
       Errors.raise(EndingCacheWriter.ERROR.READBACK_FAILED, "section is missing after stage", { path = path })
     end
   end
+  -- Every image the published credit roll draws must exist in the staged
+  -- bundle, so a bundle cannot publish a marker over a missing background.
+  local credits = assert(stage:loadLua(assert(index.sections.credits)))
+  local function requireImage(image)
+    local path = assert(image and image.path, "an ending credit image names its published path")
+    if not stage:exists(path, "file") then
+      Errors.raise(EndingCacheWriter.ERROR.READBACK_FAILED, "image is missing after stage", { path = path })
+    end
+  end
+  for _, scene in ipairs(credits.scenes) do
+    requireImage(scene.lower)
+    requireImage(scene.upper)
+  end
+  requireImage(credits.theEnd)
   stage:write(EndingAssetCache.markerPath(), bundle.marker)
 end
 
@@ -90,25 +103,10 @@ end
 ---@param bundle table<string, unknown>
 ---@return string marker
 function EndingCacheWriter.stage(artifact, bundle)
-  assert(artifact and artifact.stageFs, "ending staging requires a PreparedArtifact")
+  assert(artifact and artifact.write, "ending staging requires a PreparedArtifact")
   validateBundle(bundle)
   artifact:addOwnedRoot(EndingAssetCache.DIR)
-  stageBundle(artifact:stageFs(), bundle)
-  return bundle.marker
-end
-
----@param cacheFs table<string, unknown>
----@param bundle table<string, unknown>
----@return string marker
-function EndingCacheWriter.write(cacheFs, bundle)
-  validateBundle(bundle)
-  local tx = ArtifactPublisher.begin(cacheFs, "ending", { EndingAssetCache.DIR })
-  local ok, err = pcall(stageBundle, tx.stage, bundle)
-  if not ok then
-    tx:abort()
-    error(err, 0)
-  end
-  tx:publish()
+  stageBundle(artifact, bundle)
   return bundle.marker
 end
 

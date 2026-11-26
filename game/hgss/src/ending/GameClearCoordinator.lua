@@ -179,8 +179,8 @@ function GameClearCoordinator:begin(vsRed)
   )
   local options = self._options
   -- The ending demands its own generated bundle: the registration, showcase and
-  -- credit-roll sections. The demand never blocks the transaction; a bundle that
-  -- is not admitted leaves the source timeline without presented surfaces.
+  -- credit-roll sections. The demand retries every fixed tick until the bundle
+  -- is admitted; congratulations and the roll hold their phases meanwhile.
   if options.requestAssets ~= nil then
     options.requestAssets("required")
   end
@@ -190,6 +190,19 @@ function GameClearCoordinator:begin(vsRed)
       options.loadPresentation()
     end
   end
+  -- The recorded non-Egg party size behind the registration reveal cadence,
+  -- read before any 163-owned write like env->gameCleared.
+  local partySize = 0
+  local monService = options.monService
+  if monService ~= nil and type(monService.partyCount) == "function" and type(monService.partyMon) == "function" then
+    local count = monService:partyCount()
+    for slot0 = 0, count - 1 do
+      local mon = monService:partyMon(slot0)
+      if type(mon) == "table" and mon.isEgg ~= true then
+        partySize = partySize + 1
+      end
+    end
+  end
   -- Captured before any 163-owned write, like env->gameCleared.
   self._previouslyCleared = options.worldState:isFlagSet(FLAG_GAME_CLEAR) == true
   self._state = GameClearState.new({
@@ -197,6 +210,7 @@ function GameClearCoordinator:begin(vsRed)
     previouslyCleared = self._previouslyCleared,
     presentation = options.presentation,
     audio = options.audio,
+    partySize = partySize,
   })
   self._candidate = nil
   self._entry = nil
@@ -351,6 +365,19 @@ end
 function GameClearCoordinator:updateFixed(input)
   if not self._active then
     return "idle"
+  end
+  -- A cold bundle retries every fixed tick: the demand and the admission
+  -- ride the same tick the state steps, so congratulations holds until the
+  -- sections are prepared instead of playing with no surfaces.
+  local options = self._options
+  if options.requestAssets ~= nil then
+    options.requestAssets("required")
+  end
+  if options.loadPresentation ~= nil then
+    local presentation = options.presentation
+    if presentation ~= nil and type(presentation.prepare) == "function" and not presentation:isReady() then
+      options.loadPresentation()
+    end
   end
   local state = assert(self._state, "an active ending owns its state machine")
   local action = state:step(input)

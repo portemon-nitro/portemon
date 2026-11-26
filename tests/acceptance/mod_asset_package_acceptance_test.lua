@@ -783,19 +783,25 @@ end
 -- remove, so persistence cannot succeed while the scenario plays. The scenario
 -- therefore proves playable readiness that does not depend on a snapshot write,
 -- and leaves the marker in place until teardown.
-local BLOCKED_OUTPUT = AcceptanceHarness.defaultVersion() .. "/cache.zip.new"
+-- Resolved only inside a running scenario: discovery must stay loadable on a
+-- machine without a prepared source.
+local function blockedOutputPath()
+  return AcceptanceHarness.defaultVersion() .. "/cache.zip.new"
+end
 
 local function occupySnapshotOutput()
-  love.filesystem.createDirectory(BLOCKED_OUTPUT)
+  local blocked = blockedOutputPath()
+  love.filesystem.createDirectory(blocked)
   Assert.isTrue(
-    love.filesystem.write(BLOCKED_OUTPUT .. "/held", "the snapshot writer cannot open its output"),
+    love.filesystem.write(blocked .. "/held", "the snapshot writer cannot open its output"),
     "the scenario occupies the snapshot writer's output path"
   )
 end
 
 local function releaseSnapshotOutput()
-  love.filesystem.remove(BLOCKED_OUTPUT .. "/held")
-  love.filesystem.remove(BLOCKED_OUTPUT)
+  local blocked = blockedOutputPath()
+  love.filesystem.remove(blocked .. "/held")
+  love.filesystem.remove(blocked)
 end
 
 -- One closed synthetic base: a complete generated graph saved through the
@@ -1008,7 +1014,7 @@ function T.tests.integrated_selection_keeps_readiness_and_ownership_stable()
         )
       end
       Assert.notNil(
-        love.filesystem.getInfo(BLOCKED_OUTPUT .. "/held"),
+        love.filesystem.getInfo(blockedOutputPath() .. "/held"),
         "no snapshot succeeded while the field played from resident and selected bytes"
       )
       Assert.equal(game:renderAttempts(), 0, "the scenario stops before GPU rendering")
@@ -1020,7 +1026,8 @@ function T.tests.integrated_selection_keeps_readiness_and_ownership_stable()
     local generatedWrites = 0
     for _, path in ipairs(writes) do
       if type(path) == "string" and (path == versionId or path:sub(1, #versionId + 1) == versionId .. "/") then
-        if path:sub(1, #BLOCKED_OUTPUT) ~= BLOCKED_OUTPUT then
+        local blocked = blockedOutputPath()
+        if path:sub(1, #blocked) ~= blocked then
           generatedWrites = generatedWrites + 1
         end
       end

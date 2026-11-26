@@ -8,6 +8,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldMessageFixture = require("tests.support.FieldMessageFixture")
+local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local ScriptCache = require("libs.assets.src.ScriptCache")
@@ -310,38 +311,21 @@ end
 -- balance expands into that marker and the template's own suffix follows it.
 -- The provider is the real one, so the window resolves its text through the
 -- same path dialogue does.
----@param suffix string the text the source row carries after the value field
 ---@return FieldMessageProvider
-function FieldScriptSliceFixture.pointsMessageProvider(suffix)
+function FieldScriptSliceFixture.pointsMessageProvider()
   local messages = {}
-  for messageId = 0, 223 do
-    messages[messageId] = {
-      id = messageId,
-      raw = { 0xFFFF },
-      text = "",
-      tokens = { { kind = "eos", raw = { 0xFFFF } } },
-    }
+  for index = 1, 224 do
+    messages[index] = { FieldMessageFixture.eos() }
   end
-  messages[220] = {
-    id = 220,
-    raw = { FieldMessageText.STRVAR_1 + 53, 0x0000, 0x0000, 0x02BF, 0x02C0, 0xFFFF },
-    text = "${STRVAR_1 53, 0, 0}" .. (suffix or " BP"),
-    tokens = {
-      { kind = "substitution", control = FieldMessageText.STRVAR_1 + 53, args = { 0, 0 } },
-      { kind = "glyph", code = 0x02BF, text = " ", raw = { 0x02BF } },
-      { kind = "glyph", code = 0x02C0, text = "BP", raw = { 0x02C0 } },
-      { kind = "eos", raw = { 0xFFFF } },
-    },
+  -- msg_0191_00220 is `${STRVAR_1 53, 0, 0}` followed by the row's own text.
+  local valueRow = {
+    { kind = "substitution", control = FieldMessageText.STRVAR_1 + 53, args = { 0, 0 } },
+    { kind = "glyph", code = 0x02BF, text = " " },
+    { kind = "glyph", code = 0x02C0, text = "BP" },
+    FieldMessageFixture.eos(),
   }
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  cache:writeLua(FieldMessageCache.bankPath(191), {
-    schema = FieldMessageCache.SCHEMA,
-    bankId = 191,
-    messageCount = 224,
-    source = { narc = "NARC_msgdata_msg", memberId = 191, memberSha1 = "synthetic" },
-    messages = messages,
-  })
-  return FieldMessageProvider.new(cache)
+  messages[221] = valueRow
+  return FieldMessageFixture.provider({ [191] = messages })
 end
 
 return FieldScriptSliceFixture
