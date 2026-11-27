@@ -3734,11 +3734,26 @@ function T.registration_picture_slides_and_hides_on_departure(scope)
     ---@param pictureX integer source picture center behind the frame
     ---@param hidden boolean true once departure hides the sprite art
     ---@return table 8-bit pixel buffer behind the composed card
-    local function drawCard(pictureX, hidden)
+    local function drawCard(pictureX, hidden, banner)
       return drawPlan(scope, plan, resources, {
-        view = { pictureX = pictureX, spritesHidden = hidden, banner = 0, paletteFade = 0, pictureFade = 0 },
+        view = { pictureX = pictureX, spritesHidden = hidden, banner = banner or 0, paletteFade = 0, pictureFade = 0 },
         assets = assets,
       }, 256, 192)
+    end
+    -- Both banner values ink the same specimen: the alternating
+    -- caller-canvas regression once painted banner 7 to the wrong
+    -- target while banner 0 stayed correct.
+    for _, banner in ipairs({ 0, 7 }) do
+      local data = drawCard(128, false, banner)
+      assertPixel(
+        data,
+        88 + dx,
+        32 + dy,
+        er,
+        eg,
+        eb,
+        "banner " .. banner .. " paints the centered specimen"
+      )
     end
     for _, center in ipairs({ 48, 88, 128 }) do
       local data = drawCard(center, false)

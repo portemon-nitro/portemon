@@ -311,6 +311,100 @@ function T.open_runs_cells_burst_and_entry_barrier()
   Assert.isTrue(#driver.owner:systems() == 0, "the opening burst retired before the fall")
 end
 
+function T.open_joins_burst_retirement_before_entry_and_flash()
+  -- The 23-frame entry counter runs independently of the open burst:
+  -- the open holds its frame-2 cell through the burst and restores
+  -- frame 0 on the retirement edge itself, completing only after both
+  -- the entry and the burst retire. Varying the burst on both sides of
+  -- 23 proves the join without freezing an empty-set duration.
+  local function runWithBurstHold(holdTicks)
+    local sounds = sink()
+    local timeline = BattleTimeline.new({
+      sound = function(name)
+        sounds.sound(name)
+      end,
+    })
+    stageBallArt(timeline)
+    timeline:reset(openingView())
+    local driver = driveParticles(timeline)
+    -- Override the particle-idle probe: false through the staged burst
+    -- lifetime, true once it retires. The empty-set owner stays idle;
+    -- only this probe gates the open.
+    local ticks = 0
+    timeline:setParticleIdleProbe(function()
+      return ticks >= holdTicks
+    end)
+    Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
+    local openStart = nil
+    local shrinkStart = nil
+    local flashStart = nil
+    for _ = 1, 3000 do
+      timeline:update(TICK, function(_)
+        return true
+      end)
+      driver.step()
+      ticks = ticks + 1
+      local ball = nil
+      local ok, presentation = pcall(function()
+        return timeline:openingPresentation()
+      end)
+      if ok and type(presentation) == "table" then
+        ball = presentation.ballThrow
+      end
+      if openStart == nil then
+        -- The capture open starts when the arc lands (native BOWA4):
+        -- the throw ball was already visible through its flight, so only
+        -- the open sound marks the 23-frame entry counter start.
+        if voiced(sounds, "SEQ_SE_DP_BOWA4") then
+          openStart = ticks
+        end
+      elseif shrinkStart == nil then
+        for _, entry in ipairs(timeline:battlers()) do
+          if entry.combatant == 3 and entry.affineMode == true then
+            shrinkStart = ticks
+            break
+          end
+        end
+      elseif flashStart == nil then
+        if type(ball) == "table" and ball.paletteFlash ~= nil then
+          flashStart = ticks
+          break
+        end
+      end
+      if shrinkStart ~= nil and flashStart ~= nil then
+        break
+      end
+      if timeline:settled() then
+        break
+      end
+    end
+    Assert.notNil(openStart, "the open starts its ball")
+    Assert.notNil(shrinkStart, "the entry shrink starts after the open")
+    Assert.notNil(flashStart, "the flash starts after the join")
+    assert(openStart ~= nil and shrinkStart ~= nil and flashStart ~= nil, "the open/entry/flash edges exist")
+    -- The open holds through the staged burst: short bursts complete on
+    -- the 23-frame entry counter, long bursts on the retirement edge.
+    -- The hold counts loop ticks from the packet start (including the
+    -- ~21-tick arc before the open), so relate it to the open edge.
+    local expectedOpen = math.max(23, holdTicks - openStart)
+    local openToShrink = shrinkStart - openStart
+    Assert.isTrue(openToShrink >= expectedOpen, "the entry waits for both the counter and the burst (openStart=" .. tostring(openStart) .. " shrink=" .. tostring(shrinkStart) .. " hold=" .. tostring(holdTicks) .. " expected=" .. tostring(expectedOpen) .. " got=" .. tostring(openToShrink) .. ")")
+    Assert.isTrue(openToShrink <= expectedOpen + 3, "the entry joins promptly once both retire")
+    -- The closed frame restores on the burst retirement edge itself:
+    -- by the time the entry starts, the ball already shows frame 0.
+    local ball = ballOf(timeline)
+    Assert.isTrue(type(ball.drawableKey) == "string", "the joined open leaves a staged ball cell")
+    -- No fall before both retire: the flash (which precedes the drop)
+    -- starts only after the entry shrink began.
+    Assert.isTrue(flashStart > shrinkStart, "the flash waits for the joined entry")
+    return openToShrink
+  end
+  local shortOpen = runWithBurstHold(5)
+  local longOpen = runWithBurstHold(120)
+  Assert.isTrue(longOpen > shortOpen, "a longer burst delays the joined entry")
+  Assert.isTrue(longOpen - shortOpen >= 7, "the long burst holds past the 23-frame counter")
+end
+
 function T.bounce_runs_source_rows_and_returns()
   local sounds = sink()
   local timeline = BattleTimeline.new({
@@ -700,6 +794,128 @@ function T.flash_uses_native_colors_and_steps()
   Assert.deepEqual(ball.paletteFlashColor, { 1, 27 / 31, 0 }, "the open flash carries yellow RGB(31,27,0), not white")
   Assert.isTrue(ball.paletteFlash % 3 == 0, "the yellow coefficient advances by threes")
   Assert.isTrue(ball.paletteFlash <= 12, "the yellow coefficient peaks at native 12")
+end
+
+function T.flash_traces_yellow_black_restoration_and_final_hold()
+  -- CaptureStateFlash yellows the closed ball 0 -> 12 -> 0 before the
+  -- drop; the click darkens toward black 0 -> 10, holds, and restores
+  -- 10 -> 0 after the Gotcha print; the fade then runs translucent
+  -- 16 -> 0 and CHECK_MON_DATA counts 30 frames once the full fade
+  -- (including palette restoration) finishes. The initial published
+  -- sample and the completion wait are source edges, not an
+  -- elapsed*step aggregate.
+  local timeline = BattleTimeline.new({})
+  stageBallArt(timeline)
+  timeline:reset(openingView())
+  local driver = driveParticles(timeline)
+  Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
+  local yellow = {}
+  local sawYellow = false
+  for _ = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+    local ok, ball = pcall(ballOf, timeline)
+    if ok and type(ball.paletteFlashColor) == "table" and ball.paletteFlashColor[1] == 1 and ball.paletteFlashColor[2] == 27 / 31 then
+      sawYellow = true
+      if type(ball.paletteFlash) == "number" then
+        yellow[#yellow + 1] = ball.paletteFlash
+      end
+    elseif sawYellow then
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.deepEqual(yellow, { 3, 6, 9, 12, 9, 6, 3 }, "the yellow flash samples 0 -> 12 -> 0 by threes with an initial applied step")
+  local clickPeak = nil
+  for _ = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+    local ok, ball = pcall(ballOf, timeline)
+    if ok and type(ball.paletteFlashColor) == "table" and ball.paletteFlashColor[1] == 0 then
+      if type(ball.paletteFlash) == "number" then
+        if clickPeak == nil or ball.paletteFlash > clickPeak then
+          clickPeak = ball.paletteFlash
+        end
+      end
+      if clickPeak == 10 then
+        break
+      end
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.equal(clickPeak, 10, "the black click peaks at native 10")
+  -- The click holds at 10 through the Gotcha print; the reverse then
+  -- returns 10 -> 0 (first sampled 3, then cleared) before the fade
+  -- owns the register. The cleared black edge reads as no palette
+  -- flash while the ball is still opaque, distinct from the
+  -- translucent fade that follows.
+  local restored = false
+  for _ = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+    local ok, ball = pcall(ballOf, timeline)
+    if ok and ball.oamMode == "translucent" then
+      break
+    end
+    if ok and ball.paletteFlash == nil then
+      restored = true
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(restored, "the black click restores to zero before the fade")
+  Assert.isTrue(
+    waitFor(timeline, driver, function()
+      local ok, ball = pcall(ballOf, timeline)
+      return ok and ball.oamMode == "translucent" and ball.fadeAlpha == 8
+    end, 3000),
+    "the fade runs through its 8/8 midpoint"
+  )
+  local hideTick = nil
+  local ticks = 0
+  for _ = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+    ticks = ticks + 1
+    local ok, ball = pcall(ballOf, timeline)
+    if ok and ball.visible ~= true then
+      hideTick = ticks
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.notNil(hideTick, "the caught ball fades from the field")
+  local settledIn = nil
+  for _ = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+    ticks = ticks + 1
+    if timeline:settled() then
+      settledIn = ticks
+      break
+    end
+  end
+  Assert.notNil(settledIn, "the capture sequence drains")
+  local held = (settledIn or 0) - (hideTick or 0)
+  Assert.isTrue(held >= 30, "CHECK_MON_DATA counts 30 frames after the full fade")
 end
 
 function T.bounce_forces_cells_by_index_not_elapsed_time()

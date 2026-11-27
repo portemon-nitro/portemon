@@ -647,8 +647,9 @@ function T.battle_ball_generic_burst_is_part_of_the_exact_readiness_closure()
   -- The recall mode-5 open needs the shared generic burst beside the
   -- per-ball seal/burst: the contract version bump records the
   -- required payload shape change for previously published caches.
-  -- Full texture-closure is proved by the staged-ball audit below;
-  -- this pins the published schema identity itself.
+  -- The generic set is a verified recall consumer (translateSwitch),
+  -- not an unused capture-era payload: removing one generic texture
+  -- breaks the real ball audit, and restoring it recovers readiness.
   local Contract = require("libs.assets.src.DerivedAssetContract")
   Assert.equal(
     Contract.battlePresentation.ballSchema,
@@ -659,6 +660,83 @@ function T.battle_ball_generic_burst_is_part_of_the_exact_readiness_closure()
     BattlePresentationSchema.BALL_SCHEMA,
     "g4-battle-ball-v5",
     "the ball validator follows the contract identity"
+  )
+  local cache = staging()
+  local ballSelector = "ball:POKE_BALL"
+  local ballRecord = ManifestFixture.ballRecord(ballSelector)
+  -- Fixture leaves stage no particle sets; the recall mode-5 consumer
+  -- needs a valid non-empty generic set, so graft one from the valid
+  -- encounter sets with the ball's own staged texture paths.
+  local ParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
+  local function ballSet(kind)
+    local template = ParticlesFixture.sets("grass/day/forest")[1]
+    local itemKey = ballSelector:sub(6)
+    local textures = {}
+    for _, texture in ipairs(template.textures) do
+      local staged = {
+        id = texture.id,
+        width = texture.width,
+        height = texture.height,
+        image = "assets/generated/battle/battle-ball-particles-"
+          .. itemKey:lower()
+          .. "-"
+          .. kind
+          .. "-"
+          .. texture.id
+          .. ".png",
+        sampler = texture.sampler,
+        alphaUsage = texture.alphaUsage,
+      }
+      textures[#textures + 1] = staged
+    end
+    local byImage = {}
+    for _, staged in ipairs(textures) do
+      byImage[staged.id] = staged.image
+    end
+    local emitters = {}
+    for _, emitter in ipairs(template.emitters) do
+      local stagedEmitter = {}
+      for key, value in pairs(emitter) do
+        stagedEmitter[key] = value
+      end
+      stagedEmitter.textureImage = assert(byImage[emitter.texture], "grafted emitters keep their staged texture")
+      emitters[#emitters + 1] = stagedEmitter
+    end
+    return { textures = textures, emitters = emitters }
+  end
+  ballRecord.entry.particles = {
+    seal = ballSet("seal"),
+    burst = ballSet("burst"),
+    genericBurst = ballSet("genericBurst"),
+    clickEmitter = 0,
+    burstStartTick = 5,
+  }
+  cache:writeLua(BattlePresentationCache.ballPath(ballSelector), ballRecord)
+  stageBallLeafCells(cache, ballRecord.entry.frames)
+  stageBallLeafCells(cache, ballRecord.entry.opening.frames)
+  local genericSet = ballRecord.entry.particles.genericBurst
+  Assert.isTrue(#genericSet.textures >= 1, "the generic set stages at least one texture")
+  Assert.isTrue(#genericSet.emitters >= 1, "the generic set stages at least one emitter")
+  for _, set in ipairs({ ballRecord.entry.particles.seal, ballRecord.entry.particles.burst, genericSet }) do
+    for _, texture in ipairs(set.textures) do
+      stagePng(cache, texture.image, texture.width, texture.height)
+    end
+  end
+  cache:write(BattlePresentationCache.ballMarkerPath(ballSelector), "leaf-marker")
+  Assert.isTrue(
+    BattlePresentationCache.isBallReady(cache, ballSelector, "leaf-marker"),
+    "the staged ball with its generic set audits ready"
+  )
+  local genericTexture = genericSet.textures[1]
+  cache:write(genericTexture.image, "truncated")
+  Assert.isFalse(
+    BattlePresentationCache.isBallReady(cache, ballSelector, "leaf-marker"),
+    "a missing generic texture breaks the real ball audit"
+  )
+  stagePng(cache, genericTexture.image, genericTexture.width, genericTexture.height)
+  Assert.isTrue(
+    BattlePresentationCache.isBallReady(cache, ballSelector, "leaf-marker"),
+    "restoring the generic texture recovers readiness"
   )
 end
 
