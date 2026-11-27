@@ -2306,8 +2306,9 @@ local function captureSessionFacts(state, speciesFacts, actorId, targetId)
 end
 
 --- Resolves the throw capture facts through the session-owned species
---- facts without an extra per-instance closure: the handler calls this
---- shared method on its executor instead of scraping combatant records.
+--- facts: the handler calls this shared method instead of scraping
+--- combatant records. A direct local call would exceed the turn-closure
+--- upvalue budget, so the executor owns this narrow boundary.
 ---@param state table<string, unknown> live battle state under the throw
 ---@param actorId integer thrower combatant identity
 ---@param targetId integer target combatant identity

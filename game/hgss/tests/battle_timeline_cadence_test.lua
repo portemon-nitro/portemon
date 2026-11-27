@@ -426,7 +426,11 @@ function T.gotcha_overlaps_its_fanfare_and_holds_the_source_tail()
   for _ = 1, 70 do
     advance(timeline, neverFinishes)
   end
-  Assert.isTrue(timeline:messageActive(), "the Gotcha line holds its auto-scroll plus thirty-frame tail")
+  -- CHECK_MON_DATA counts its 30-frame tail only after the full fade
+  -- finishes: the Gotcha text stays on screen through palette
+  -- restoration, fade and the post-fade hold, even though the message
+  -- cue itself retired after its auto-scroll.
+  Assert.equal(timeline:message(), "Gotcha! FOE was caught!", "the Gotcha line holds through fade and tail")
   drain(timeline, 200, neverFinishes)
   Assert.isTrue(timeline:settled(), "the capture drains once the tail completes")
 end

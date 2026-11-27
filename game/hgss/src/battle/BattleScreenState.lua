@@ -2821,6 +2821,45 @@ function BattleScreenState:_snapshot(borrowStatic)
     questionTwoOption = (childView --[[@as table<string, unknown>]]).twoOption
   end
   local terrainSpritesView = snapshotTerrainSprites(self, terrainSprites)
+  -- The successful-catch fade runs the ball as a translucent OBJ with
+  -- the source EVA/EVB pair: publish the ball's coefficients as the
+  -- sprite blend so the shared compositor blends the translucent ball
+  -- over the battlefield while HUD fragments stay normal.
+  local spriteBlend = self._scene:blendCoefficients()
+  local fadeBall = type(openingPresentation) == "table" and openingPresentation.ballThrow or nil
+  if type(fadeBall) == "table" and type(fadeBall.fadeAlpha) == "number" then
+    local fadeA = fadeBall.fadeAlpha --[[@as integer]]
+    local fadeB = fadeBall.fadeBeta
+    if fadeA >= 0 and fadeA <= 16 and type(fadeB) == "number" then
+      spriteBlend = { blendCoefficientA = fadeA, blendCoefficientB = fadeB }
+    end
+  end
+  -- The native capture fades the actual battle main to black before
+  -- destroying its graphics and creating the Dex popup; the nickname
+  -- question likewise centers the specimen over black. Fade the
+  -- battlefield while the registration card is up or the nickname
+  -- question owns the outcome prompt.
+  local sceneAnimation = self._scene:animationFrame()
+  local registrationActive = self._registrationChild ~= nil
+  local nicknameActive = self:_completionQuestionActive()
+  if registrationActive or nicknameActive then
+    local copy = copyValue(sceneAnimation)
+    if type(copy) ~= "table" then
+      copy = {}
+    end
+    local main = copy.main
+    if type(main) ~= "table" then
+      main = {}
+      copy.main = main
+    end
+    local compositor = main.compositor
+    if type(compositor) ~= "table" then
+      compositor = {}
+      main.compositor = compositor
+    end
+    compositor.battlefieldFade = { color = { r = 0, g = 0, b = 0 }, amount = 16 }
+    sceneAnimation = copy
+  end
   return {
     battleKind = self._kind,
     menuMode = self:_menuMode(),
@@ -2859,8 +2898,8 @@ function BattleScreenState:_snapshot(borrowStatic)
     -- engine planes, blend/window/brightness writes, mosaic and the
     -- source scanline buffer. Task-owned sprite blend weights ride
     -- alongside for the compositor mapping.
-    sceneAnimation = self._scene:animationFrame(),
-    spriteBlend = self._scene:blendCoefficients(),
+    sceneAnimation = sceneAnimation,
+    spriteBlend = spriteBlend,
     slotGeometry = self._manifest.battlefield.slots,
     hudSections = { player = self._manifest.hud.player, enemy = self._manifest.hud.enemy },
     -- Retained paint views borrow the immutable gauge families: the
@@ -3419,11 +3458,11 @@ function BattleScreenState:openCompletion(intent)
   self._completionResult = nil
   if self._completion ~= nil and self._completion.kind == "capture_nickname" then
     self._selection = "yes"
-    -- The nickname handoff disposes the completed registration card
-    -- atomically: the terminal black cover leaves with the question's
-    -- arrival, so no battle-UI frame flashes in between and the prompt
-    -- owns input from its first tick.
-    self:_disposeRegistrationChild()
+    -- The nickname handoff keeps the completed registration card alive
+    -- behind the question: the terminal black cover and centered
+    -- specimen stay visible while the prompt owns input. Disposal
+    -- waits until naming opens or the answer is consumed, so the
+    -- specimen never blinks out between card and question.
   end
   self:_invalidatePublishedView()
   return true
@@ -3450,6 +3489,10 @@ function BattleScreenState:takeCompletion()
     self._evolution:dispose()
     self._evolution = nil
   end
+  -- The retained registration card retires with the nickname answer:
+  -- a Yes opens naming (which already disposed it) while a No ends
+  -- the handoff here.
+  self:_disposeRegistrationChild()
   if self._completion ~= nil then
     self._consumedCompletions[self._completion.completionId] = true
     self._completion = nil
@@ -3576,6 +3619,9 @@ function BattleScreenState:_openCompletionNaming()
     self._error = "capture naming failed for launch " .. self._launchId .. ": " .. tostring(childErr)
     return
   end
+  -- The naming controller takes the full screen: retire the centered
+  -- registration card now that its specimen handoff is done.
+  self:_disposeRegistrationChild()
   self._completionChild = child
   completion.stage = "naming"
 end
