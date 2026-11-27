@@ -343,8 +343,16 @@ function T.status_cells_measure_date_and_time_with_the_painted_prompt_face()
   }
   local layout = LauncherLayout.compute(view, 256, 192)
   local cells = layout.headerCells
-  Assert.equal(cells.date.width, view.fonts.prompt:getWidth(view.dateText) + 16, "the date cell measures the prompt face")
-  Assert.equal(cells.time.width, view.fonts.prompt:getWidth(view.timeText) + 16, "the time cell measures the prompt face")
+  Assert.equal(
+    cells.date.width,
+    view.fonts.prompt:getWidth(view.dateText) + 16,
+    "the date cell measures the prompt face"
+  )
+  Assert.equal(
+    cells.time.width,
+    view.fonts.prompt:getWidth(view.timeText) + 16,
+    "the time cell measures the prompt face"
+  )
 end
 
 function T.loading_prompt_geometry_uses_the_supplied_face_metrics()
@@ -380,11 +388,7 @@ function T.status_bar_clusters_time_date_and_version_on_the_right_with_the_promp
   local cells = layout.headerCells
   Assert.isTrue(cells.time.x < cells.date.x, "time precedes date left-to-right")
   Assert.isTrue(cells.date.x < cells.version.x, "date precedes version left-to-right")
-  Assert.equal(
-    cells.version.x + cells.version.width,
-    256,
-    "the status cluster ends at the right edge"
-  )
+  Assert.equal(cells.version.x + cells.version.width, 256, "the status cluster ends at the right edge")
   Assert.isTrue(cells.time.x > 8, "the left side stays reserved for future features")
   Assert.equal(
     cells.time.width,
@@ -436,11 +440,75 @@ function T.back_action_is_a_compact_trailing_button()
   local retreat = assert(failed.graph.targets.back, "error exposes back")
   Assert.isTrue(retreat.rect.width <= 64, "error back stays compact")
   Assert.isTrue(retry.rect.width > retreat.rect.width, "retry keeps the remaining width")
-  Assert.equal(
-    retreat.rect.x + retreat.rect.width,
-    failed.viewport.width - 8,
-    "error back trails at the right inset"
-  )
+  Assert.equal(retreat.rect.x + retreat.rect.width, failed.viewport.width - 8, "error back trails at the right inset")
+end
+
+function T.compact_operation_layout_keeps_text_indicator_and_footer_disjoint()
+  local LauncherLayout = require("app.src.launcher.LauncherLayout")
+  local fonts = { body = measuredFont(12, 6), prompt = measuredFont(12, 6) }
+  local function checkCompute(width, height)
+    local view = rootView("heartgold")
+    view.import = {
+      attemptId = "geometry-attempt",
+      mode = "receipt",
+      expectedVersionId = "heartgold",
+      receipt = "SoulSilver.nds",
+      statusText = "Waiting for readers",
+      canCancel = true,
+    }
+    view.fonts = fonts
+    local layout = LauncherLayout.compute(view, width, height)
+    if layout.unavailable then
+      Assert.isNil(layout.receiptRect, "an unpainted receipt is never acknowledged")
+      Assert.notNil(layout.graph.targets.cancel, "compact geometry stays escapable")
+      assertInside(layout.graph.targets.cancel.rect, layout.viewport, "compact cancel")
+    else
+      Assert.notNil(layout.receiptRect, "the receipt owns visible geometry")
+      Assert.notNil(layout.statusRect, "the status owns visible geometry")
+      Assert.notNil(layout.progressTrackRect, "the status owns its track geometry")
+      Assert.notNil(layout.indicatorRect, "the status owns its indicator geometry")
+      assertInside(layout.receiptRect, layout.viewport, "receipt")
+      assertInside(layout.statusRect, layout.viewport, "status")
+      assertInside(layout.indicatorRect, layout.viewport, "indicator")
+      local bodyHeight = fonts.body:getHeight()
+      local textBottom = layout.statusRect.y + 4 + bodyHeight
+      Assert.isTrue(
+        textBottom + 8 <= layout.indicatorRect.y,
+        "text and indicator keep an inter-row gap: " .. tostring(textBottom)
+      )
+      local cancel = assert(layout.graph.targets.cancel, "operation stays cancellable")
+      Assert.isTrue(
+        layout.statusRect.y + layout.statusRect.height + 8 <= cancel.rect.y,
+        "status ends above the footer action"
+      )
+    end
+  end
+  checkCompute(256, 192)
+  checkCompute(360, 640)
+  checkCompute(200, 160)
+  local function checkLoading(width, height)
+    local plan = LauncherLayout.loading(width, height, {
+      receipt = "SoulSilver.nds",
+      canCancel = true,
+      fonts = fonts,
+    })
+    if plan.unavailable then
+      Assert.isNil(plan.receiptRect, "an unpainted loading receipt is never acknowledged")
+      if plan.graph.targets.cancel ~= nil then
+        assertInside(plan.graph.targets.cancel.rect, plan.viewport, "loading cancel")
+      end
+    else
+      Assert.notNil(plan.receiptRect)
+      Assert.notNil(plan.statusRect)
+      Assert.notNil(plan.progressTrackRect)
+      Assert.notNil(plan.indicatorRect)
+      local bodyHeight = fonts.body:getHeight()
+      local textBottom = plan.statusRect.y + 4 + bodyHeight
+      Assert.isTrue(textBottom + 8 <= plan.indicatorRect.y, "loading text clears its indicator")
+    end
+  end
+  checkLoading(256, 192)
+  checkLoading(200, 128)
 end
 
 return { tests = T }

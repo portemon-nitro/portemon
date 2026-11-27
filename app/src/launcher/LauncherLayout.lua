@@ -47,6 +47,38 @@ local function textWidth(fonts, key, text, fallback)
   return #tostring(text) * fallback
 end
 
+-- Shared operation body: one receipt row plus one status block that must
+-- hold a text row, an inter-row gap, and an 8px activity indicator (or a
+-- 4px progress track) without overlap. The minimum is derived from the
+-- measured body height: 4px top inset, one text line, 8px gap, 8px
+-- indicator, 2px bottom inset. A status block below that minimum is not an
+-- acknowledgement: the caller sees an unavailable plan with no receipt so
+-- an unpainted receipt is never acknowledged, while the footer cancel
+-- target stays escapable.
+---@param inner table inner content rectangle
+---@param fonts table? measured faces
+---@param receiptTop number
+---@param receiptHeight number
+---@param statusTop number
+---@param statusBottom number
+---@return table? receipt
+---@return table? status
+---@return table? track
+---@return table? indicator
+local function operationBody(inner, fonts, receiptTop, receiptHeight, statusTop, statusBottom)
+  local bodyHeight = fontHeight(fonts, "body", 12)
+  local statusHeight = math.max(0, statusBottom - statusTop)
+  local minHeight = bodyHeight + 22
+  if statusHeight < minHeight then
+    return nil, nil, nil, nil
+  end
+  local receipt = rect(inner.x + 4, receiptTop, inner.width - 8, receiptHeight)
+  local status = rect(inner.x + 4, statusTop, inner.width - 8, statusHeight)
+  local track = rect(status.x, status.y + status.height - 6, status.width, 4)
+  local indicator = rect(status.x, status.y + status.height - 10, 50, 8)
+  return receipt, status, track, indicator
+end
+
 local function wrapLines(fonts, key, text, width, fallback)
   local font = fontFor(fonts, key)
   if font ~= nil and type(font.getWrap) == "function" then
@@ -194,25 +226,28 @@ function LauncherLayout.loading(width, height, options)
   local footerY = height - MARGIN - ACTION_HEIGHT
   local statusTop = MARGIN + 62
   local statusBottom = options.canCancel == true and (footerY - 8) or (height - MARGIN - 8)
-  local statusHeight = math.max(0, statusBottom - statusTop)
-  local receipt = options.receipt ~= nil and rect(MARGIN + 4, MARGIN + 34, width - MARGIN * 2 - 8, 24) or nil
-  local status = receipt ~= nil and rect(MARGIN + 4, statusTop, width - MARGIN * 2 - 8, statusHeight) or nil
   local cancel = options.canCancel == true and rect(width - MARGIN - 96, footerY, 96, ACTION_HEIGHT) or nil
   local targets = cancel ~= nil and { cancel = { kind = "cancel", rect = cancel } } or {}
+  local receipt, status, track, indicator
+  if options.receipt ~= nil then
+    receipt, status, track, indicator = operationBody(content, fonts, MARGIN + 34, 24, statusTop, statusBottom)
+    if receipt == nil then
+      receipt = true
+      status, track, indicator = nil, nil, nil
+    end
+  end
+  if receipt == true then
+    receipt = nil
+  end
   plan.receiptRect = receipt
   plan.statusRect = status
-  if status ~= nil then
-    plan.progressTrackRect = rect(status.x, status.y + math.max(0, status.height - 6), status.width, 4)
-    plan.indicatorRect = rect(status.x, status.y + math.max(0, status.height - 10), 50, 8)
-  else
-    plan.progressTrackRect = nil
-    plan.indicatorRect = nil
-  end
-  -- A receipt without room for at least one status line plus its track is
-  -- not an acknowledgement: the caller must see an unavailable plan rather
-  -- than an overlapping paint. The footer cancel target is preserved through
-  -- the empty plan so the operation stays escapable.
-  if receipt ~= nil and (status == nil or status.height < 20) then
+  plan.progressTrackRect = track
+  plan.indicatorRect = indicator
+  -- A receipt without room for its measured status block is not an
+  -- acknowledgement: the caller sees an unavailable plan rather than an
+  -- overlapping paint. The footer cancel target is preserved through the
+  -- empty plan so the operation stays escapable.
+  if options.receipt ~= nil and status == nil then
     local unavailable = emptyPlan(width, height)
     if cancel ~= nil then
       unavailable.cancelRect = cancel
@@ -302,19 +337,10 @@ function LauncherLayout.compute(view, width, height)
       order[#order + 1] = "back"
       local footerY = inner.y + inner.height - ACTION_HEIGHT
       actionRow(footerY, width, targets, order)
-      plan.receiptRect = rect(inner.x + 4, inner.y + 38, inner.width - 8, 28)
-      local statusTop = inner.y + 72
-      local statusBottom = footerY - 8
-      local statusHeight = math.max(0, statusBottom - statusTop)
-      plan.statusRect = rect(inner.x + 4, statusTop, inner.width - 8, statusHeight)
-      if statusHeight > 0 then
-        plan.progressTrackRect = rect(inner.x + 4, statusTop + statusHeight - 6, inner.width - 8, 4)
-        plan.indicatorRect = rect(inner.x + 4, statusTop + math.max(0, statusHeight - 10), 50, 8)
-      else
-        plan.progressTrackRect = nil
-        plan.indicatorRect = nil
-      end
-      if statusHeight < 20 then
+      local receipt, status, track, indicator =
+        operationBody(inner, view.fonts, inner.y + 38, 28, inner.y + 72, footerY - 8)
+      plan.receiptRect, plan.statusRect, plan.progressTrackRect, plan.indicatorRect = receipt, status, track, indicator
+      if status == nil then
         local unavailable = emptyPlan(width, height)
         unavailable.mode = import.mode
         unavailable.header = plan.header
@@ -332,19 +358,11 @@ function LauncherLayout.compute(view, width, height)
       end
       local footerY = inner.y + inner.height - ACTION_HEIGHT
       local hasFooter = import.canCancel == true
-      plan.receiptRect = rect(inner.x + 4, inner.y + 38, inner.width - 8, 28)
-      local statusTop = inner.y + 72
       local statusBottom = hasFooter and (footerY - 8) or (inner.y + inner.height - 8)
-      local statusHeight = math.max(0, statusBottom - statusTop)
-      plan.statusRect = rect(inner.x + 4, statusTop, inner.width - 8, statusHeight)
-      if statusHeight > 0 then
-        plan.progressTrackRect = rect(inner.x + 4, statusTop + statusHeight - 6, inner.width - 8, 4)
-        plan.indicatorRect = rect(inner.x + 4, statusTop + math.max(0, statusHeight - 10), 50, 8)
-      else
-        plan.progressTrackRect = nil
-        plan.indicatorRect = nil
-      end
-      if statusHeight < 20 then
+      local receipt, status, track, indicator =
+        operationBody(inner, view.fonts, inner.y + 38, 28, inner.y + 72, statusBottom)
+      plan.receiptRect, plan.statusRect, plan.progressTrackRect, plan.indicatorRect = receipt, status, track, indicator
+      if status == nil then
         local unavailable = emptyPlan(width, height)
         unavailable.mode = import.mode
         unavailable.header = plan.header

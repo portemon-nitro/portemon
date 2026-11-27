@@ -3,7 +3,7 @@
 local LauncherAssets = require("app.src.launcher.LauncherAssets")
 local LauncherLayout = require("app.src.launcher.LauncherLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
-local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
+local LauncherText = require("app.src.launcher.LauncherText")
 
 ---@class LauncherRenderer
 ---@field fonts table<string, love.Font>
@@ -193,29 +193,7 @@ function LauncherRenderer:_focusCorners(graphics, x, y, w, h)
 end
 
 local function fitText(font, text, width)
-  text = Utf8Glyphs.sanitize(tostring(text))
-  if font:getWidth(text) <= width then
-    return text
-  end
-  local ellipsis = "…"
-  local glyphs = {}
-  for glyph in Utf8Glyphs.iter(text) do
-    glyphs[#glyphs + 1] = glyph
-  end
-  -- Binary-search the glyph prefix so every measured candidate stays on a
-  -- codepoint boundary; byte midpoints can split a multibyte sequence and
-  -- make LÖVE font metrics raise on valid input.
-  local low, high = 0, #glyphs
-  while low < high do
-    local middle = math.ceil((low + high) / 2)
-    local candidate = table.concat(glyphs, "", 1, middle) .. ellipsis
-    if font:getWidth(candidate) <= width then
-      low = middle
-    else
-      high = middle - 1
-    end
-  end
-  return table.concat(glyphs, "", 1, low) .. ellipsis
+  return LauncherText.fitText(font, text, width)
 end
 
 function LauncherRenderer:drawButton(rect, label, _, visualState)
@@ -433,9 +411,9 @@ local function drawDiagnostic(graphics, view, layout)
     return false
   end
   color(graphics, COLORS.muted)
-  local message = tostring(view.error or "")
+  local message = LauncherText.sanitize(tostring(view.error or ""))
   if view.detail ~= nil then
-    message = message .. "\n" .. tostring(view.detail)
+    message = message .. "\n" .. LauncherText.sanitize(tostring(view.detail))
   end
   local font = graphics.getFont()
   local _, lines = font:getWrap(message, layout.errorRect.width)
@@ -516,7 +494,7 @@ function LauncherRenderer:_operation(view, layout)
         layout.statusRect.y + 4
       )
       if operation.progress ~= nil then
-        local track = layout.progressTrackRect or layout.statusRect
+        local track = assert(layout.progressTrackRect, "operation status owns its track geometry")
         color(graphics, COLORS.headerLower)
         graphics.rectangle("fill", track.x, track.y, track.width, 4)
         color(graphics, COLORS.header)
@@ -528,7 +506,7 @@ function LauncherRenderer:_operation(view, layout)
           4
         )
       else
-        local indicator = layout.indicatorRect or layout.statusRect
+        local indicator = assert(layout.indicatorRect, "operation status owns its indicator geometry")
         self:drawLoadingSquares(indicator.x, indicator.y, operation.elapsed or 0)
       end
     end
@@ -668,7 +646,7 @@ function LauncherRenderer:drawLoading(view, layout)
         layout.statusRect.x,
         layout.statusRect.y + 4
       )
-      self:drawLoadingSquares(layout.statusRect.x, (layout.indicatorRect or layout.statusRect).y, view.elapsed)
+      self:drawLoadingSquares(assert(layout.statusRect).x, assert(layout.indicatorRect).y, view.elapsed)
     else
       drawDiagnostic(graphics, view, layout)
     end

@@ -75,7 +75,7 @@ local function finish()
   verifyWorkers()
   shutdown()
   local BuildInfo = require("app.src.BuildInfo")
-  print(string.format("ARCHIVE_SMOKE_OK version=%s commit=%s frames=%d", BuildInfo.version, BuildInfo.commit, frames))
+  print(string.format("ARCHIVE_SMOKE_OK version=%s frames=%d", BuildInfo.version, frames))
   complete = true
   love.event.quit(0)
 end
@@ -84,7 +84,6 @@ local function runProbe()
   package.path = "./?.lua;./?/init.lua"
   local BuildInfo = require("app.src.BuildInfo")
   assert(BuildInfo.version == os.getenv("PORTEMON_SMOKE_VERSION"), "wrong packaged version")
-  assert(BuildInfo.commit == os.getenv("PORTEMON_SMOKE_COMMIT"), "wrong packaged commit")
 
   for _, path in ipairs({
     "assets/fonts/galmuri/Galmuri9.ttf",

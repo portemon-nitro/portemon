@@ -29,7 +29,6 @@ import zlib
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKER = REPO_ROOT / "scripts" / "pack_love.py"
 ANDROID_BUILDER = REPO_ROOT / "scripts" / "build_android.sh"
-COLLECTOR = REPO_ROOT / "scripts" / "collect_release.py"
 MACOS_METADATA = REPO_ROOT / "scripts" / "packaging" / "macos_metadata.py"
 SMOKE_ENVIRONMENT = REPO_ROOT / "scripts" / "packaging" / "smoke_environment.py"
 SMOKE_ENVIRONMENT_SPEC = importlib.util.spec_from_file_location(
@@ -40,7 +39,6 @@ SMOKE_ENVIRONMENT_MODULE = importlib.util.module_from_spec(SMOKE_ENVIRONMENT_SPE
 SMOKE_ENVIRONMENT_SPEC.loader.exec_module(SMOKE_ENVIRONMENT_MODULE)
 SMOKE_RUNNER = REPO_ROOT / "scripts" / "packaging" / "smoke.sh"
 NFD_BUILDER = REPO_ROOT / "scripts" / "packaging" / "build_nfd.py"
-COMMIT = "0123456789abcdef0123456789abcdef01234567"
 RELEASE_VERSION = "0.1.0-alpha.1"
 APPIMAGE_HEADER = b"#!/bin/sh\n" + bytes(4096)
 ANDROID_SIGNING_VARIABLES = (
@@ -167,16 +165,6 @@ def make_fixture(root: Path) -> None:
         shutil.copyfile(PACKER, target)
 
 
-def release_artifacts(version: str) -> tuple[str, ...]:
-    return (
-        f"portemon-nitro-{version}.love",
-        f"portemon-nitro-{version}-windows-x86_64.zip",
-        f"portemon-nitro-{version}-macos-universal.zip",
-        f"portemon-nitro-{version}-linux-x86_64.AppImage",
-        f"portemon-nitro-{version}-android.apk",
-    )
-
-
 def write_zip(path: Path, members: dict[str, bytes]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -189,12 +177,12 @@ def write_zip(path: Path, members: dict[str, bytes]) -> None:
             archive.writestr(info, data)
 
 
-def make_payload(root: Path, *, version: str = RELEASE_VERSION, commit: str = COMMIT) -> Path:
+def make_payload(root: Path, *, version: str = RELEASE_VERSION) -> Path:
     source = root / "source"
     make_fixture(source)
     output = root / f"portemon-nitro-{version}.love"
     listing = root / "listing.txt"
-    result = run_packer(source, output, listing, version=version, commit=commit)
+    result = run_packer(source, output, listing, version=version)
     if result.returncode != 0:
         raise RuntimeError(f"packaging fixture could not build its payload: {result.stderr}")
     return output
@@ -353,54 +341,6 @@ def write_release_artifacts(
     write_android_artifact(directory / names[4], payload, (extras or {}).get(names[4]))
 
 
-def make_release_fixture(root: Path, *, version: str = RELEASE_VERSION) -> tuple[Path, Path]:
-    payload = make_payload(root, version=version)
-    inputs = root / "inputs"
-    write_release_artifacts(inputs, payload, version=version)
-    make_android_sdk(root, version)
-    return payload, inputs
-
-
-def run_collector(
-    inputs: Path, output: Path, *, version: str = RELEASE_VERSION, commit: str = COMMIT
-) -> subprocess.CompletedProcess[str]:
-    environment = os.environ.copy()
-    environment["ANDROID_SDK_ROOT"] = str(inputs.parent / "android-sdk")
-    return subprocess.run(
-        [
-            sys.executable,
-            str(COLLECTOR),
-            "--version",
-            version,
-            "--commit",
-            commit,
-            "--input",
-            str(inputs),
-            "--output",
-            str(output),
-        ],
-        cwd=REPO_ROOT,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-
-def omit_zip_members(path: Path, omitted: set[str]) -> None:
-    with zipfile.ZipFile(path) as archive:
-        members = {name: archive.read(name) for name in archive.namelist() if name not in omitted}
-    write_zip(path, members)
-
-
-def tree_snapshot(root: Path) -> dict[str, tuple[str, int]]:
-    return {
-        path.relative_to(root).as_posix(): (hashlib.sha256(path.read_bytes()).hexdigest(), stat.S_IMODE(path.stat().st_mode))
-        for path in root.rglob("*")
-        if path.is_file()
-    }
-
-
 def assert_embedded_payload(test: unittest.TestCase, artifact: Path, payload: Path) -> None:
     wanted = payload.read_bytes()
     if artifact.name.endswith("-windows-x86_64.zip"):
@@ -468,7 +408,6 @@ def run_packer(
     listing: Path,
     *,
     version: str = "1.2.3",
-    commit: str = COMMIT,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
@@ -476,8 +415,6 @@ def run_packer(
             str(root / "scripts" / "pack_love.py"),
             "--version",
             version,
-            "--commit",
-            commit,
             "--output",
             str(output),
             "--listing",
@@ -565,10 +502,9 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
             raise RuntimeError("archive CRC verification failed")
         identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
         version_match = re.search(r'version\s*=\s*"([^"]+)"', identity)
-        commit_match = re.search(r'commit\s*=\s*"([0-9a-f]{40})"', identity)
-        if version_match is None or commit_match is None:
+        if version_match is None:
             raise RuntimeError("archive has no valid stamped identity")
-        version, commit = version_match.group(1), commit_match.group(1)
+        version = version_match.group(1)
         if listing is not None and listing.read_text().splitlines() != names:
             raise RuntimeError("listing does not match archive members")
         before = member_digest(archive)
@@ -593,7 +529,6 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
                 "SDL_VIDEODRIVER": "offscreen",
                 "LIBGL_ALWAYS_SOFTWARE": "1",
                 "PORTEMON_SMOKE_VERSION": version,
-                "PORTEMON_SMOKE_COMMIT": commit,
             }
         )
         environment.pop("LUA_PATH", None)
@@ -637,7 +572,7 @@ def smoke_payload(payload: Path, listing: Path | None = None) -> None:
     with zipfile.ZipFile(payload) as archive:
         if member_digest(archive) != before:
             raise RuntimeError("archive smoke mutated packaged members")
-    print(f"archive smoke passed: {version} {commit} {original_hash}; {marker}")
+    print(f"archive smoke passed: {version} {original_hash}; {marker}")
 
 
 ANDROID_JAVA_STUBS = {
@@ -952,7 +887,7 @@ class PackagingContractTest(unittest.TestCase):
 
                 identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
                 self.assertRegex(identity, r'version\s*=\s*"1\.2\.3"')
-                self.assertRegex(identity, rf'commit\s*=\s*"{COMMIT}"')
+                self.assertNotIn("commit", identity)
                 self.assertNotIn("development", identity)
 
                 timestamps = {info.date_time for info in archive.infolist()}
@@ -976,7 +911,7 @@ class PackagingContractTest(unittest.TestCase):
             with zipfile.ZipFile(development) as archive:
                 identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
                 self.assertRegex(identity, r'version\s*=\s*"dev"')
-                self.assertRegex(identity, rf'commit\s*=\s*"{COMMIT}"')
+                self.assertNotIn("commit", identity)
 
     def test_native_shell_art_is_excluded_from_the_runtime_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1140,9 +1075,9 @@ class PackagingContractTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             previous_payload = output.read_bytes()
             previous_listing = listing.read_bytes()
-            for version, commit in (("1.2", COMMIT), ("1.2.3", "development"), ("1.2.3", "abc123")):
-                with self.subTest(version=version, commit=commit):
-                    result = run_packer(root, output, listing, version=version, commit=commit)
+            for version in ("1.2", "v0.1.0", "0.1.0-01"):
+                with self.subTest(version=version):
+                    result = run_packer(root, output, listing, version=version)
                     self.assertNotEqual(result.returncode, 0, "invalid build identity must fail before publication")
                     self.assertEqual(output.read_bytes(), previous_payload)
                     self.assertEqual(listing.read_bytes(), previous_listing)
@@ -1217,7 +1152,7 @@ class ReleaseVersionContractTest(unittest.TestCase):
             with zipfile.ZipFile(payload) as archive:
                 identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
             self.assertIn(f'version = "{version}"', identity)
-            self.assertIn(f'commit = "{COMMIT}"', identity)
+            self.assertNotIn("commit", identity)
 
     def test_invalid_semver_never_replaces_a_valid_payload(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1447,7 +1382,7 @@ class PackagedSmokeEnvironmentTest(unittest.TestCase):
                         check_environment(kwargs["env"])
                         with zipfile.ZipFile(Path(command[1])) as archive:
                             self.assertEqual(archive.read("conf.lua"), archive_probe_conf(original_conf))
-                        return subprocess.CompletedProcess(command, 0, "ARCHIVE_SMOKE_OK version=fixture commit=fixture frames=2\n", "")
+                        return subprocess.CompletedProcess(command, 0, "ARCHIVE_SMOKE_OK version=fixture frames=2\n", "")
 
                     def popen(command, **kwargs):
                         check_environment(kwargs["env"])
@@ -1482,339 +1417,41 @@ class PackagedSmokeEnvironmentTest(unittest.TestCase):
                     self.assertFalse((root / "null").exists(), "the audio backend value is not an owned directory")
 
 
-class ReleaseCollectorContractTest(unittest.TestCase):
-    def collect_valid(self, inputs: Path, output: Path) -> None:
-        result = run_collector(inputs, output)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_complete_set_has_exact_names_immutable_inputs_and_sorted_checksums(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            before = tree_snapshot(inputs)
-            output = root / "release"
-            self.collect_valid(inputs, output)
-
-            names = release_artifacts(RELEASE_VERSION)
-            self.assertEqual({path.name for path in output.iterdir()}, {*names, "SHA256SUMS"})
-            self.assertEqual(tree_snapshot(inputs), before, "collection must not mutate build inputs")
-            for name in names:
-                self.assertEqual((output / name).read_bytes(), (inputs / name).read_bytes())
-                if name.endswith((".zip", ".apk", ".AppImage")):
-                    assert_embedded_payload(self, output / name, payload)
-            self.assertTrue((output / names[3]).stat().st_mode & stat.S_IXUSR)
-            with zipfile.ZipFile(output / names[2]) as archive:
-                bundle_info = plistlib.loads(archive.read("Portemon Nitro.app/Contents/Info.plist"))
-            self.assertEqual(bundle_info["CFBundleIdentifier"], "io.github.portemonnitro.portemon")
-            self.assertEqual(bundle_info["CFBundleShortVersionString"], "0.1.0")
-            self.assertEqual(bundle_info["CFBundleVersion"], "0.1.0")
-            self.assertEqual(bundle_info["CFBundleExecutable"], "portemon")
-            self.assertEqual(bundle_info["CFBundleIconFile"], "portemon")
-            expected = "".join(
-                f"{hashlib.sha256((output / name).read_bytes()).hexdigest()}  {name}\n"
-                for name in sorted(names)
-            )
-            self.assertEqual((output / "SHA256SUMS").read_text(), expected)
-            self.assertNotIn("SHA256SUMS", (output / "SHA256SUMS").read_text())
-
-    def test_macos_bundle_must_name_the_product_executable(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            self.collect_valid(inputs, output)
-            previous = tree_snapshot(output)
-            artifact = inputs / release_artifacts(RELEASE_VERSION)[2]
-            info_name = "Portemon Nitro.app/Contents/Info.plist"
-            for executable in (None, "love", "Portemon Nitro"):
-                with self.subTest(executable=executable):
-                    write_release_artifacts(inputs, payload)
-                    with zipfile.ZipFile(artifact) as archive:
-                        members = {name: archive.read(name) for name in archive.namelist()}
-                    info = plistlib.loads(members[info_name])
-                    if executable is None:
-                        info.pop("CFBundleExecutable")
-                    else:
-                        info["CFBundleExecutable"] = executable
-                    members[info_name] = plistlib.dumps(info)
-                    write_zip(artifact, members)
-
-                    result = run_collector(inputs, output)
-
-                    self.assertNotEqual(result.returncode, 0, "the bundle must launch its renamed executable")
-                    self.assertIn("CFBundleExecutable", result.stdout + result.stderr)
-                    self.assertEqual(tree_snapshot(output), previous)
-
-    def test_every_platform_payload_must_equal_the_shared_payload(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            self.collect_valid(inputs, output)
-            previous = tree_snapshot(output)
-            variant = payload_with_members(payload, {"release-fixture.txt": b"different valid payload\n"})
-            self.addCleanup(variant.unlink, missing_ok=True)
-            names = release_artifacts(RELEASE_VERSION)
-            for name in names[1:]:
-                with self.subTest(artifact=name):
-                    write_release_artifacts(inputs, payload)
-                    target = inputs / name
-                    if name.endswith("-windows-x86_64.zip"):
-                        write_windows_artifact(target, variant)
-                    elif name.endswith("-macos-universal.zip"):
-                        write_macos_artifact(target, variant, RELEASE_VERSION)
-                    elif name.endswith("-linux-x86_64.AppImage"):
-                        write_linux_artifact(target, variant)
-                    else:
-                        write_android_artifact(target, variant)
-                    result = run_collector(inputs, output)
-                    self.assertNotEqual(result.returncode, 0, "a mismatched embedded payload must fail")
-                    self.assertIn(name, result.stdout + result.stderr)
-                    self.assertEqual(tree_snapshot(output), previous)
-
-    def test_missing_or_unexpected_artifacts_preserve_the_previous_complete_set(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            self.collect_valid(inputs, output)
-            previous = tree_snapshot(output)
-            for name in release_artifacts(RELEASE_VERSION):
-                with self.subTest(missing=name):
-                    target = inputs / name
-                    saved = target.read_bytes()
-                    mode = stat.S_IMODE(target.stat().st_mode)
-                    target.unlink()
-                    result = run_collector(inputs, output)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(name, result.stdout + result.stderr)
-                    self.assertEqual(tree_snapshot(output), previous)
-                    target.write_bytes(saved)
-                    target.chmod(mode)
-            extra = inputs / f"portemon-nitro-{RELEASE_VERSION}-debug.apk"
-            extra.write_bytes(b"not a release artifact\n")
-            result = run_collector(inputs, output)
-            self.assertNotEqual(result.returncode, 0, "the input set must be the finite release matrix")
-            self.assertIn(extra.name, result.stdout + result.stderr)
-            self.assertEqual(tree_snapshot(output), previous)
-
-    def test_missing_native_libraries_or_required_abis_preserve_the_previous_set(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            self.collect_valid(inputs, output)
-            previous = tree_snapshot(output)
-            names = release_artifacts(RELEASE_VERSION)
-            windows_library = "Portemon Nitro/app/native/windows/x64/nfd.dll"
-            macos_library = "Portemon Nitro.app/Contents/Resources/app/native/macos/arm64/libnfd.dylib"
-            for name, omitted in (
-                (names[1], {windows_library}),
-                (names[2], {macos_library}),
-                (names[4], {"lib/arm64-v8a/liblove.so"}),
-            ):
-                with self.subTest(artifact=name, missing=next(iter(omitted))):
-                    write_release_artifacts(inputs, payload)
-                    omit_zip_members(inputs / name, omitted)
-                    result = run_collector(inputs, output)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(name, result.stdout + result.stderr)
-                    self.assertEqual(tree_snapshot(output), previous)
-            with self.subTest(artifact=names[3], missing="app/native/linux/x64/libnfd.so"):
-                write_release_artifacts(inputs, payload)
-                write_linux_artifact(inputs / names[3], payload, omit={"app/native/linux/x64/libnfd.so"})
-                result = run_collector(inputs, output)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(names[3], result.stdout + result.stderr)
-                self.assertEqual(tree_snapshot(output), previous)
-            with self.subTest(artifact=names[4], unexpected="lib/x86_64/liblove.so"):
-                write_release_artifacts(
-                    inputs,
-                    payload,
-                    extras={names[4]: {"lib/x86_64/liblove.so": b"unexpected release ABI\n"}},
-                )
-                result = run_collector(inputs, output)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn(names[4], result.stdout + result.stderr)
-                self.assertEqual(tree_snapshot(output), previous)
-
-    def test_android_manifest_and_signature_are_mandatory_for_collection(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            self.collect_valid(inputs, output)
-            previous = tree_snapshot(output)
-            names = release_artifacts(RELEASE_VERSION)
-            android = inputs / names[4]
-
-            write_release_artifacts(inputs, payload)
-            omit_zip_members(android, {"AndroidManifest.xml"})
-            result = run_collector(inputs, output)
-            self.assertNotEqual(result.returncode, 0, "an APK without its binary manifest is not a release")
-            self.assertIn("AndroidManifest.xml", result.stdout + result.stderr)
-            self.assertEqual(tree_snapshot(output), previous)
-
-            write_release_artifacts(inputs, payload)
-            apksigner = root / "android-sdk/build-tools/36.0.0/apksigner"
-            apksigner.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
-            apksigner.chmod(0o755)
-            result = run_collector(inputs, output)
-            self.assertNotEqual(result.returncode, 0, "an unverifiable signature blocks collection")
-            self.assertIn("signature", result.stdout + result.stderr)
-            self.assertEqual(tree_snapshot(output), previous)
-
-    def test_forbidden_payload_or_outer_files_preserve_the_previous_complete_set(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            self.collect_valid(inputs, output)
-            previous = tree_snapshot(output)
-            forbidden_payload = payload_with_members(
-                payload,
-                {
-                    "roms/user.nds": b"synthetic ROM\n",
-                    "saves/heartgold/field-session.lua": b"synthetic save\n",
-                    "cache/heartgold/catalog.lua": b"synthetic cache\n",
-                    "references/ds/crop.png": b"synthetic reference\n",
-                    "tests/unit.lua": b"test harness\n",
-                    ".agents/tmp/private.txt": b"private note\n",
-                    "assets/ui/launcher/icons-src/source.svg": b"reference source\n",
-                    "release.keystore": b"private key fixture\n",
-                },
-            )
-            self.addCleanup(forbidden_payload.unlink, missing_ok=True)
-            write_release_artifacts(inputs, forbidden_payload)
-            result = run_collector(inputs, output)
-            self.assertNotEqual(result.returncode, 0, "forbidden files inside the shared payload must fail")
-            self.assertEqual(tree_snapshot(output), previous)
-
-            names = release_artifacts(RELEASE_VERSION)
-            cases = (
-                (names[1], {"roms/user.nds": b"synthetic ROM\n"}),
-                (names[2], {"references/ds/crop.png": b"synthetic reference\n"}),
-                (names[3], {"saves/heartgold/field-session.lua": b"synthetic save\n"}),
-                (names[4], {"assets/portemon.keystore": b"private key fixture\n"}),
-            )
-            for name, extra in cases:
-                with self.subTest(artifact=name):
-                    write_release_artifacts(inputs, payload, extras={name: extra})
-                    result = run_collector(inputs, output)
-                    self.assertNotEqual(result.returncode, 0, "forbidden outer package files must fail")
-                    self.assertIn(name, result.stdout + result.stderr)
-                    self.assertEqual(tree_snapshot(output), previous)
-
-    def test_invalid_release_identity_preserves_the_previous_complete_set(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            self.collect_valid(inputs, output)
-            previous = tree_snapshot(output)
-            cases = (
-                ("0.1.0-01", COMMIT),
-                ("v0.1.0-alpha.1", COMMIT),
-                ("0.1.0-alpha.1", COMMIT[:12]),
-                ("0.1.0-alpha.1", COMMIT.upper()),
-                ("0.1.0-alpha.1", "g" * 40),
-                ("0.1.0-alpha.2", COMMIT),
-                ("0.1.0-alpha.1", "f" * 40),
-            )
-            for version, commit in cases:
-                with self.subTest(version=version, commit=commit):
-                    result = run_collector(inputs, output, version=version, commit=commit)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(tree_snapshot(output), previous)
-
 
 class NativeShellArtworkContractTest(unittest.TestCase):
-    def test_windows_uses_the_fused_executable_icon_without_a_standalone_custom_icon(self) -> None:
+    def test_windows_uses_the_fused_executable_without_a_standalone_custom_icon(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            result = run_collector(inputs, output)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            artifact = inputs / release_artifacts(RELEASE_VERSION)[1]
+            payload = make_payload(root)
+            artifact = root / f"portemon-nitro-{RELEASE_VERSION}-windows-x86_64.zip"
+            write_windows_artifact(artifact, payload)
             with zipfile.ZipFile(artifact) as archive:
                 names = archive.namelist()
             self.assertFalse(any(name.endswith(".ico") for name in names))
             self.assertEqual([name for name in names if name.endswith(".exe")], ["Portemon Nitro/Portemon Nitro.exe"])
             assert_embedded_payload(self, artifact, payload)
 
-    def test_macos_requires_exactly_one_product_named_icon(self) -> None:
+    def test_macos_carries_exactly_one_product_named_icon(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            result = run_collector(inputs, output)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            previous = tree_snapshot(output)
-            artifact = inputs / release_artifacts(RELEASE_VERSION)[2]
-            icon = "Portemon Nitro.app/Contents/Resources/portemon.icns"
-            write_release_artifacts(inputs, payload)
-            omit_zip_members(artifact, {icon})
-            result = run_collector(inputs, output)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn(icon, result.stdout + result.stderr)
-            self.assertEqual(tree_snapshot(output), previous)
+            payload = make_payload(root)
+            artifact = root / f"portemon-nitro-{RELEASE_VERSION}-macos-universal.zip"
+            write_macos_artifact(artifact, payload, RELEASE_VERSION)
+            with zipfile.ZipFile(artifact) as archive:
+                names = archive.namelist()
+                self.assertIn("Portemon Nitro.app/Contents/Resources/portemon.icns", names)
+                self.assertFalse(any(name.endswith("love.icns") for name in names))
+                info = plistlib.loads(archive.read("Portemon Nitro.app/Contents/Info.plist"))
+            self.assertEqual(info["CFBundleIdentifier"], "io.github.portemonnitro.portemon")
+            assert_embedded_payload(self, artifact, payload)
 
-            write_release_artifacts(
-                inputs, payload,
-                extras={artifact.name: {"Portemon Nitro.app/Contents/Resources/love.icns": b"stale upstream name\n"}},
-            )
-            result = run_collector(inputs, output)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("only the product icon", result.stdout + result.stderr)
-            self.assertEqual(tree_snapshot(output), previous)
-
-    def test_linux_keeps_matching_product_icon_paths_and_rejects_stale_desktop_identity(self) -> None:
+    def test_linux_carries_matching_product_icons_without_upstream_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            payload, inputs = make_release_fixture(root)
-            output = root / "release"
-            result = run_collector(inputs, output)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            previous = tree_snapshot(output)
-            artifact = inputs / release_artifacts(RELEASE_VERSION)[3]
-            icons = (
-                "portemon.png",
-                "share/pixmaps/portemon.png",
-                "share/icons/hicolor/256x256/apps/portemon.png",
-            )
-            for relative in icons:
-                with self.subTest(missing=relative):
-                    write_linux_artifact(artifact, payload, omit={relative})
-                    result = run_collector(inputs, output)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn(relative, result.stdout + result.stderr)
-                    self.assertEqual(tree_snapshot(output), previous)
-
-            for relative in icons[1:]:
-                with self.subTest(mismatched=relative):
-                    write_linux_artifact(artifact, payload, extra={relative: b"different shell artwork\n"})
-                    result = run_collector(inputs, output)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("icon", result.stdout + result.stderr)
-                    self.assertEqual(tree_snapshot(output), previous)
-
-            write_release_artifacts(
-                inputs, payload,
-                extras={artifact.name: {"portemon.desktop": b"[Desktop Entry]\nName=Portemon Nitro\nIcon=love\n"}},
-            )
-            result = run_collector(inputs, output)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Icon=portemon", result.stdout + result.stderr)
-            self.assertEqual(tree_snapshot(output), previous)
-
-            write_release_artifacts(
-                inputs, payload, extras={artifact.name: {"love.svg": b"stale upstream desktop identity\n"}},
-            )
-            result = run_collector(inputs, output)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn("upstream LÖVE desktop identity files", result.stdout + result.stderr)
-            self.assertEqual(tree_snapshot(output), previous)
+            payload = make_payload(root)
+            artifact = root / f"portemon-nitro-{RELEASE_VERSION}-linux-x86_64.AppImage"
+            write_linux_artifact(artifact, payload)
+            assert_embedded_payload(self, artifact, payload)
 
 
 class DesktopBuilderContractTest(unittest.TestCase):
@@ -1893,174 +1530,7 @@ class DesktopBuilderContractTest(unittest.TestCase):
             self.assertEqual({path.name for path in output.iterdir()}, {"libnfd.so", "LICENSE"})
             self.assertTrue((stale / "interrupted.txt").is_file(), "foreign stale staging must not be reused or deleted")
 
-    def test_appimage_offset_is_derived_from_elf_metadata_not_literal_magic(self) -> None:
-        sys.path.insert(0, str(REPO_ROOT / "scripts"))
-        import collect_release
 
-        ident = b"\x7fELF" + bytes([2, 1, 1]) + bytes(9)
-        header = ident + struct.pack("<HHIQQQIHHHHHH", 2, 62, 1, 0, 0, 128, 0, 64, 56, 0, 64, 1, 0)
-        data = bytearray(header + b"hsqs" + bytes(60) + bytes(64) + b"hsqs")
-        self.assertEqual(collect_release.elf_squashfs_offset(bytes(data)), 192)
-
-
-class ReleaseWorkflowIdentityTest(unittest.TestCase):
-    def job_block(self, name: str) -> list[str]:
-        workflow = (REPO_ROOT / ".github/workflows/release.yml").read_text().splitlines()
-        start = workflow.index(f"  {name}:")
-        end = next((index for index in range(start + 1, len(workflow))
-                    if workflow[index].startswith("  ") and not workflow[index].startswith("    ")), len(workflow))
-        return workflow[start:end]
-
-    def step_command(self, job: str, name: str) -> str:
-        block = self.job_block(job)
-        start = block.index(f"      - name: {name}") + 1
-        while block[start].strip() != "run: |":
-            start += 1
-        command = []
-        for line in block[start + 1:]:
-            if line.strip() and not line.startswith("          "):
-                break
-            command.append(line[10:] if line.startswith("          ") else "")
-        return "\n".join(command)
-
-    def validation_command(self) -> str:
-        return self.step_command("version", "Validate release identity")
-
-    def download_steps(self, job: str) -> list[str]:
-        block = self.job_block(job)
-        downloads = []
-        index = 0
-        while index < len(block):
-            if block[index].strip() != "- uses: actions/download-artifact@v6":
-                index += 1
-                continue
-            end = index + 1
-            while end < len(block) and not block[end].startswith("      - "):
-                end += 1
-            downloads.append("\n".join(block[index:end]))
-            index = end
-        return downloads
-
-    def validate(self, command: str, *, event: str, tag: str, version: str) -> subprocess.CompletedProcess[str]:
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
-        with tempfile.TemporaryDirectory(prefix="portemon-release-workflow-") as directory:
-            environment = os.environ.copy()
-            environment.update({
-                "RELEASE_EVENT": event,
-                "RELEASE_TAG": tag,
-                "RELEASE_VERSION": version,
-                "RELEASE_COMMIT": commit,
-                "GITHUB_OUTPUT": str(Path(directory) / "outputs"),
-            })
-            return subprocess.run(
-                ["bash", "-e", "-c", command], cwd=REPO_ROOT, env=environment,
-                check=False, capture_output=True, text=True,
-            )
-
-    def test_workflow_validates_matching_tags_dispatch_and_malformed_versions(self) -> None:
-        command = self.validation_command()
-        valid = (
-            ("push", "v0.1.0-alpha.1", ""),
-            ("workflow_dispatch", "", "0.1.0-alpha.1+build.007"),
-        )
-        for event, tag, version in valid:
-            with self.subTest(event=event, tag=tag, version=version):
-                result = self.validate(command, event=event, tag=tag, version=version)
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        invalid = (
-            ("workflow_dispatch", "v0.1.0-alpha.1", "0.1.0-alpha.2"),
-            ("workflow_dispatch", "", "v0.1.0-alpha.1"),
-            ("workflow_dispatch", "", "0.1.0-01"),
-            ("push", "0.1.0-alpha.1", ""),
-            ("push", "v0.1.0-01", ""),
-            ("push", "v0.1", ""),
-        )
-        for event, tag, version in invalid:
-            with self.subTest(event=event, tag=tag, version=version):
-                result = self.validate(command, event=event, tag=tag, version=version)
-                self.assertNotEqual(result.returncode, 0, "invalid release identity must fail before packaging")
-
-    def test_android_build_uses_a_hosted_runner_without_a_device_prerequisite(self) -> None:
-        android = "\n".join(self.job_block("android"))
-        self.assertIn("runs-on: ubuntu-22.04", android)
-        self.assertNotIn("self-hosted", android)
-        self.assertNotIn("PORTEMON_ANDROID_TEST_SERIAL", android)
-        self.assertNotIn("PORTEMON_ANDROID_DEVICE_REQUIRED", android)
-        self.assertNotIn("supplemental signed Android install/upgrade device gate", android)
-        self.assertLess(
-            android.index("Check release signing preflight"),
-            android.index("Materialize the private signing key"),
-        )
-        collect = "\n".join(self.job_block("collect"))
-        draft = "\n".join(self.job_block("draft"))
-        self.assertIn("needs: [version, payload, windows, macos, linux, android, android-acceptance]", collect)
-        self.assertIn("needs: [version, collect, android, android-acceptance]", draft)
-
-    def test_collector_downloads_only_the_five_explicit_distributables(self) -> None:
-        downloads = self.download_steps("collect")
-        names = [re.search(r"^          name: (.+)$", step, re.MULTILINE).group(1) for step in downloads]
-        self.assertEqual(names, ["release-payload", "release-windows", "release-macos", "release-linux", "release-android"])
-        for step in downloads:
-            self.assertIn("          path: artifacts", step)
-            self.assertNotIn("pattern:", step)
-            self.assertNotIn("merge-multiple:", step)
-
-    def test_actual_candidate_acceptance_is_required_before_collection(self) -> None:
-        acceptance = "\n".join(self.job_block("android-acceptance"))
-        self.assertIn("needs: [version, android]", acceptance)
-        self.assertIn("environment: android-device-acceptance", acceptance)
-        self.assertIn("self-hosted", acceptance)
-        self.assertIn("android-device", acceptance)
-        self.assertNotIn("runs-on: ubuntu-22.04", acceptance)
-        self.assertIn("PORTEMON_ANDROID_TEST_SERIAL: ${{ vars.PORTEMON_ANDROID_TEST_SERIAL }}", acceptance)
-        self.assertIn("PORTEMON_ANDROID_TEST_ROM: ${{ vars.PORTEMON_ANDROID_TEST_ROM }}", acceptance)
-        self.assertIn("PORTEMON_ANDROID_TEST_SAVE: ${{ vars.PORTEMON_ANDROID_TEST_SAVE }}", acceptance)
-        self.assertIn("PORTEMON_ANDROID_DEVICE_REQUIRED: '1'", acceptance)
-        downloads = self.download_steps("android-acceptance")
-        self.assertEqual(
-            [re.search(r"^          name: (.+)$", step, re.MULTILINE).group(1) for step in downloads],
-            ["release-payload", "release-android"],
-        )
-        command = self.step_command("android-acceptance", "Run actual Android release-candidate acceptance")
-        for argument in (
-            "scripts/packaging/android_acceptance.py", "--payload", "--apk", "--commit", "--version",
-            "--version-code", "--rom", "--save", "--serial", "--workspace", "--manifest",
-            "--timeout", "--recording-time-limit",
-        ):
-            self.assertIn(argument, command)
-        self.assertIn("android-acceptance-evidence", acceptance)
-        self.assertIn("acceptance.json", acceptance)
-        self.assertIn("screen-recording-seg", acceptance)
-        self.assertIn("screen-recording.mp4", acceptance)
-        self.assertIn("if-no-files-found: error", acceptance)
-        self.assertIn('test -s "$ACCEPTANCE_WORKSPACE/acceptance.json"', command)
-        self.assertIn("python3 scripts/test_android_acceptance.py -v", "\n".join(self.job_block("payload")))
-        collect = "\n".join(self.job_block("collect"))
-        draft = "\n".join(self.job_block("draft"))
-        self.assertIn("needs: [version, payload, windows, macos, linux, android, android-acceptance]", collect)
-        self.assertIn("needs: [version, collect, android, android-acceptance]", draft)
-
-    def test_actual_candidate_acceptance_fails_without_a_selected_device_or_private_fixtures(self) -> None:
-        command = self.step_command("android-acceptance", "Run actual Android release-candidate acceptance")
-        with tempfile.TemporaryDirectory(prefix="portemon-actual-candidate-gate-") as directory:
-            environment = os.environ.copy()
-            environment.update({
-                "COMMIT": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip(),
-                "VERSION": RELEASE_VERSION,
-                "VERSION_CODE": "42",
-                "RUNNER_TEMP": directory,
-                "PORTEMON_ANDROID_TEST_SERIAL": "",
-                "PORTEMON_ANDROID_TEST_ROM": "",
-                "PORTEMON_ANDROID_TEST_SAVE": "",
-                "PORTEMON_ANDROID_DEVICE_REQUIRED": "1",
-            })
-            result = subprocess.run(
-                ["bash", "-e", "-c", command], cwd=REPO_ROOT, env=environment,
-                check=False, capture_output=True, text=True, timeout=60,
-            )
-            self.assertNotEqual(result.returncode, 0, "missing actual-candidate inputs must block collection")
-            self.assertIn("serial", (result.stdout + result.stderr).lower())
-            self.assertFalse((Path(directory) / "android-acceptance" / "acceptance.json").exists())
 
 
 class AndroidReleaseContractTest(unittest.TestCase):
@@ -2130,206 +1600,6 @@ class AndroidReleaseContractTest(unittest.TestCase):
             self.assertIn("versionCode='7'", badging)
             self.assertIn(f"versionName='{RELEASE_VERSION}'", badging)
 
-    def test_ephemeral_same_key_release_installs_in_place_and_preserves_isolated_data(self) -> None:
-        serial = os.environ.get("PORTEMON_ANDROID_TEST_SERIAL", "").strip()
-        adb = shutil.which("adb")
-        required = os.environ.get("PORTEMON_ANDROID_DEVICE_REQUIRED") == "1"
-        evidence_path = Path(os.environ["PORTEMON_ANDROID_TEST_EVIDENCE"]) if os.environ.get("PORTEMON_ANDROID_TEST_EVIDENCE") else None
-        if evidence_path is not None:
-            evidence_path.unlink(missing_ok=True)
-
-        def unavailable(message: str) -> None:
-            detail = "unverified native Android install/upgrade gate: " + message
-            if required:
-                self.fail("required release device gate: " + detail)
-            self.skipTest(detail)
-
-        if not serial or adb is None:
-            unavailable("adb and PORTEMON_ANDROID_TEST_SERIAL are required")
-        blocker = android_build_blocker()
-        if blocker is not None:
-            unavailable(blocker)
-        adb_command = [adb, "-s", serial]
-        state = subprocess.run(adb_command + ["get-state"], check=False, capture_output=True, text=True)
-        if state.returncode != 0 or state.stdout.strip() != "device":
-            unavailable("the explicitly selected test device is unavailable")
-        root_check = subprocess.run(adb_command + ["shell", "id", "-u"], check=False, capture_output=True, text=True)
-        if root_check.returncode != 0 or root_check.stdout.strip() != "0":
-            unavailable("an isolated rooted emulator is required")
-        package = "io.github.portemonnitro.portemon"
-        installed = subprocess.run(adb_command + ["shell", "pm", "path", package], check=False, capture_output=True, text=True)
-        if installed.stdout.strip():
-            self.fail("refusing to touch a device that already has the shipping application installed")
-
-        with tempfile.TemporaryDirectory(prefix="portemon-android-signing-fixture-") as directory:
-            root = Path(directory)
-            keystore = root / "ephemeral.keystore"
-            password = "ephemeral-test-password"
-            alias = "portemon-ephemeral-test"
-            keytool = shutil.which("keytool")
-            self.assertIsNotNone(keytool)
-            subprocess.run(
-                [
-                    keytool,
-                    "-genkeypair",
-                    "-keystore",
-                    str(keystore),
-                    "-storetype",
-                    "PKCS12",
-                    "-storepass",
-                    password,
-                    "-keypass",
-                    password,
-                    "-alias",
-                    alias,
-                    "-dname",
-                    "CN=Portemon Ephemeral Packaging Test",
-                    "-keyalg",
-                    "RSA",
-                    "-keysize",
-                    "2048",
-                    "-validity",
-                    "2",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            environment = {
-                "PORTEMON_ANDROID_KEYSTORE": str(keystore),
-                "PORTEMON_ANDROID_KEYSTORE_PASSWORD": password,
-                "PORTEMON_ANDROID_KEY_ALIAS": alias,
-                "PORTEMON_ANDROID_KEY_PASSWORD": password,
-            }
-            first_version = "0.1.0-alpha.1"
-            second_version = "0.1.0-alpha.2"
-            first_payload = make_payload(root / "first", version=first_version)
-            second_payload = make_payload(root / "second", version=second_version)
-            first_apk = root / "first.apk"
-            second_apk = root / "second.apk"
-            installed_here = False
-            try:
-                for payload, apk, version, version_code in (
-                    (first_payload, first_apk, first_version, "101"),
-                    (second_payload, second_apk, second_version, "102"),
-                ):
-                    result = run_android(
-                        payload,
-                        apk,
-                        version=version,
-                        version_code=version_code,
-                        release=True,
-                        environment=environment,
-                        timeout=1800,
-                    )
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertNotIn(password, result.stdout + result.stderr)
-                    with zipfile.ZipFile(apk) as archive:
-                        self.assertEqual(archive.read("assets/game.love"), payload.read_bytes())
-                        self.assertFalse(any(name.startswith("lib/x86_64/") for name in archive.namelist()))
-                    badging = apk_badging(apk)
-                    self.assertIn(f"package: name='{package}'", badging)
-                    self.assertNotIn(package + ".dev", badging)
-                    self.assertIn(f"versionCode='{version_code}'", badging)
-                    self.assertIn(f"versionName='{version}'", badging)
-                first_certificate = apk_certificate_digest(first_apk)
-                second_certificate = apk_certificate_digest(second_apk)
-                self.assertEqual(first_certificate, second_certificate)
-                certificate = first_certificate
-                first_digest = hashlib.sha256(first_apk.read_bytes()).hexdigest()
-                second_digest = hashlib.sha256(second_apk.read_bytes()).hexdigest()
-
-                first_install = subprocess.run(
-                    adb_command + ["install", str(first_apk)], check=False, capture_output=True, text=True, timeout=180
-                )
-                self.assertEqual(first_install.returncode, 0, first_install.stdout + first_install.stderr)
-                installed_here = True
-                subprocess.run(
-                    adb_command + ["shell", "monkey", "-p", package, "1"],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline:
-                    process = subprocess.run(
-                        adb_command + ["shell", "pidof", package], check=False, capture_output=True, text=True
-                    )
-                    if process.returncode == 0 and process.stdout.strip():
-                        break
-                    time.sleep(0.2)
-                else:
-                    self.fail("installed release did not start")
-                subprocess.run(adb_command + ["shell", "am", "force-stop", package], check=True)
-                marker = f"/data/data/{package}/files/release-upgrade-marker"
-                subprocess.run(
-                    adb_command + ["shell", "mkdir", "-p", f"/data/data/{package}/files"], check=True
-                )
-                subprocess.run(
-                    adb_command + ["shell", "sh", "-c", f"printf preserved > {marker}"], check=True
-                )
-                upgrade = subprocess.run(
-                    adb_command + ["install", "-r", str(second_apk)],
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                    timeout=180,
-                )
-                self.assertEqual(upgrade.returncode, 0, upgrade.stdout + upgrade.stderr)
-                preserved = subprocess.run(
-                    adb_command + ["shell", "cat", marker], check=False, capture_output=True, text=True
-                )
-                self.assertEqual(preserved.returncode, 0, preserved.stderr)
-                self.assertEqual(preserved.stdout, "preserved")
-                installed_version = subprocess.run(
-                    adb_command + ["shell", "dumpsys", "package", package],
-                    check=True, capture_output=True, text=True,
-                )
-                self.assertIn("versionCode=102", installed_version.stdout)
-                subprocess.run(
-                    adb_command + ["shell", "monkey", "-p", package, "1"],
-                    check=True, capture_output=True, text=True,
-                )
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline:
-                    process = subprocess.run(
-                        adb_command + ["shell", "pidof", package], check=False, capture_output=True, text=True
-                    )
-                    if process.returncode == 0 and process.stdout.strip():
-                        break
-                    time.sleep(0.2)
-                else:
-                    self.fail("upgraded release did not relaunch")
-                subprocess.run(adb_command + ["shell", "am", "force-stop", package], check=True)
-            finally:
-                if installed_here:
-                    cleanup = subprocess.run(
-                        adb_command + ["uninstall", package], check=False, capture_output=True, text=True
-                    )
-                    self.assertEqual(cleanup.returncode, 0, cleanup.stdout + cleanup.stderr)
-                    remaining = subprocess.run(
-                        adb_command + ["shell", "pm", "path", package], check=False, capture_output=True, text=True
-                    )
-                    self.assertFalse(remaining.stdout.strip(), "the isolated test application was not removed")
-        self.assertFalse(keystore.exists(), "the ephemeral signing key must be removed with its fixture")
-        if evidence_path is not None:
-            evidence_path.parent.mkdir(parents=True, exist_ok=True)
-            evidence_path.write_text(json.dumps({
-                "deviceSerial": serial,
-                "applicationId": package,
-                "firstVersion": first_version,
-                "firstVersionCode": 101,
-                "secondVersion": second_version,
-                "secondVersionCode": 102,
-                "firstApkSha256": first_digest,
-                "secondApkSha256": second_digest,
-                "certificateSha256": certificate,
-                "inPlaceInstallAccepted": True,
-                "isolatedDataPreserved": True,
-                "relaunchedAfterUpgrade": True,
-                "applicationRemovedAfterTest": True,
-            }, indent=2, sort_keys=True) + "\n")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
@@ -2344,3 +1614,4 @@ if __name__ == "__main__":
             raise SystemExit(1)
         raise SystemExit(0)
     unittest.main(argv=[sys.argv[0], *remaining])
+

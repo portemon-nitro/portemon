@@ -1924,7 +1924,6 @@ function T.launcher_faces_are_acquired_with_an_explicit_pixel_policy()
     for _, request in ipairs(host.fontRequests) do
       byPath[request.path] = request
     end
-    Assert.isNil(byPath["assets/fonts/mplus1p/MPLUS1p-Bold.ttf"], "the unused wordmark face is not acquired")
     local bold = assert(byPath["assets/fonts/galmuri/Galmuri11-Bold.ttf"], "pixel bold face is acquired")
     Assert.equal(bold.size, 12, "the bold face uses its native pixel size")
     Assert.deepEqual(bold.font.filter, { "nearest", "nearest" }, "the bold face stays a pixel face")

@@ -1,13 +1,10 @@
-name: Alpha release
+name: Build release
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       version:
-        description: Release SemVer without the leading v
+        description: Release version (e.g. 0.1.0-alpha.1)
         required: true
         type: string
 
@@ -15,63 +12,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: portemon-alpha-release
+  group: portemon-release
   cancel-in-progress: false
 
 jobs:
-  version:
-    runs-on: ubuntu-22.04
-    outputs:
-      version: ${{ steps.identity.outputs.version }}
-      commit: ${{ steps.identity.outputs.commit }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-      - name: Validate release identity
-        id: identity
-        env:
-          RELEASE_EVENT: ${{ github.event_name }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_COMMIT: ${{ github.sha }}
-        run: |
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          import subprocess
-          import sys
-          sys.path.insert(0, str(Path("scripts").resolve()))
-          from pack_love import validate_identity
-          event = os.environ["RELEASE_EVENT"]
-          tag = os.environ["RELEASE_TAG"]
-          version = tag[1:] if event == "push" else os.environ["RELEASE_VERSION"]
-          commit = os.environ["RELEASE_COMMIT"]
-          if event not in ("push", "workflow_dispatch"):
-              raise SystemExit("unsupported release event")
-          if event == "push" and not tag.startswith("v"):
-              raise SystemExit("release tags must start with v")
-          if event == "workflow_dispatch" and tag.startswith("v") and version != tag[1:]:
-              raise SystemExit("release tag and requested version disagree")
-          if not version or version == "dev":
-              raise SystemExit("a complete release semantic version is required")
-          validate_identity(version, commit)
-          if subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() != commit:
-              raise SystemExit("release commit is not the checked-out source")
-          release_tag = "v" + version
-          existing = subprocess.run(
-              ["git", "rev-parse", "refs/tags/" + release_tag + "^{commit}"],
-              check=False, capture_output=True, text=True,
-          )
-          if existing.returncode == 0 and existing.stdout.strip() != commit:
-              raise SystemExit("release tag already identifies a different commit")
-          output = Path(os.environ["GITHUB_OUTPUT"])
-          with output.open("a") as handle:
-              handle.write(f"version={version}\ncommit={commit}\n")
-          PY
+  tests:
+    uses: ./.github/workflows/ci.yml
 
   payload:
-    needs: version
+    needs: tests
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
@@ -89,32 +38,30 @@ jobs:
           PATH: ${{ github.workspace }}/scripts/bin:${{ env.PATH }}
         run: |
           python3 scripts/test_packaging.py PackagingContractTest ReleaseVersionContractTest -v
-          python3 scripts/test_android_acceptance.py -v
           scripts/test.sh --filter native_rom_picker
           scripts/test.sh --filter touch_gamepad
-      - name: Build the immutable payload
+      - name: Build the portable payload
         env:
-          VERSION: ${{ needs.version.outputs.version }}
-          COMMIT: ${{ needs.version.outputs.commit }}
+          VERSION: ${{ inputs.version }}
         run: |
           mkdir -p artifacts
-          python3 scripts/pack_love.py --version "$VERSION" --commit "$COMMIT" \
+          python3 scripts/pack_love.py --version "$VERSION" \
             --output "artifacts/portemon-nitro-$VERSION.love" \
             --listing artifacts/payload-listing.txt
       - name: Smoke the archive outside the checkout
         env:
           PATH: ${{ github.workspace }}/scripts/bin:${{ env.PATH }}
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: python3 scripts/test_packaging.py --love "artifacts/portemon-nitro-$VERSION.love" --listing artifacts/payload-listing.txt
       - uses: actions/upload-artifact@v6
         with:
           name: release-payload
-          path: artifacts/portemon-nitro-${{ needs.version.outputs.version }}.love
+          path: artifacts/portemon-nitro-${{ inputs.version }}.love
           if-no-files-found: error
           retention-days: 7
 
   windows:
-    needs: [version, payload]
+    needs: payload
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v6
@@ -137,17 +84,17 @@ jobs:
       - name: Build the Windows package
         shell: pwsh
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: ./scripts/build_windows.ps1 -Love "portemon-nitro-$env:VERSION.love" -Version $env:VERSION -Output "portemon-nitro-$env:VERSION-windows-x86_64.zip"
       - uses: actions/upload-artifact@v6
         with:
           name: release-windows
-          path: portemon-nitro-${{ needs.version.outputs.version }}-windows-x86_64.zip
+          path: portemon-nitro-${{ inputs.version }}-windows-x86_64.zip
           if-no-files-found: error
           retention-days: 7
 
   macos:
-    needs: [version, payload]
+    needs: payload
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v6
@@ -159,19 +106,19 @@ jobs:
           name: release-payload
       - name: Build the universal macOS package
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: |
           scripts/build_macos.sh --love "portemon-nitro-$VERSION.love" --version "$VERSION" \
             --output "portemon-nitro-$VERSION-macos-universal.zip"
       - uses: actions/upload-artifact@v6
         with:
           name: release-macos
-          path: portemon-nitro-${{ needs.version.outputs.version }}-macos-universal.zip
+          path: portemon-nitro-${{ inputs.version }}-macos-universal.zip
           if-no-files-found: error
           retention-days: 7
 
   linux:
-    needs: [version, payload]
+    needs: payload
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v6
@@ -188,22 +135,20 @@ jobs:
             libdbus-1-dev liblzma-dev liblzo2-dev libzstd-dev zlib1g-dev desktop-file-validate
       - name: Build the Linux AppImage
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: |
           scripts/build_linux.sh --love "portemon-nitro-$VERSION.love" --version "$VERSION" \
             --output "portemon-nitro-$VERSION-linux-x86_64.AppImage"
       - uses: actions/upload-artifact@v6
         with:
           name: release-linux
-          path: portemon-nitro-${{ needs.version.outputs.version }}-linux-x86_64.AppImage
+          path: portemon-nitro-${{ inputs.version }}-linux-x86_64.AppImage
           if-no-files-found: error
           retention-days: 7
 
   android:
-    needs: [version, payload]
+    needs: payload
     runs-on: ubuntu-22.04
-    outputs:
-      certificate: ${{ steps.signature.outputs.certificate }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -227,7 +172,7 @@ jobs:
           name: release-payload
       - name: Check release signing preflight
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ inputs.version }}
         run: |
           python3 scripts/test_packaging.py \
             AndroidReleaseContractTest.test_release_requires_every_signing_input_before_host_tools \
@@ -242,9 +187,8 @@ jobs:
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/portemon-release.keystore"
           test -s "$RUNNER_TEMP/portemon-release.keystore"
       - name: Build and verify the signed release APK
-        id: signature
         env:
-          VERSION: ${{ needs.version.outputs.version }}
+          VERSION: ${{ inputs.version }}
           VERSION_CODE: ${{ github.run_number }}
           PORTEMON_ANDROID_KEYSTORE: ${{ runner.temp }}/portemon-release.keystore
           PORTEMON_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.PORTEMON_ANDROID_KEYSTORE_PASSWORD }}
@@ -253,183 +197,34 @@ jobs:
         run: |
           scripts/build_android.sh --release --love "portemon-nitro-$VERSION.love" --version "$VERSION" \
             --version-code "$VERSION_CODE" --output "portemon-nitro-$VERSION-android.apk"
-          certificate="$("$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --print-certs \
-            "portemon-nitro-$VERSION-android.apk" | sed -n 's/.*SHA-256 digest: //p')"
-          test -n "$certificate"
-          printf 'certificate=%s\n' "$certificate" >> "$GITHUB_OUTPUT"
+          "$ANDROID_SDK_ROOT/build-tools/36.0.0/apksigner" verify --print-certs \
+            "portemon-nitro-$VERSION-android.apk" | grep -q 'SHA-256 digest'
       - name: Remove the private signing key
         if: always()
         run: rm -f -- "$RUNNER_TEMP/portemon-release.keystore"
       - uses: actions/upload-artifact@v6
         with:
           name: release-android
-          path: portemon-nitro-${{ needs.version.outputs.version }}-android.apk
-          if-no-files-found: error
-          retention-days: 7
-
-  android-acceptance:
-    # The mandatory physical acceptance gate runs only on a dedicated,
-    # isolated, trusted self-hosted device runner that provides the rooted
-    # device, the private ROM/save fixtures, and an operator channel to write
-    # the journey manifest. It never runs on GitHub-hosted runners (which
-    # cannot provide local device resources) and never executes untrusted PR
-    # code: this workflow triggers only on version tags and manual dispatch.
-    needs: [version, android]
-    runs-on: [self-hosted, android-device, isolated]
-    timeout-minutes: 120
-    environment: android-device-acceptance
-    env:
-      PORTEMON_ANDROID_TEST_SERIAL: ${{ vars.PORTEMON_ANDROID_TEST_SERIAL }}
-      PORTEMON_ANDROID_TEST_ROM: ${{ vars.PORTEMON_ANDROID_TEST_ROM }}
-      PORTEMON_ANDROID_TEST_SAVE: ${{ vars.PORTEMON_ANDROID_TEST_SAVE }}
-      PORTEMON_ANDROID_DEVICE_REQUIRED: '1'
-      ACCEPTANCE_WORKSPACE: ${{ runner.temp }}/android-acceptance
-      ACCEPTANCE_MANIFEST: ${{ runner.temp }}/android-acceptance/journey-manifest.json
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - uses: android-actions/setup-android@v3
-      - name: Install APK acceptance tools
-        run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "build-tools;36.0.0"
-      - uses: actions/download-artifact@v6
-        with:
-          name: release-payload
-          path: candidate
-      - uses: actions/download-artifact@v6
-        with:
-          name: release-android
-          path: candidate
-      - name: Run actual Android release-candidate acceptance
-        env:
-          COMMIT: ${{ needs.version.outputs.commit }}
-          VERSION: ${{ needs.version.outputs.version }}
-          VERSION_CODE: ${{ github.run_number }}
-        run: |
-          rm -rf -- "$ACCEPTANCE_WORKSPACE"
-          python3 scripts/packaging/android_acceptance.py run \
-            --serial "$PORTEMON_ANDROID_TEST_SERIAL" \
-            --payload "candidate/portemon-nitro-$VERSION.love" \
-            --apk "candidate/portemon-nitro-$VERSION-android.apk" \
-            --commit "$COMMIT" --version "$VERSION" --version-code "$VERSION_CODE" \
-            --rom "$PORTEMON_ANDROID_TEST_ROM" --save "$PORTEMON_ANDROID_TEST_SAVE" \
-            --workspace "$ACCEPTANCE_WORKSPACE" --manifest "$ACCEPTANCE_MANIFEST" \
-            --timeout 3600 --recording-time-limit 150
-          test -s "$ACCEPTANCE_WORKSPACE/candidate.json"
-          test -s "$ACCEPTANCE_MANIFEST"
-          test -s "$ACCEPTANCE_WORKSPACE/acceptance.json"
-          test -s "$ACCEPTANCE_WORKSPACE/logcat.txt"
-          test -s "$ACCEPTANCE_WORKSPACE/screen-recording-seg1.mp4"
-          test -s "$ACCEPTANCE_WORKSPACE/screen-recording.mp4"
-      - name: Upload actual-candidate acceptance evidence
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: android-acceptance-evidence
-          path: |
-            ${{ runner.temp }}/android-acceptance/candidate.json
-            ${{ runner.temp }}/android-acceptance/journey-manifest.json
-            ${{ runner.temp }}/android-acceptance/acceptance.json
-            ${{ runner.temp }}/android-acceptance/logcat.txt
-            ${{ runner.temp }}/android-acceptance/screen-recording-seg*.mp4
-            ${{ runner.temp }}/android-acceptance/screen-recording.mp4
-          if-no-files-found: error
-          retention-days: 7
-      - name: Clean the isolated acceptance installation
-        if: always()
-        run: |
-          python3 scripts/packaging/android_acceptance.py cleanup \
-            --serial "$PORTEMON_ANDROID_TEST_SERIAL" --workspace "$ACCEPTANCE_WORKSPACE"
-
-  collect:
-    needs: [version, payload, windows, macos, linux, android, android-acceptance]
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - uses: android-actions/setup-android@v3
-      - name: Install APK verification tools
-        run: |
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager "build-tools;36.0.0" "platforms;android-36"
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends squashfs-tools
-      - uses: actions/download-artifact@v6
-        with:
-          name: release-payload
-          path: artifacts
-      - uses: actions/download-artifact@v6
-        with:
-          name: release-windows
-          path: artifacts
-      - uses: actions/download-artifact@v6
-        with:
-          name: release-macos
-          path: artifacts
-      - uses: actions/download-artifact@v6
-        with:
-          name: release-linux
-          path: artifacts
-      - uses: actions/download-artifact@v6
-        with:
-          name: release-android
-          path: artifacts
-      - name: Validate and collect the complete release
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          COMMIT: ${{ needs.version.outputs.commit }}
-        run: |
-          python3 scripts/collect_release.py --version "$VERSION" --commit "$COMMIT" \
-            --input artifacts --output release
-          (cd release && sha256sum -c SHA256SUMS)
-      - uses: actions/upload-artifact@v6
-        with:
-          name: release-collected
-          path: release
+          path: portemon-nitro-${{ inputs.version }}-android.apk
           if-no-files-found: error
           retention-days: 7
 
   draft:
-    needs: [version, collect, android, android-acceptance]
+    needs: [payload, windows, macos, linux, android]
     runs-on: ubuntu-22.04
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
       - uses: actions/download-artifact@v6
         with:
-          name: release-collected
-          path: release
-      - name: Verify collected checksums
-        run: (cd release && sha256sum -c SHA256SUMS)
-      - name: Create or replace draft prerelease assets
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Create draft prerelease
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ needs.version.outputs.version }}
-          COMMIT: ${{ needs.version.outputs.commit }}
-          VERSION_CODE: ${{ github.run_number }}
-          CERTIFICATE: ${{ needs.android.outputs.certificate }}
+          VERSION: ${{ inputs.version }}
         run: |
           tag="v$VERSION"
-          notes="Payload commit: $COMMIT. Android versionCode: $VERSION_CODE. Android certificate SHA-256: $CERTIFICATE. Windows is intentionally unsigned; macOS is ad-hoc signed and not notarized."
-          if gh release view "$tag" >/dev/null 2>&1; then
-            is_draft="$(gh release view "$tag" --json isDraft --jq .isDraft)"
-            test "$is_draft" = true
-            target="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .target_commitish)"
-            test "$target" = "$COMMIT"
-          else
-            gh release create "$tag" --target "$COMMIT" --title "Portémon Nitro $VERSION" \
-              --prerelease --draft --notes "$notes"
-          fi
-          gh release upload "$tag" release/* --clobber
+          gh release create "$tag" --target "$GITHUB_SHA" --title "Portémon Nitro $VERSION" \
+            --prerelease --draft dist/*

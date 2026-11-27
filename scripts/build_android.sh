@@ -49,21 +49,18 @@ payload, wanted = Path(sys.argv[1]), sys.argv[2]
 with zipfile.ZipFile(payload) as archive:
     identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
     version = re.search(r'version\s*=\s*"([^"]+)"', identity)
-    commit = re.search(r'commit\s*=\s*"([0-9a-f]{40})"', identity)
-    if version is None or commit is None or version.group(1) != wanted:
+    if version is None or version.group(1) != wanted:
         raise SystemExit("build_android: payload identity does not match --version")
-    validate_identity(version.group(1), commit.group(1))
+    validate_identity(version.group(1))
     if archive.testzip() is not None:
         raise SystemExit("build_android: payload CRC verification failed")
     print(version.group(1))
-    print(commit.group(1))
     print(hashlib.sha256(payload.read_bytes()).hexdigest())
 PY
 )"
 mapfile -t payload_fields <<< "$payload_info"
-[[ ${#payload_fields[@]} -eq 3 ]] || { echo "build_android: invalid payload metadata" >&2; exit 1; }
-payload_commit="${payload_fields[1]}"
-payload_sha="${payload_fields[2]}"
+[[ ${#payload_fields[@]} -eq 2 ]] || { echo "build_android: invalid payload metadata" >&2; exit 1; }
+payload_sha="${payload_fields[1]}"
 
 if $release; then
   [[ "$version" != "dev" ]] || { echo "build_android: release version must be a complete semantic version" >&2; exit 2; }
@@ -287,4 +284,4 @@ temporary_output="$output.tmp.$$"
 cp "$apk" "$temporary_output"
 chmod 0644 "$temporary_output"
 mv -f "$temporary_output" "$output"
-echo "build_android: wrote $output (payload $payload_sha, commit $payload_commit)"
+echo "build_android: wrote $output (payload $payload_sha)"

@@ -1622,4 +1622,39 @@ function T.targeted_import_channels_reject_wrong_edition_and_generic_drop_detect
   end)
 end
 
+-- Shutdown joins the retired worker at its owner: a queued import that is
+-- cancelled for process exit terminates its lease, drains late packets
+-- without publishing, and leaves the lease free for a fresh import.
+function T.shutdown_join_retires_the_worker_without_late_publication()
+  withQueuedHost(function(host)
+    local h = harness()
+    host:watch(h.importer)
+    h.importer:queuePath("synthetic.nds")
+    h.importer:update()
+    Assert.equal(h.importer.state, "reading")
+    local session = liveSession(h.importer)
+    local sessionId = assert(session.inbox:pop()).id
+    -- Retire while the worker is still inside its source read.
+    h.importer:shutdownJoin(0.05)
+    Assert.equal(h.importer.state, "idle", "shutdown returns the importer to idle")
+    -- Model the physical worker exit after it observes cancellation.
+    session.thread.alive = false
+    h.importer:update()
+    -- A late terminal packet from the retired session is discarded.
+    session.outbox:push({
+      id = sessionId,
+      kind = "complete",
+      versionId = h.info.id,
+      report = { sha1 = h.info.sha1 },
+      sourceName = "synthetic.nds",
+      displayName = h.info.displayName,
+      byteData = love.data.newByteData(h.data),
+    })
+    h.importer:update()
+    Assert.isNil(h.importer:takeVerifiedSource(), "a retired session never publishes")
+    Assert.equal(#h.events, 0, "no completion fires for a retired worker")
+    assertLeaseFree(host)
+  end)
+end
+
 return { tests = T }

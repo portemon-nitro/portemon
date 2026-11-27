@@ -2445,7 +2445,9 @@ function T.retail_entry_loaders_report_loader_throughput_through_the_game_host()
       return game, child
     end
 
-    App._bootExisting()
+    -- Explicit selection owns the loader policy without depending on ambient
+    -- published saves: the automatic boot path needs a real save fixture.
+    App._selectVersion("heartgold")
     App.update(0.016)
     finishStartupTitle(result)
     local runtime = assert(App._assetRuntime, "the selection owns its CPU runtime")
@@ -2509,7 +2511,9 @@ function T.a_late_installed_runtime_is_created_under_the_live_loader_budget()
       return installedView(_, epoch)
     end
 
-    App._bootExisting()
+    -- Explicit selection owns the loader policy without depending on ambient
+    -- published saves.
+    App._selectVersion("heartgold")
     App.update(0.016)
     Assert.isNil(App._assetRuntime, "the boot wait reports policy before the reader exists")
     Assert.isTrue(

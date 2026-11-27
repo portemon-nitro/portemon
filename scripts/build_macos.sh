@@ -46,20 +46,17 @@ if wanted == "dev":
 with zipfile.ZipFile(payload) as archive:
     identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
     version = re.search(r'version\s*=\s*"([^"]+)"', identity)
-    commit = re.search(r'commit\s*=\s*"([0-9a-f]{40})"', identity)
-    if version is None or commit is None or version.group(1) != wanted:
+    if version is None or version.group(1) != wanted:
         raise SystemExit("build_macos: payload identity does not match --version")
-    validate_identity(version.group(1), commit.group(1))
+    validate_identity(version.group(1))
     if archive.testzip() is not None:
         raise SystemExit("build_macos: payload CRC verification failed")
-print(commit.group(1))
 print(hashlib.sha256(payload.read_bytes()).hexdigest())
 PY
 )"
 mapfile -t payload_fields <<< "$payload_info"
-[[ ${#payload_fields[@]} -eq 2 ]] || { echo "build_macos: invalid payload metadata" >&2; exit 1; }
-payload_commit="${payload_fields[0]}"
-payload_sha="${payload_fields[1]}"
+[[ ${#payload_fields[@]} -eq 1 ]] || { echo "build_macos: invalid payload metadata" >&2; exit 1; }
+payload_sha="${payload_fields[0]}"
 
 pin_info="$(python3 - <<'PY'
 import json
@@ -207,4 +204,4 @@ if ! mv "$temporary_output" "$output"; then
 fi
 promoted=true
 rm -rf -- "$backup"
-echo "build_macos: wrote $output (payload $payload_sha, commit $payload_commit)"
+echo "build_macos: wrote $output (payload $payload_sha)"

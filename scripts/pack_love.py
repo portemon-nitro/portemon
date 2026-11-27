@@ -86,15 +86,13 @@ def source_files(root: Path) -> list[str]:
     return sorted(names)
 
 
-def validate_identity(version: str, commit: str) -> None:
+def validate_identity(version: str) -> None:
     if version != "dev" and VERSION.fullmatch(version) is None:
         raise ValueError("version must be dev or a complete semantic version")
-    if COMMIT.fullmatch(commit) is None:
-        raise ValueError("commit must be a full 40-character lowercase source SHA")
 
 
-def build_identity(version: str, commit: str) -> bytes:
-    return f'-- Immutable installed source identity; release packaging stamps a staging copy.\n\nreturn {{ version = "{version}", commit = "{commit}" }}\n'.encode()
+def build_identity(version: str) -> bytes:
+    return f'-- Immutable installed source identity; release packaging stamps a staging copy.\n\nreturn {{ version = "{version}" }}\n'.encode()
 
 
 def atomic_write(path: Path, data: bytes) -> None:
@@ -111,8 +109,8 @@ def atomic_write(path: Path, data: bytes) -> None:
             os.unlink(temporary)
 
 
-def build(root: Path, output: Path, listing: Path | None, version: str, commit: str) -> None:
-    validate_identity(version, commit)
+def build(root: Path, output: Path, listing: Path | None, version: str) -> None:
+    validate_identity(version)
     if listing is not None and listing.resolve() == output.resolve():
         raise ValueError("payload output and listing must be different files")
     names = source_files(root)
@@ -123,7 +121,7 @@ def build(root: Path, output: Path, listing: Path | None, version: str, commit: 
 
     def member_bytes(relative: str) -> bytes:
         if relative == "app/src/BuildInfo.lua":
-            return build_identity(version, commit)
+            return build_identity(version)
         source = "app/" + relative if relative in ("main.lua", "conf.lua") else relative
         return (root / source).read_bytes()
 
@@ -147,7 +145,7 @@ def build(root: Path, output: Path, listing: Path | None, version: str, commit: 
                 if relative not in archive.namelist():
                     raise ValueError(f"payload verification omitted {relative}")
             identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
-            if f'version = "{version}"' not in identity or f'commit = "{commit}"' not in identity:
+            if f'version = "{version}"' not in identity:
                 raise ValueError("payload identity verification failed")
         os.replace(temporary, output)
         if listing is not None:
@@ -160,13 +158,12 @@ def build(root: Path, output: Path, listing: Path | None, version: str, commit: 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
-    parser.add_argument("--commit", required=True)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--listing", type=Path)
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[1]
     try:
-        build(root, args.output.resolve(), args.listing.resolve() if args.listing else None, args.version, args.commit)
+        build(root, args.output.resolve(), args.listing.resolve() if args.listing else None, args.version)
     except (OSError, ValueError, zipfile.BadZipFile) as error:
         print(f"pack_love: {error}", file=sys.stderr)
         return 1

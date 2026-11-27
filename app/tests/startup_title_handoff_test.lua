@@ -642,21 +642,14 @@ function T.tests.opening_entry_enrolls_the_loading_stage_walking_sprites_first()
         if walkerAt == nil then
           walkerAt = index
         end
-      elseif
-        selector.requestKind == "opening-scene"
-        and selector.urgency == "near"
-        and firstNearSceneAt == nil
-      then
+      elseif selector.requestKind == "opening-scene" and selector.urgency == "near" and firstNearSceneAt == nil then
         firstNearSceneAt = index
       end
     end
     Assert.equal(walker, 1, "the opening entry enrolls the shared walking visuals once")
     Assert.equal(walkerUrgency, "near", "the walker catalog compiles behind title-critical work")
     Assert.notNil(firstNearSceneAt, "the entry still queues its near scene batch")
-    Assert.isTrue(
-      walkerAt < firstNearSceneAt,
-      "the walking sprites queue ahead of the heavy scene compiles"
-    )
+    Assert.isTrue(walkerAt < firstNearSceneAt, "the walking sprites queue ahead of the heavy scene compiles")
   end)
 end
 
@@ -1043,7 +1036,10 @@ function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_
     active.titleAssetsReady = false
     local waiting = startTitle()
     Assert.equal(waiting.phase, "movie", "pending title assets hold the finished movie frame, never the loader")
-    Assert.isTrue(waiting.movie ~= nil and waiting.movie:isFinished(), "the instant movie is retained while the title builds")
+    Assert.isTrue(
+      waiting.movie ~= nil and waiting.movie:isFinished(),
+      "the instant movie is retained while the title builds"
+    )
     Assert.isNil(waiting.title, "no title presents before its geometry is ready")
     Assert.equal(#active.audioSessions, 1, "movie admission constructs audio independently of title geometry")
     active.titleAssetsReady = true
@@ -2342,6 +2338,237 @@ function T.tests.active_movie_output_loss_is_visible_and_replay_primes_fresh_tra
   App.importer = saved.appImporter
   App._startupWarmup = saved.appWarmup
   App.provisioner = saved.appProvisioner
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A rejected or missing soundtrack never strands the loader: first entry
+-- and attract-loop reentry stay escapable through the indicated
+-- keyboard/controller/touch routes even though the neutral loader
+-- declines cancellation, and a missing session moves to the recoverable
+-- error path with the same recovery.
+function T.tests.soundtrack_failures_stay_escapable_without_stranding_the_loader()
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local MovieModule = require("libs.hgss.src.presentation.HgssOpeningMovie")
+  local saved = {
+    forVersion = CacheFs.forVersion,
+    loadScenes = MovieModule.loadValidatedScenes,
+    movieNew = MovieModule.new,
+  }
+  local restoreTitle = stubTitleAssets()
+  -- Models the real neutral loader: it records presses but never invokes
+  -- cancellation while selectionInterrupt is set.
+  local function decliningLoading(inputs)
+    local presentation = {}
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw() end
+    function presentation:dispose() end
+    function presentation:keypressed(_, key)
+      inputs[#inputs + 1] = { kind = "key", key = key }
+    end
+    function presentation:gamepadpressed(_, _, button)
+      inputs[#inputs + 1] = { kind = "gamepad", button = button }
+    end
+    function presentation:touchpressed() end
+    function presentation:touchreleased() end
+    function presentation:mousepressed() end
+    function presentation:mousereleased() end
+    function presentation:adoptGeneratedAssets()
+      return true
+    end
+    return presentation
+  end
+  local function fakeHost()
+    local host = {}
+    function host.requestMilestone(name, _)
+      if name == "startup-audio" or name == "startup-loader" or name == "startup-title" then
+        return true, nil
+      end
+      return false, nil
+    end
+    function host.requestOpeningScene(_, _)
+      return true, nil
+    end
+    return host
+  end
+  local function fakeMovie()
+    local movie = {}
+    function movie:updateFixed() end
+    function movie:draw() end
+    function movie:resize() end
+    function movie:skipAllowed()
+      return false
+    end
+    function movie:requestSkip()
+      return false
+    end
+    function movie:isFinished()
+      return false
+    end
+    function movie:sceneNumber()
+      return 1
+    end
+    function movie:dispose() end
+    return movie
+  end
+  local ok, err = xpcall(function()
+    CacheFs.forVersion = function(_)
+      return {}
+    end
+    MovieModule.loadValidatedScenes = function()
+      return { {}, {}, {}, {}, {} }
+    end
+    -- First entry: a rejected acknowledgement holds the loader with a
+    -- visible diagnostic instead of admitting the movie.
+    do
+      local staged = fakeMovie()
+      MovieModule.new = function(_)
+        return staged
+      end
+      local inputs, recovered = {}, 0
+      local state = StartupTitleState.new({
+        versionId = "heartgold",
+        epoch = 41,
+        cacheFs = generatedView(),
+        assetRuntime = selectedRuntime(),
+        derivedAssets = fakeHost(),
+        stageMenu = function()
+          error("rejected soundtrack never stages a menu")
+        end,
+        onFinished = function()
+          error("rejected soundtrack never finishes")
+        end,
+        onCancel = function()
+          recovered = recovered + 1
+        end,
+        isCurrent = function()
+          return true
+        end,
+        width = 800,
+        height = 600,
+        loading = decliningLoading(inputs),
+        admitOpening = function()
+          return true
+        end,
+        audio = {
+          openingReady = function()
+            return false, "synthetic soundtrack rejection"
+          end,
+        },
+      })
+      for _ = 1, 5 do
+        state:update(SourceTick.DT)
+      end
+      Assert.equal(state.phase, "loading", "a rejected first soundtrack holds the loader for retry")
+      Assert.notNil(state.audioError, "the rejected soundtrack records its diagnostic")
+      local status = state:_status()
+      Assert.notNil(status, "the rejected soundtrack keeps a visible diagnostic")
+      Assert.equal(#inputs, 0, "no loader input precedes recovery")
+      state:keypressed("escape")
+      Assert.equal(recovered, 1, "keyboard escapes a persistent rejected soundtrack")
+      Assert.equal(state.phase, "cancelled", "the keyboard press is consumed as recovery")
+      state:dispose()
+    end
+    -- Attract-loop reentry: no opening admission remains, yet the same
+    -- rejected soundtrack stays escapable through all three routes.
+    for _, route in ipairs({ "key", "gamepad", "touch" }) do
+      local staged = fakeMovie()
+      MovieModule.new = function(_)
+        return staged
+      end
+      local inputs, recovered = {}, 0
+      local state = StartupTitleState.new({
+        versionId = "heartgold",
+        epoch = 42,
+        cacheFs = generatedView(),
+        assetRuntime = selectedRuntime(),
+        derivedAssets = fakeHost(),
+        stageMenu = function()
+          error("reentry rejection never stages a menu")
+        end,
+        onFinished = function()
+          error("reentry rejection never finishes")
+        end,
+        onCancel = function()
+          recovered = recovered + 1
+        end,
+        isCurrent = function()
+          return true
+        end,
+        width = 800,
+        height = 600,
+        loading = decliningLoading(inputs),
+        audio = {
+          openingReady = function()
+            return false, "synthetic attract soundtrack rejection"
+          end,
+        },
+      })
+      for _ = 1, 5 do
+        state:update(SourceTick.DT)
+      end
+      Assert.equal(state.phase, "loading", "a rejected reentry soundtrack holds the loader")
+      Assert.notNil(state.audioError, "the reentry rejection records its diagnostic")
+      if route == "key" then
+        state:keypressed("escape")
+      elseif route == "gamepad" then
+        state:gamepadpressed(nil, "b")
+      else
+        state:touchpressed(7, 10, 10)
+      end
+      Assert.equal(recovered, 1, "reentry soundtrack escapes through " .. route)
+      state:dispose()
+    end
+    -- Missing audio is terminal: it moves to the recoverable error path
+    -- with the same keyboard recovery.
+    do
+      local staged = fakeMovie()
+      MovieModule.new = function(_)
+        return staged
+      end
+      local recovered = 0
+      local state = StartupTitleState.new({
+        versionId = "heartgold",
+        epoch = 43,
+        cacheFs = generatedView(),
+        assetRuntime = selectedRuntime(),
+        derivedAssets = fakeHost(),
+        stageMenu = function()
+          error("missing audio never stages a menu")
+        end,
+        onFinished = function()
+          error("missing audio never finishes")
+        end,
+        onCancel = function()
+          recovered = recovered + 1
+        end,
+        isCurrent = function()
+          return true
+        end,
+        width = 800,
+        height = 600,
+        loading = decliningLoading({}),
+        admitOpening = function()
+          return true
+        end,
+        audio = nil,
+      })
+      for _ = 1, 5 do
+        state:update(SourceTick.DT)
+      end
+      Assert.equal(state.phase, "error", "missing audio moves to the recoverable error path")
+      state:keypressed("escape")
+      Assert.equal(recovered, 1, "keyboard recovers missing audio")
+      state:dispose()
+    end
+  end, debug.traceback)
+  CacheFs.forVersion = saved.forVersion
+  MovieModule.loadValidatedScenes = saved.loadScenes
+  MovieModule.new = saved.movieNew
+  restoreTitle()
   if not ok then
     error(err, 0)
   end

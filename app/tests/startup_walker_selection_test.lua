@@ -7,46 +7,6 @@ local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
 
 local T = {}
 
--- Direct selection needs an actual managed source. Reuse the runner's archive
--- when present; otherwise publish from the validated user-owned source and
--- return the fixture-owned path for deterministic cleanup.
----@param versionId string
----@return boolean? published
----@return string? ownedPath
----@return unknown? failure
-local function ensureManagedSource(versionId)
-  local GameVersion = require("romdump.src.source.GameVersion")
-  local RomArchive = require("romdump.src.source.RomArchive")
-  local info = GameVersion.info(versionId)
-  if info == nil or type(info.sha1) ~= "string" then
-    return nil, nil, "unknown managed version"
-  end
-  if RomArchive.recoverablePath(info.sha1) ~= nil then
-    return true, nil, nil
-  end
-  local romFs, source = require("tests.rom.support.RomSourcePath").openReader(versionId)
-  if romFs == nil then
-    return nil, nil, source
-  end
-  local bytes = source:read(0, source:size())
-  romFs:close()
-  source:release()
-  if bytes == nil then
-    return nil, nil, "managed source could not be read"
-  end
-  local byteData = love.data.newByteData(bytes)
-  local prepared, prepareError = RomArchive.prepare(info, byteData, GameVersion)
-  byteData:release()
-  if prepared == nil then
-    return nil, nil, prepareError
-  end
-  local published, publishError = RomArchive.publish(prepared)
-  if not published then
-    return nil, nil, publishError
-  end
-  return true, prepared.canonical, nil
-end
-
 local function newChannelHost()
   local function newChannel()
     local queue = {}
@@ -588,10 +548,20 @@ function T.new_epochs_draw_independent_pairs_without_cache_scan()
         App._iconRepairAttempted[info.sha1] = true
       end
     end
-    local managed, managedPath, managedFailure = ensureManagedSource("heartgold")
-    Assert.isTrue(managed == true, "direct selection requires a managed source: " .. tostring(managedFailure))
-    ownedManagedPath = managedPath
+    -- Synthetic managed source at the archive boundary: no real ROM is
+    -- required to exercise epoch/pair selection.
+    local RomArchive = require("romdump.src.source.RomArchive")
+    local originalRecoverable = RomArchive.recoverablePath
+    local heartgoldInfo = require("romdump.src.source.GameVersion").info("heartgold")
+    RomArchive.recoverablePath = function(sha1)
+      if heartgoldInfo ~= nil and sha1 == heartgoldInfo.sha1 then
+        return "managed/synthetic-heartgold.zip"
+      end
+      return originalRecoverable(sha1)
+    end
+    ownedManagedPath = nil
     App._selectVersion("heartgold")
+    RomArchive.recoverablePath = originalRecoverable
     Assert.equal(App.pairIndex, 7, "the first epoch keeps its drawn pair")
     for _ = 1, 5 do
       App.update(0.016)

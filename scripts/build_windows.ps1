@@ -25,17 +25,15 @@ if wanted == "dev":
 with zipfile.ZipFile(payload) as archive:
     identity = archive.read("app/src/BuildInfo.lua").decode("utf-8")
     version = re.search(r'version\s*=\s*"([^"]+)"', identity)
-    commit = re.search(r'commit\s*=\s*"([0-9a-f]{40})"', identity)
-    if version is None or commit is None or version.group(1) != wanted:
+    if version is None or version.group(1) != wanted:
         raise SystemExit("build_windows: payload identity does not match --version")
-    validate_identity(version.group(1), commit.group(1))
+    validate_identity(version.group(1))
     if archive.testzip() is not None:
         raise SystemExit("build_windows: payload CRC verification failed")
-print(commit.group(1))
 print(hashlib.sha256(payload.read_bytes()).hexdigest())
 '@ | python3 - $Love $Version
 if ($LASTEXITCODE -ne 0) { throw "build_windows: payload validation failed" }
-$payloadCommit, $payloadSha = $identity
+$payloadSha = $identity
 
 $pins = Get-Content -Raw -LiteralPath (Join-Path $repo "scripts/packaging/pins.json") | ConvertFrom-Json
 $runtimePin = $pins.love_desktop.windows
@@ -162,7 +160,7 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
     throw
   }
   if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Recurse -Force }
-  Write-Output "build_windows: wrote $Output (payload $payloadSha, commit $payloadCommit)"
+  Write-Output "build_windows: wrote $Output (payload $payloadSha)"
 } finally {
   Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
   if (-not $promoted) { Remove-Item -LiteralPath $temporaryOutput -Force -ErrorAction SilentlyContinue }

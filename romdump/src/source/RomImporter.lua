@@ -708,6 +708,35 @@ end
 -- thread actually exits and its outbox is drained. A direct (non-queued)
 -- import is untouched. A pending temporary stage has no reader and is removed
 -- immediately; an active worker removes its stage after source closure.
+-- Process-shutdown drain for the single worker lease. Signals cancellation
+-- for any queued session, then boundedly waits for the retired physical
+-- worker to terminate and drains its outbox at this owner so no late
+-- packet can publish after the LÖVE session closes. Never waits for a
+-- worker-owned publication: the commit gate in App.quit vetoes shutdown
+-- once publication was authorized. Bounded to avoid stalling quit on a
+-- wedged worker.
+---@param timeoutSeconds number? bounded join budget in seconds
+function RomImporter:shutdownJoin(timeoutSeconds)
+  self:cancelQueued()
+  local budget = timeoutSeconds or 2
+  local iterations = math.max(1, math.min(200, math.floor(budget / 0.01)))
+  for _ = 1, iterations do
+    if activeWorkerLease == nil then
+      break
+    end
+    self:update()
+    if activeWorkerLease == nil then
+      break
+    end
+    if love ~= nil and love.timer ~= nil and type(love.timer.sleep) == "function" then
+      pcall(love.timer.sleep, 0.01)
+    else
+      break
+    end
+  end
+  self:update()
+end
+
 function RomImporter:cancelQueued()
   local queued = self._queued
   local pending = self._pendingStart

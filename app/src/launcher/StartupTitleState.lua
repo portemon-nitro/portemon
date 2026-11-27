@@ -430,9 +430,19 @@ function StartupTitleState:_maybeEnterMovie()
       return
     end
   end
+  -- A missing session/callback or a raised play failure is terminal for
+  -- this entry: leave loading for the recoverable error path. A rejected
+  -- start (unprimed host output, unaccepted voice) stays in loading for
+  -- retry, with an explicit escape route while its diagnostic is visible.
+  -- Pending audio readiness (audioReady false) keeps the loader.
   if not self:_confirmSoundtrackStart() then
+    if self._soundtrackTerminal == true then
+      self._soundtrackTerminal = nil
+      self.phase = "error"
+    end
     return
   end
+  self._soundtrackTerminal = nil
   self.openingAdmissionPending = false
   if not self.warmupFired and type(self.beginWarmup) == "function" then
     self.warmupFired = true
@@ -460,9 +470,10 @@ function StartupTitleState:_maybeEnterMovie()
 end
 
 -- Confirms the staged movie's soundtrack start without advancing a tick.
--- Pending banks hold the loader; a missing session or callback, a raised
--- play failure, or a rejected start records its diagnostic and admits no
--- movie. Returns true only after the start is acknowledged.
+-- Pending banks and rejected starts hold the loader for retry; a missing
+-- session or callback or a raised play failure is terminal and moves to
+-- the recoverable error path. Returns true only after the start is
+-- acknowledged.
 ---@return boolean
 function StartupTitleState:_confirmSoundtrackStart()
   if not self.audioReady then
@@ -470,8 +481,13 @@ function StartupTitleState:_confirmSoundtrackStart()
   end
   if self.audio == nil or type(self.audio.openingReady) ~= "function" then
     self.audioError = self.audioError or "startup audio unavailable"
+    self._soundtrackTerminal = true
     return false
   end
+  -- A raised priming failure (for example a refused host queue) holds the
+  -- loader for retry: the next update reprimes without restarting the
+  -- accepted voice. The loading diagnostic stays escapable while it
+  -- persists, so no terminal transition is needed here.
   local ok, acknowledged, reason = pcall(self.audio.openingReady)
   if not ok then
     self.audioError = acknowledged
@@ -483,6 +499,7 @@ function StartupTitleState:_confirmSoundtrackStart()
   end
   self.openingStarted = true
   self.audioError = nil
+  self._soundtrackTerminal = nil
   return true
 end
 
@@ -1127,12 +1144,17 @@ function StartupTitleState:_pressPointer(pointerId, x, y)
   -- selector: the transferred neutral loader declines cancellation while
   -- selectionInterrupt is set, so this must precede any loader delegation.
   -- Any press recovers once; the press is consumed and never becomes a
-  -- movie/title skip.
+  -- movie/title skip. A pending soundtrack failure in loading shows the
+  -- same diagnostic while retrying, so it owns the same escape.
   if self.phase == "error" then
     self:_recoverToSelection()
     return
   end
-  if (self.phase == "loading" or self.phase == "error") and self.loading ~= nil then
+  if self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil then
+    self:_recoverToSelection()
+    return
+  end
+  if self.phase == "loading" and self.loading ~= nil then
     if pointerId:sub(1, 6) == "touch:" and type(self.loading.touchpressed) == "function" then
       self.loading:touchpressed(pointerId:sub(7), x, y)
       return
@@ -1150,26 +1172,26 @@ function StartupTitleState:_pressPointer(pointerId, x, y)
     self:_requestMovieSkip()
     return
   end
-  if (self.phase == "title" or self.phase == "error") and self.title ~= nil then
-    if self.phase == "title" then
-      self.pointerCapture = pointerId
-      self.canceledPointers[pointerId] = true
-      self:_requestSkip()
-    end
+  if self.phase == "title" and self.title ~= nil then
+    self.pointerCapture = pointerId
+    self.canceledPointers[pointerId] = true
+    self:_requestSkip()
   end
 end
 
 -- A terminal startup failure keeps an explicit route back to the existing
 -- onCancel (edition selector). The transferred loader declines cancellation
 -- while selectionInterrupt is set, so this state must own the recovery for
--- keyboard, controller and touch. The press is consumed once and dispatches
--- no stale movie/save action.
-function StartupTitleState:_isTerminalError()
-  return self:_live() and self.phase == "error" and self.onCancel ~= nil
-end
-
+-- keyboard, controller and touch. A pending soundtrack failure in loading
+-- shows the same diagnostic while retrying, so it owns the same escape.
+-- The press is consumed once and dispatches no stale movie/save action.
 function StartupTitleState:_recoverToSelection()
-  if not self:_isTerminalError() then
+  if not self:_live() or self.onCancel == nil then
+    return false
+  end
+  if self.phase == "error" then
+  elseif self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil then
+  else
     return false
   end
   self.phase = "cancelled"
@@ -1263,7 +1285,7 @@ local MODIFIER_KEYS = {
 -- Releases one normalized pointer identity. Touch and mouse releases use
 -- the exact identity their press captured, never a doubly prefixed one.
 function StartupTitleState:_releasePointer(pointerId, x, y)
-  if (self.phase == "loading" or self.phase == "error") and self.loading ~= nil then
+  if self.phase == "loading" and self.loading ~= nil then
     if pointerId:sub(1, 6) == "touch:" and type(self.loading.touchreleased) == "function" then
       self.loading:touchreleased(pointerId:sub(7), x, y)
       return
@@ -1297,18 +1319,22 @@ function StartupTitleState:keypressed(key, _, isrepeat)
   end
   -- Terminal errors recover before the loader sees the press: the loader
   -- declines cancellation while selectionInterrupt is set, which would
-  -- otherwise strand the diagnostic screen without a way back.
+  -- otherwise strand the diagnostic screen without a way back. A pending
+  -- soundtrack failure in loading shows the same diagnostic while
+  -- retrying, so it owns the same escape before loader delegation.
   if self.phase == "error" then
     if key == "escape" or key == "backspace" then
       self:_recoverToSelection()
     end
     return
   end
-  if
-    (self.phase == "loading" or self.phase == "error")
-    and self.loading ~= nil
-    and type(self.loading.keypressed) == "function"
-  then
+  if self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil then
+    if key == "escape" or key == "backspace" then
+      self:_recoverToSelection()
+    end
+    return
+  end
+  if self.phase == "loading" and self.loading ~= nil and type(self.loading.keypressed) == "function" then
     self.loading:keypressed(key, _, isrepeat)
     return
   end
@@ -1331,18 +1357,21 @@ end
 function StartupTitleState:gamepadpressed(joystick, button)
   -- Controller recovery for terminal errors: B returns to selection even
   -- though the loader declines cancellation. Other buttons are swallowed so
-  -- no stale skip leaks into the next stage.
+  -- no stale skip leaks into the next stage. A pending soundtrack failure
+  -- in loading owns the same escape.
   if self.phase == "error" then
     if button == "b" then
       self:_recoverToSelection()
     end
     return
   end
-  if
-    (self.phase == "loading" or self.phase == "error")
-    and self.loading ~= nil
-    and type(self.loading.gamepadpressed) == "function"
-  then
+  if self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil then
+    if button == "b" then
+      self:_recoverToSelection()
+    end
+    return
+  end
+  if self.phase == "loading" and self.loading ~= nil and type(self.loading.gamepadpressed) == "function" then
     self.loading:gamepadpressed(joystick, button)
     return
   end
@@ -1357,11 +1386,7 @@ function StartupTitleState:mousepressed(x, y, button)
 end
 
 function StartupTitleState:mousemoved(x, y)
-  if
-    (self.phase == "loading" or self.phase == "error")
-    and self.loading ~= nil
-    and type(self.loading.mousemoved) == "function"
-  then
+  if self.phase == "loading" and self.loading ~= nil and type(self.loading.mousemoved) == "function" then
     self.loading:mousemoved(x, y)
   end
 end
@@ -1375,11 +1400,7 @@ function StartupTitleState:touchpressed(id, x, y)
 end
 
 function StartupTitleState:touchmoved(id, x, y)
-  if
-    (self.phase == "loading" or self.phase == "error")
-    and self.loading ~= nil
-    and type(self.loading.touchmoved) == "function"
-  then
+  if self.phase == "loading" and self.loading ~= nil and type(self.loading.touchmoved) == "function" then
     self.loading:touchmoved(id, x, y)
   end
 end
