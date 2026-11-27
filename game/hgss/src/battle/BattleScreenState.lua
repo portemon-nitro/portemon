@@ -103,6 +103,9 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _registrationChild table<string, unknown>? open battle-owned registration presentation
 ---@field _graphicsScope BattleScreenState.GraphicsScope? persistent scope-counting forwarder over the host graphics
 ---@field _registrationComplete boolean true once the card completes its terminal return
+---@field _cardFade integer? parent-owned battle fade around the card: climbs to black after the card announcement settles, holds black through the popup, then falls as the restored scene fades back in; nil while no card runs
+---@field _restoredFadeArmed boolean true once the black handoff frame after a card presented, releasing the restored fade
+---@field _cardFadeSub integer banked source ticks toward the next restored-fade coefficient
 ---@field _pokedex table<string, unknown>? borrowed field presentation resource owner behind the card
 ---@field _registrationAudio table<string, unknown>? borrowed registration audio adapter behind the card
 ---@field _onResultMusic fun(word: string): boolean? bound terminal-music beat behind the outcome narration
@@ -1260,6 +1263,9 @@ function BattleScreenState.new(opts)
     _pendingRegistration = nil,
     _registrationChild = nil,
     _registrationComplete = false,
+    _cardFade = nil,
+    _restoredFadeArmed = false,
+    _cardFadeSub = 0,
     _pokedex = opts.pokedex,
     _registrationAudio = opts.registrationAudio,
     _onResultMusic = opts.onResultMusic,
@@ -2889,8 +2895,10 @@ function BattleScreenState:_snapshot(borrowStatic)
   -- destroying its graphics and creating the Dex popup; the nickname
   -- question likewise centers the specimen over black. Fade the
   -- battlefield only while the registration card is still running or the
-  -- nickname question owns the outcome prompt. A completed card kept
-  -- for the handoff no longer drives the fade on its own.
+  -- nickname question owns the outcome prompt. The card-owned fade steps
+  -- from the settled announcement through the restored scene; catches
+  -- without a card hold black. A completed card kept for the handoff no
+  -- longer drives the fade on its own.
   local sceneAnimation = self._scene:animationFrame()
   local registrationActive = self._registrationChild ~= nil and self._registrationComplete ~= true
   local nicknameActive = self:_completionQuestionActive()
@@ -2932,7 +2940,11 @@ function BattleScreenState:_snapshot(borrowStatic)
       compositor = {}
       main.compositor = compositor
     end
-    compositor.battlefieldFade = { color = { r = 0, g = 0, b = 0 }, amount = 16 }
+    local fadeAmount = 16
+    if self._cardFade ~= nil then
+      fadeAmount = self._cardFade
+    end
+    compositor.battlefieldFade = { color = { r = 0, g = 0, b = 0 }, amount = fadeAmount }
     sceneAnimation = copy
   end
   return {
@@ -3834,6 +3846,11 @@ function BattleScreenState:_consumeCompletion(event)
     return self:_consumeEvolutionCompletion(event)
   end
   if completion.stage == "question" then
+    -- The nickname question accepts nothing until the restored scene
+    -- finishes fading back in after a card retires.
+    if self:_restoredSceneFading() then
+      return true
+    end
     if event.type == "navigate" then
       completion.answer = completion.answer == 1 and 2 or 1
       self._selection = completion.answer == 1 and "yes" or "no"
@@ -3909,6 +3926,11 @@ function BattleScreenState:_drainCompletion()
       nickname = result.choice.text,
     })
   end
+end
+
+---@return boolean fading true while a retired card still fades its restored scene back in
+function BattleScreenState:_restoredSceneFading()
+  return self._cardFade ~= nil and self._cardFade > 0 and self:_completionQuestionActive()
 end
 
 ---@return boolean active true while the capture-nickname Yes/No question owns the outcome prompt
@@ -6124,7 +6146,8 @@ end
 -- capture-nickname completion opens and disposes it, so the swap is atomic
 -- with no battle-UI flash in between.
 ---@param dt number accepted presentation seconds
-function BattleScreenState:_pollRegistrationChild(dt)
+---@param sourceTicks integer source ticks the parent timeline advanced on this update
+function BattleScreenState:_pollRegistrationChild(dt, sourceTicks)
   local child = self._registrationChild --[[@as table<string, unknown>?]]
   if child == nil then
     return
@@ -6153,6 +6176,24 @@ function BattleScreenState:_pollRegistrationChild(dt)
     end
     -- Keeps the frozen terminal cover for the nickname handoff; the
     -- capture-nickname open disposes it atomically.
+    return
+  end
+  -- The outgoing battle fade runs after the borrowed announcement settles
+  -- and before the popup publishes: while the card still waits on its
+  -- announcement text with the cue settled, hold the card and step the
+  -- real scene fade toward black one coefficient per source tick instead
+  -- of snapping it. The card fade-in starts from black once the scene
+  -- reaches it.
+  local phase = type(status.phase) == "string" and status.phase or ""
+  local fade = self._cardFade
+  if fade == nil then
+    fade = 0
+  end
+  if phase == "announcement" and self._timeline:settled() and fade < 16 then
+    local steps = type(sourceTicks) == "number" and sourceTicks or 0
+    if steps > 0 then
+      self._cardFade = math.min(16, fade + steps)
+    end
     return
   end
   local okStep, stepErr = pcall(stepChild, child, dt)
@@ -6401,6 +6442,7 @@ function BattleScreenState:_consume(event)
       local control = event.control --[[@as table<string, unknown>?]]
       if
         self:_completionQuestionActive()
+        and not self:_restoredSceneFading()
         and type(control) == "table"
         and control.scope == "two-option"
         and (control.id == "confirm" or control.id == "back")
@@ -6430,6 +6472,7 @@ function BattleScreenState:_consume(event)
         local control = event.control --[[@as table<string, unknown>?]]
         if
           self:_completionQuestionActive()
+          and not self:_restoredSceneFading()
           and type(control) == "table"
           and control.scope == "two-option"
           and (control.id == "confirm" or control.id == "back")
@@ -6552,6 +6595,11 @@ function BattleScreenState:_openRegistrationChild()
     return
   end
   self._registrationChild = child --[[@as table<string, unknown>]]
+  -- The battle scene stays fully lit for the card announcement print and
+  -- hold; the outgoing fade to black starts only once that text settles.
+  self._cardFade = 0
+  self._restoredFadeArmed = false
+  self._cardFadeSub = 0
 end
 
 ---@param entry table<string, unknown> accepted move option under sealing
@@ -8481,12 +8529,36 @@ function BattleScreenState:updateFixed(dt)
   -- static final view and its lease until disposal. A card failure fails
   -- the screen once.
   if self._registrationChild ~= nil and self._mode ~= "failed" then
-    self:_pollRegistrationChild(dt)
+    self:_pollRegistrationChild(dt, sourceTicks)
   end
   if self._mode == "failed" then
     self:_disposeRegistrationChild()
   end
   self:_drainCompletion()
+  -- The restored scene fades back in only after a card retires: catches
+  -- without a card keep the immediate black scene and prompt, while a
+  -- retired card steps its black cover down one coefficient per four
+  -- source ticks before the nickname question accepts answers.
+  if
+    self._registrationChild == nil
+    and self._cardFade ~= nil
+    and self._mode ~= "failed"
+    and self:_completionQuestionActive()
+  then
+    -- Hold the black handoff frame for one tick so the restored scene
+    -- starts from black; only then step the incoming fade one
+    -- coefficient per four source ticks, so the question stays gated
+    -- well past the first visible fade.
+    if not self._restoredFadeArmed then
+      self._restoredFadeArmed = true
+    else
+      self._cardFadeSub = self._cardFadeSub + sourceTicks
+      while self._cardFadeSub >= 4 do
+        self._cardFadeSub = self._cardFadeSub - 4
+        self._cardFade = math.max(0, self._cardFade - 1)
+      end
+    end
+  end
   local activeEffectMode = self._mode == "command" or self._mode == "moves" or self._mode == "target"
   if activeEffectMode then
     if not self._activeEffectRunning then

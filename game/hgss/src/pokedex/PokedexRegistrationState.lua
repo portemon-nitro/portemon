@@ -1,14 +1,16 @@
 -- Battle-owned first-catch registration presentation: one complete
 -- announcement and card sequence for a single frozen capture. The state
 -- borrows its presentation owner, battle timeline, and audio adapter; it
--- owns exactly one resource lease and one application session. It never
--- inspects live knowledge, mutates mechanics, or publishes captures: the
--- existing committer stays the only publisher. Draw, status, and input
--- mapping stay read-only with respect to clocks and audio; only fixed
--- updates advance the private thirty-hertz source clock.
+-- owns exactly one resource lease and one application session. It voices
+-- one cry and one accepted touch-dismissal select through the borrowed
+-- audio adapter. It never inspects live knowledge, mutates mechanics, or
+-- publishes captures: the existing committer stays the only publisher.
+-- Draw, status, and input mapping stay read-only with respect to clocks;
+-- only fixed updates advance the private thirty-hertz source clock.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 
 ---@class PokedexRegistrationState
 ---@field _registration table<string, unknown> detached frozen first-catch facts
@@ -37,9 +39,9 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 local PokedexRegistrationState = {}
 PokedexRegistrationState.__index = PokedexRegistrationState
 
--- The source post-text wait is thirty main-task updates at thirty hertz;
--- the borrowed battle timeline counts sixty internal ticks per second.
-local SOURCE_STEP = 1 / 30
+-- The source post-text wait is thirty main-task updates at the accepted
+-- HGSS source cadence; the borrowed battle timeline counts sixty internal
+-- ticks per second.
 local ANNOUNCE_HOLD_TICKS = 30
 local FADE_MAX = 16
 local FADE_STEP = 2
@@ -123,7 +125,10 @@ local function cardObjects(self, shown)
       age = self._spriteTick,
       visible = shown,
     }
-    if type(types[2]) == "string" and types[2] ~= "" and types[2] ~= types[1] then
+    -- A duplicated or Normal second type projects no second icon: the
+    -- popup task suppresses the second slot when it repeats the first or
+    -- names the default Normal type.
+    if type(types[2]) == "string" and types[2] ~= "" and types[2] ~= types[1] and types[2] ~= "normal" then
       objects[#objects + 1] = {
         subject = "type-2",
         choice = types[2],
@@ -136,20 +141,21 @@ local function cardObjects(self, shown)
       }
     end
   end
+  -- The popup always stages the caught species footprint, even for the
+  -- origin forme: the popup task loads the species art unconditionally
+  -- (blank when the source art is blank) instead of applying the browser
+  -- sprite exclusion.
   if type(specimen.species) == "string" and specimen.species ~= "" then
-    local originHidden = specimen.species == "GIRATINA" and specimen.form == 1
-    if not originHidden then
-      objects[#objects + 1] = {
-        subject = "footprint",
-        choice = specimen.species,
-        pane = "information",
-        priority = 0,
-        x = 120,
-        y = 80,
-        age = self._spriteTick,
-        visible = shown,
-      }
-    end
+    objects[#objects + 1] = {
+      subject = "footprint",
+      choice = specimen.species,
+      pane = "information",
+      priority = 0,
+      x = 120,
+      y = 80,
+      age = self._spriteTick,
+      visible = shown,
+    }
   end
   return objects
 end
@@ -426,24 +432,29 @@ local function stepBanner(self)
   end
 end
 
+-- Observes the borrowed announcement without advancing any popup clock:
+-- preparation, the announcement print and hold, and the parent battle fade
+-- run before the popup exists, so the banner and sprite ages stay frozen
+-- until creation.
+---@param self PokedexRegistrationState
+local function stepAnnouncement(self)
+  local okSettled, settled = pcall(self._timeline.settled, self._timeline)
+  if okSettled and settled == true then
+    -- The native transition fades the battle main before publishing
+    -- the card: the card is hidden through the announcement, then
+    -- fades in once from black. Never fade an already-visible card
+    -- out and back in.
+    self._pictureX = CARD_PICTURE_X
+    self._spritesHidden = false
+    self._palette = fadeInit(FADE_MAX, 0, true)
+    self._picture = fadeInit(FADE_MAX, 0, false)
+    self._phase = "waitCardFade"
+  end
+end
+
 ---@param self PokedexRegistrationState
 local function stepSource(self)
   stepBanner(self)
-  if self._phase == "announcement" then
-    local okSettled, settled = pcall(self._timeline.settled, self._timeline)
-    if okSettled and settled == true then
-      -- The native transition fades the battle main before publishing
-      -- the card: the card is hidden through the announcement, then
-      -- fades in once from black. Never fade an already-visible card
-      -- out and back in.
-      self._pictureX = CARD_PICTURE_X
-      self._spritesHidden = false
-      self._palette = fadeInit(FADE_MAX, 0, true)
-      self._picture = fadeInit(FADE_MAX, 0, false)
-      self._phase = "waitCardFade"
-    end
-    return
-  end
   if self._phase == "waitCardFade" then
     fadeStepPalette(self._palette)
     fadeStepPicture(self._picture)
@@ -559,15 +570,18 @@ function PokedexRegistrationState:updateFixed(dt)
     return
   end
   self._accumulator = self._accumulator + dt
-  while self._accumulator >= SOURCE_STEP - 1e-12 do
-    self._accumulator = self._accumulator - SOURCE_STEP
+  while self._accumulator >= SourceTick.DT - 1e-12 do
+    self._accumulator = self._accumulator - SourceTick.DT
     if self._accumulator < 0 then
       self._accumulator = 0
     end
-    self._spriteTick = self._spriteTick + 1
     if self._complete then
-      stepBanner(self)
+      -- The frozen terminal never advances: the deleted popup owns no
+      -- task, so sprite ages and the banner stay exactly as retired.
+    elseif self._phase == "announcement" then
+      stepAnnouncement(self)
     else
+      self._spriteTick = self._spriteTick + 1
       stepSource(self)
     end
     if self._error ~= nil then
@@ -600,7 +614,19 @@ function PokedexRegistrationState:input(events)
     if type(event) == "table" then
       local kind = event.type
       if kind == "confirm" or kind == "touch_new" then
-        if self._phase == "readyCard" and self._dismissible then
+        if self._phase == "readyCard" and self._dismissible and not self._dismissRequested then
+          if kind == "touch_new" then
+            -- Only the fresh touch edge voices select, exactly once: the
+            -- button edge stays silent, and a repeated edge before
+            -- departure never replays it.
+            local audio = self._audio --[[@as table<string, unknown>]]
+            local select = audio.select --[[@as fun()]]
+            local okSelect, selectErr = pcall(select)
+            if not okSelect then
+              self._error = "the registration select failed: " .. tostring(selectErr)
+              return
+            end
+          end
           self._dismissRequested = true
         end
       end

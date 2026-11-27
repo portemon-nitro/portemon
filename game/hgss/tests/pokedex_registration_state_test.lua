@@ -677,29 +677,337 @@ function T.completed_card_keeps_departure_end_state()
   child:dispose()
 end
 
--- The banner strip free-runs from card creation: palette 7 on the 16th
--- source update, back to palette 0 on the 32nd, independent of the cry
--- and of dismissal. The first update only resolves preparation, so the
--- source timer starts with the second accepted update.
+-- The banner strip runs on the popup task, not the wall clock: bank 0 at
+-- creation, palette 7 on the 16th popup update and back to palette 0 on
+-- the 32nd, looping independently of the cry and of dismissal.
+-- Preparation and the borrowed announcement accrue nothing before the
+-- popup exists: the popup task counts its first update at creation, after
+-- the battle announcement settles and the outgoing scene fade completes.
 function T.banner_flashes_from_creation_and_loops_independently_of_the_cry()
   local Child = requirePresent("banner strip free-run")
-  local child = newChild(Child, frozenRegistration(), newPokedexFake({ "ready" }), newAudioFake())
+  local child, timeline = newChild(Child, frozenRegistration(), newPokedexFake({ "ready" }), newAudioFake())
   local function advance(count)
     for _ = 1, count do
       child:updateFixed(1 / 30)
     end
   end
-  advance(16)
-  Assert.equal(child:view().banner, 0, "the first fifteen source updates keep palette 0")
-  advance(1)
-  Assert.equal(child:view().banner, 7, "the sixteenth source update lights the banner")
+  -- Child-only updates never settle the borrowed announcement: no banner
+  -- or sprite age accrues before popup creation.
+  advance(20)
+  Assert.equal(child:status().phase, "announcement", "setup: the card waits on its borrowed announcement")
+  Assert.equal(child:view().banner, 0, "the announcement accrues no banner before popup creation")
+  Assert.equal(child:view().spriteTick, 0, "the announcement accrues no sprite age before popup creation")
+  -- Drive the borrowed clock to popup creation.
+  local created = false
+  for _ = 1, 1200 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    child:updateFixed(1 / 30)
+    if child:status().phase ~= "announcement" and child:status().phase ~= "preparing" then
+      created = true
+      break
+    end
+  end
+  Assert.isTrue(created, "the settled announcement creates the popup")
+  Assert.equal(child:view().banner, 0, "the created popup starts at palette 0")
   advance(15)
-  Assert.equal(child:view().banner, 7, "the banner holds palette 7 through the thirty-first source update")
+  Assert.equal(child:view().banner, 0, "the first fifteen popup updates keep palette 0")
   advance(1)
-  Assert.equal(child:view().banner, 0, "the thirty-second source update returns to palette 0")
+  Assert.equal(child:view().banner, 7, "the sixteenth popup update lights the banner")
+  advance(15)
+  Assert.equal(child:view().banner, 7, "the banner holds palette 7 through the thirty-first popup update")
+  advance(1)
+  Assert.equal(child:view().banner, 0, "the thirty-second popup update returns to palette 0")
   advance(16)
   Assert.equal(child:view().banner, 7, "the banner keeps looping after its reset")
   child:dispose()
+end
+
+-- Fresh touch dismisses the ready card with exactly one select sound while
+-- confirmation stays silent; a duplicated or Normal second type never
+-- projects a second icon; the Origin forme still requests its footprint;
+-- contest departures fade both domains without sliding the picture.
+function T.touch_type_and_footprint_follow_popup_rules_with_contest_departure()
+  local Child = requirePresent("touch dismissal, popup type and footprint rules, and contest departure")
+
+  -- A fresh touch edge dismisses with exactly one select sound.
+  do
+    local registration = frozenRegistration()
+    local pokedex = newPokedexFake({ "ready" })
+    local audio = newAudioFake()
+    audio.cryDone = true
+    local selectCalls = 0
+    audio.select = function()
+      selectCalls = selectCalls + 1
+    end
+    local child, timeline = newChild(Child, registration, pokedex, audio)
+    Assert.isTrue(driveToDismissal(child, timeline, 1200), "the card becomes dismissible")
+    child:input({ { type = "touch_new", pointerId = 9 } })
+    Assert.isTrue(pump(child, timeline, 1200), "a fresh touch dismisses the ready card")
+    Assert.equal(selectCalls, 1, "the accepted touch edge plays its select sound exactly once")
+    child:dispose()
+    Assert.equal(pokedex:releases(), 1, "the touch dismissal releases its lease once")
+  end
+
+  -- A confirmation edge dismisses silently.
+  do
+    local registration = frozenRegistration()
+    local pokedex = newPokedexFake({ "ready" })
+    local audio = newAudioFake()
+    audio.cryDone = true
+    local selectCalls = 0
+    audio.select = function()
+      selectCalls = selectCalls + 1
+    end
+    local child, timeline = newChild(Child, registration, pokedex, audio)
+    Assert.isTrue(driveToDismissal(child, timeline, 1200), "the card becomes dismissible")
+    child:input({ { type = "confirm" } })
+    Assert.isTrue(pump(child, timeline, 1200), "a fresh confirmation dismisses the ready card")
+    Assert.equal(selectCalls, 0, "a confirmation dismissal makes no select sound")
+    child:dispose()
+    Assert.equal(pokedex:releases(), 1, "the confirmation dismissal releases its lease once")
+  end
+
+  -- A duplicated or Normal second type projects no second icon.
+  local function secondIconFor(types)
+    local registration = frozenRegistration()
+    local pokedex = newPokedexFake({ "ready" })
+    function pokedex:typesFor(_species, _form)
+      return types
+    end
+    local audio = newAudioFake()
+    audio.cryDone = true
+    local child, timeline = newChild(Child, registration, pokedex, audio)
+    Assert.isTrue(driveToDismissal(child, timeline, 1200), "the card becomes dismissible")
+    local objects = assert(child:view().objects, "the ready card carries its intents")
+    local second = nil
+    for _, intent in ipairs(objects) do
+      if type(intent) == "table" and intent.subject == "type-2" then
+        second = intent
+      end
+    end
+    child:dispose()
+    return second
+  end
+  Assert.isNil(secondIconFor({ "water", "water" }), "a duplicated second type projects no second icon")
+  Assert.isNil(secondIconFor({ "water", "normal" }), "a Normal second type projects no second icon")
+
+  -- The Origin forme still requests its footprint art.
+  do
+    local monCatalog, catalog = Fixture.catalogs()
+    local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
+    local DexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+    local specimen =
+      dexOwner:describe(DexFixture.makeMon(monCatalog, { species = "GIRATINA", form = 1, personality = 12345 }))
+    local registration = {
+      captureId = 9,
+      mode = "wild",
+      dexMode = "national",
+      displayName = specimen.species,
+      specimen = specimen,
+    }
+    local pokedex = newPokedexFake({ "ready" })
+    local audio = newAudioFake()
+    audio.cryDone = true
+    local child, timeline = newChild(Child, registration, pokedex, audio)
+    Assert.isTrue(driveToDismissal(child, timeline, 1200), "the Origin card becomes dismissible")
+    local objects = assert(child:view().objects, "the Origin card carries its intents")
+    local foot = nil
+    for _, intent in ipairs(objects) do
+      if type(intent) == "table" and intent.subject == "footprint" then
+        foot = intent
+      end
+    end
+    Assert.notNil(foot, "the popup footprint loads even for the Origin forme")
+    assert(foot ~= nil, "the Origin footprint exists")
+    Assert.equal(foot.choice, "GIRATINA", "the footprint names the frozen species")
+    Assert.equal(foot.x, 120, "the footprint keeps its native column")
+    Assert.equal(foot.y, 80, "the footprint keeps its native row")
+    child:dispose()
+  end
+
+  -- A contest departure fades both domains without sliding the picture.
+  do
+    local registration = frozenRegistration()
+    registration.mode = "contest"
+    local pokedex = newPokedexFake({ "ready" })
+    local audio = newAudioFake()
+    audio.cryDone = true
+    local child, timeline = newChild(Child, registration, pokedex, audio)
+    Assert.isTrue(driveToDismissal(child, timeline, 1200), "the contest card becomes dismissible")
+    Assert.equal(#audio.calls, 1, "the contest card cries exactly once")
+    child:input({ { type = "confirm" } })
+    local slid = false
+    for _ = 1, 1200 do
+      timeline:update(TICK, function(_)
+        return true
+      end)
+      child:updateFixed(1 / 30)
+      if child:view().pictureX ~= 48 then
+        slid = true
+      end
+      if child:status().complete == true then
+        break
+      end
+    end
+    Assert.isTrue(child:status().complete == true, "the contest departure completes")
+    Assert.isFalse(slid, "the contest departure never slides the picture")
+    Assert.equal(child:view().pictureX, 48, "the contest exit keeps its creation center")
+    Assert.equal(child:view().paletteFade, 16, "the contest exit fades its cover to black")
+    Assert.equal(child:view().pictureFade, 16, "the contest exit fades its picture to black")
+    child:dispose()
+  end
+end
+
+-- The popup clock accrues only inside the visible card lifetime:
+-- preparation, the borrowed announcement, and the frozen terminal never
+-- advance the banner or sprite ages, equivalent accepted tick sequences
+-- match, and failed acquisition stays explicit with exactly-once release.
+function T.popup_clock_freezes_outside_the_visible_card_lifetime()
+  local Child = requirePresent("popup-only banner and age accounting with lifecycle failures")
+
+  -- Pending preparation accrues nothing.
+  do
+    local registration = frozenRegistration()
+    local pokedex = newPokedexFake({ "pending", "pending", "pending" })
+    local audio = newAudioFake()
+    local child, _ = newChild(Child, registration, pokedex, audio)
+    for _ = 1, 10 do
+      child:updateFixed(1 / 30)
+    end
+    Assert.isTrue(child:status().complete == false, "pending preparation never completes")
+    Assert.equal(child:view().banner, 0, "pending preparation accrues no banner")
+    Assert.equal(child:view().spriteTick, 0, "pending preparation accrues no sprite age")
+    child:dispose()
+    Assert.equal(pokedex:releases(), 1, "disposal after pending preparation releases once")
+  end
+
+  -- The borrowed announcement accrues nothing before popup creation.
+  do
+    local registration = frozenRegistration()
+    local pokedex = newPokedexFake({ "ready" })
+    local audio = newAudioFake()
+    local child, _ = newChild(Child, registration, pokedex, audio)
+    child:updateFixed(1 / 30)
+    Assert.equal(child:status().phase, "announcement", "setup: the card waits on its borrowed announcement")
+    for _ = 1, 20 do
+      child:updateFixed(1 / 30)
+    end
+    Assert.equal(child:status().phase, "announcement", "child quanta alone never settle the parent clock")
+    Assert.equal(child:view().banner, 0, "the announcement accrues no banner before popup creation")
+    Assert.equal(child:view().spriteTick, 0, "the announcement accrues no sprite age before popup creation")
+    child:dispose()
+  end
+
+  -- The frozen terminal never advances once the popup deletes.
+  do
+    local registration = frozenRegistration()
+    local pokedex = newPokedexFake({ "ready" })
+    local audio = newAudioFake()
+    audio.cryDone = true
+    local child, timeline = newChild(Child, registration, pokedex, audio)
+    Assert.isTrue(driveToDismissal(child, timeline, 1200), "the card becomes dismissible")
+    child:input({ { type = "confirm" } })
+    Assert.isTrue(pump(child, timeline, 1200), "the dismissal completes")
+    local frozen = child:view()
+    Assert.equal(frozen.pictureX, 128, "setup: the terminal keeps the centered picture")
+    for _ = 1, 16 do
+      timeline:update(TICK, function(_)
+        return true
+      end)
+      child:updateFixed(1 / 30)
+    end
+    local later = child:view()
+    Assert.equal(later.pictureX, frozen.pictureX, "the frozen terminal never moves its picture")
+    Assert.equal(later.paletteFade, frozen.paletteFade, "the frozen terminal never changes its cover")
+    Assert.equal(later.spriteTick, frozen.spriteTick, "the frozen terminal never advances sprite ages")
+    Assert.equal(later.banner, frozen.banner, "the frozen terminal never advances its banner")
+    child:dispose()
+    Assert.equal(pokedex:releases(), 1, "the terminal releases once")
+  end
+
+  -- Equivalent accepted tick sequences publish the same view.
+  do
+    local function freshPair()
+      local registration = frozenRegistration()
+      local pokedex = newPokedexFake({ "ready" })
+      local audio = newAudioFake()
+      return newChild(Child, registration, pokedex, audio)
+    end
+    local childA, timelineA = freshPair()
+    local childB, timelineB = freshPair()
+    childA:updateFixed(1 / 30)
+    childB:updateFixed(1 / 30)
+    Assert.equal(childA:status().phase, "announcement", "setup: both cards wait on their announcement")
+    for _ = 1, 3 do
+      timelineA:update(TICK, function(_)
+        return true
+      end)
+      childA:updateFixed(1 / 30)
+    end
+    for _ = 1, 3 do
+      timelineB:update(TICK, function(_)
+        return true
+      end)
+    end
+    childB:updateFixed(3 / 30)
+    Assert.equal(childB:status().phase, childA:status().phase, "equivalent accepted ticks reach the same phase")
+    Assert.deepEqual(childB:view(), childA:view(), "equivalent accepted ticks publish the same view")
+    childA:dispose()
+    childB:dispose()
+  end
+
+  -- A failed acquisition latches its cause and never completes.
+  do
+    local registration = frozenRegistration()
+    local audio = newAudioFake()
+    local failing = {}
+    function failing:acquire(_options)
+      error("synthetic acquire failure")
+    end
+    function failing:typesFor(_species, _form)
+      return { "water" }
+    end
+    local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+    local child = Child.new({
+      registration = registration,
+      pokedex = failing,
+      timeline = timeline,
+      audio = audio,
+      measureDisplay = dualMeasurement,
+    })
+    Assert.isTrue(child:status().complete == false, "a failed acquisition never completes")
+    Assert.notNil(child:status().error, "the failed acquisition latches its attributed cause")
+    child:updateFixed(1 / 30)
+    Assert.isTrue(child:status().complete == false, "updates never clear the acquisition error")
+    child:dispose()
+  end
+
+  -- A layout change mid-card still reaches the single dismissal.
+  do
+    local registration = frozenRegistration()
+    local pokedex = newPokedexFake({ "ready" })
+    local audio = newAudioFake()
+    audio.cryDone = true
+    local measure = dualMeasurement()
+    local signature = "dual"
+    local child, timeline = newChild(Child, registration, pokedex, audio, function()
+      local copy = {}
+      for key, value in pairs(measure) do
+        copy[key] = value
+      end
+      copy.signature = "registration-child-test:" .. signature
+      return copy
+    end)
+    Assert.isTrue(driveToDismissal(child, timeline, 1200), "the card becomes dismissible")
+    signature = "resized"
+    child:cancelPointerCapture()
+    child:input({ { type = "touch_new", pointerId = 9 } })
+    Assert.isTrue(pump(child, timeline, 1200), "a fresh touch after resize dismisses")
+    child:dispose()
+    Assert.equal(pokedex:releases(), 1, "the resized dismissal releases once")
+  end
 end
 
 return { tests = T }

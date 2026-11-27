@@ -316,6 +316,8 @@ local function openCaptureRig(opts)
     text = rig.text,
     windows = rig.windows,
     audio = rig.audio,
+    pokedex = opts.pokedex,
+    registrationAudio = opts.registrationAudio,
   })
   rig.screen = screen
   rig.port = screen:presentationPort()
@@ -447,13 +449,20 @@ function T.nickname_question_centers_caught_specimen_over_black()
   local fragment = nil
   for _, actor in ipairs(options.actors) do
     for _, choice in ipairs(actor.choices or {}) do
-      if choice.enabled == true and type(choice.choice) == "table" and type(choice.choice.payload) == "table" and choice.choice.payload.item == "MASTER_BALL" then
+      if
+        choice.enabled == true
+        and type(choice.choice) == "table"
+        and type(choice.choice.payload) == "table"
+        and choice.choice.payload.item == "MASTER_BALL"
+      then
         fragment = choice.choice
       end
     end
   end
   Assert.notNil(fragment, "the opening decision offers the stocked ball")
-  local thrown, throwErr = rig.battle:submit(SessionFixture.replyFor(request, { fragment --[[@as table<string, unknown>]] }))
+  local thrown, throwErr = rig.battle:submit(SessionFixture.replyFor(request, {
+    fragment --[[@as table<string, unknown>]],
+  }))
   Assert.isTrue(thrown, "the thrown ball is accepted: " .. tostring(throwErr))
   driveToCommitted(rig, 1200)
   driveToNicknameQuestion(rig, 1200)
@@ -468,14 +477,24 @@ function T.nickname_question_centers_caught_specimen_over_black()
   -- the battle main instead of lingering behind the question.
   local visible = {}
   for _, battler in ipairs(snapshot.battlers) do
-    if type(battler) == "table" and battler.visible == true and battler.dontDraw ~= true and battler.vanished ~= true then
+    if
+      type(battler) == "table"
+      and battler.visible == true
+      and battler.dontDraw ~= true
+      and battler.vanished ~= true
+    then
       visible[#visible + 1] = battler
     end
   end
   Assert.equal(#visible, 1, "the nickname scene shows exactly one main-scene picture")
   local specimen = nil
   for _, battler in ipairs(snapshot.battlers) do
-    if type(battler) == "table" and battler.side ~= 1 and battler.visible == true and type(battler.portraitSelector) == "string" then
+    if
+      type(battler) == "table"
+      and battler.side ~= 1
+      and battler.visible == true
+      and type(battler.portraitSelector) == "string"
+    then
       specimen = battler
       break
     end
@@ -1099,6 +1118,184 @@ function T.versioned_species_replay_the_capture_naming_and_storage_flow(context)
     rig.battle:dispose()
     rig.screen:dispose()
   end
+end
+
+-- A genuine first catch runs the whole ordinary card lifetime through the
+-- real battle screen: the card opens with its banner bank at zero, the cry
+-- plays once with its fixed pattern, an A dismissal makes no select sound,
+-- the departure slides the picture exactly twenty steps to the centered
+-- pose with the sprites hidden under a black terminal cover, the screen
+-- releases the card exactly once before the nickname question, and the
+-- restored scene keeps the same centered specimen while the question waits
+-- for its incoming fade before accepting an answer.
+function T.first_catch_card_runs_ordinary_lifetime_into_a_gated_nickname_prompt()
+  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+  local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  local dex = PokedexKnowledge.new(PokedexDexFixture.refsForSpecies({ "CHIKORITA", "TOTODILE", "EEVEE" }))
+  Assert.isFalse(dex:isCaught("EEVEE"), "setup: the driven catch is a genuine first catch")
+
+  local selectCalls = 0
+  local cryCalls = {}
+  local registrationAudio = {}
+  function registrationAudio.playCry(species, pattern, form)
+    cryCalls[#cryCalls + 1] = { species = species, pattern = pattern, form = form }
+    return true
+  end
+  function registrationAudio.isCryFinished()
+    return true
+  end
+  function registrationAudio.select()
+    selectCalls = selectCalls + 1
+    return true
+  end
+
+  local releases = 0
+  local pokedex = {}
+  local lease = {}
+  function lease:prepare(_demand)
+    return {
+      kind = "ready",
+      key = "card",
+      assets = {
+        messages = { registrationAnnouncement = "GOTCHA EEVEE" },
+        renderer = {
+          drawRegistration = function() end,
+        },
+        animations = {},
+        chrome = {},
+        pictures = {},
+        icons = {},
+      },
+    }
+  end
+  function lease:release()
+    releases = releases + 1
+  end
+  function pokedex:acquire(_options)
+    return lease
+  end
+  function pokedex:typesFor(_species, _form)
+    return { "normal" }
+  end
+
+  local rig = openCaptureRig({
+    launchId = "launch-first-catch-card-lifetime",
+    party = { "CHIKORITA", "TOTODILE", "EEVEE", "CHIKORITA", "TOTODILE" },
+    bag = makeBallBag(),
+    foeSpecies = "EEVEE",
+    foeLevel = 3,
+    dex = dex,
+    pokedex = pokedex,
+    registrationAudio = registrationAudio,
+  })
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local opening = driveToDecision(rig, 600)
+  local request = assert(opening.request, "the capture battle asks its opening decision")
+  local options = rig.battle:decisionOptions(request.requestId)
+  local fragment = nil
+  for _, actor in ipairs(options.actors) do
+    for _, choice in ipairs(actor.choices or {}) do
+      local payload = type(choice.choice) == "table" and choice.choice.payload or nil
+      if choice.enabled == true and type(payload) == "table" and payload.item == "MASTER_BALL" then
+        fragment = choice.choice
+      end
+    end
+  end
+  Assert.notNil(fragment, "the opening decision offers the stocked ball")
+  local thrown, throwErr = rig.battle:submit(SessionFixture.replyFor(request, { fragment }))
+  Assert.isTrue(thrown, "the thrown ball is accepted: " .. tostring(throwErr))
+
+  local function fadeAmount()
+    local snapshot = rig.screen:_snapshot()
+    local animation = snapshot.sceneAnimation
+    local main = type(animation) == "table" and animation.main or nil
+    local compositor = type(main) == "table" and main.compositor or nil
+    local fade = type(compositor) == "table" and compositor.battlefieldFade or nil
+    if type(fade) == "table" and type(fade.amount) == "number" then
+      return fade.amount
+    end
+    return nil
+  end
+
+  local bannerAtOpen = nil
+  local moves = {}
+  local terminal = nil
+  local questionSeen = false
+  for _ = 1, 4000 do
+    rig.pump(1)
+    ackNarration(rig)
+    local child = rig.screen._registrationChild
+    if child ~= nil then
+      if bannerAtOpen == nil then
+        bannerAtOpen = child:view().banner
+      end
+      if child:status().acceptsDismissal == true then
+        rig.screen:input({ { type = "confirm" } })
+      end
+      if child:status().phase == "departure" then
+        moves[#moves + 1] = child:view().pictureX
+      end
+      if child:status().complete == true and terminal == nil then
+        local view = child:view()
+        terminal = {
+          pictureX = view.pictureX,
+          spritesHidden = view.spritesHidden,
+          paletteFade = view.paletteFade,
+        }
+      end
+    end
+    local completion = rig.screen:status().completion
+    if type(completion) == "table" and completion.stage == "question" then
+      questionSeen = true
+      break
+    end
+    if rig.battle:status().phase == "failed" then
+      error("the capture battle failed: " .. tostring(rig.battle:status().error), 0)
+    end
+  end
+  Assert.isTrue(questionSeen, "the first catch reaches its nickname question")
+  Assert.notNil(bannerAtOpen, "the capture opens its registration card")
+  Assert.equal(bannerAtOpen, 0, "the card opens with its banner bank at zero")
+  Assert.equal(#cryCalls, 1, "the card cry plays exactly once")
+  Assert.equal(cryCalls[1].species, "EEVEE", "the card cry names the captured species")
+  Assert.equal(cryCalls[1].pattern, 14, "the card cry always uses its fixed pattern")
+  Assert.equal(cryCalls[1].form, 0, "the card cry always uses the base form")
+  Assert.equal(selectCalls, 0, "an A dismissal makes no select sound")
+  Assert.equal(#moves, 20, "the ordinary departure moves exactly twenty source steps")
+  for index, value in ipairs(moves) do
+    Assert.equal(value, 48 + 4 * (index - 1), "departure step " .. tostring(index) .. " keeps the source pace")
+  end
+  terminal = assert(terminal, "the dismissed card freezes its terminal exit")
+  Assert.equal(terminal.pictureX, 128, "the completed card keeps the centered picture")
+  Assert.isTrue(terminal.spritesHidden == true, "the completed card keeps its sprites hidden")
+  Assert.equal(terminal.paletteFade, 16, "the completed card holds its terminal cover")
+  local receipt = assert(rig.battle:status().outcomeReceipt, "completion carries its commit receipt")
+  Assert.isTrue(receipt.committed, "the capture batch commits")
+  Assert.equal(#receipt.placements, 1, "the capture reports its single placement")
+  Assert.equal(receipt.placements[1].destination, "party", "a fitting capture stays in the party")
+  Assert.equal(receipt.placements[1].partySlot, 5, "the fifth slot holds the newcomer")
+  Assert.isTrue(dex:isCaught("EEVEE"), "the capture registers caught knowledge")
+  local stored = rig.party:partyMon(5)
+  Assert.equal(stored.species, "EEVEE", "the appended mon keeps its caught species")
+  Assert.isNil(rig.screen._registrationChild, "the card retires before the nickname prompt paints")
+  Assert.equal(releases, 1, "the handoff releases the card lease exactly once")
+  Assert.equal(fadeAmount(), 16, "the nickname scene starts from the black battlefield")
+  for _ = 1, 60 do
+    rig.pump(1)
+  end
+  Assert.isTrue((fadeAmount() or 16) < 16, "the restored scene fades back in after the card retires")
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(3)
+  local completion = rig.screen:status().completion
+  Assert.notNil(completion, "the nickname decision stays open")
+  assert(completion ~= nil, "the nickname decision stays open")
+  Assert.equal(
+    completion.stage,
+    "question",
+    "the nickname question waits for its restored fade before accepting an answer"
+  )
+  rig.battle:dispose()
+  rig.screen:dispose()
 end
 
 return {
