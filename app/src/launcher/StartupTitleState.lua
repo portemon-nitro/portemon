@@ -1146,11 +1146,7 @@ function StartupTitleState:_pressPointer(pointerId, x, y)
   -- Any press recovers once; the press is consumed and never becomes a
   -- movie/title skip. A pending soundtrack failure in loading shows the
   -- same diagnostic while retrying, so it owns the same escape.
-  if self.phase == "error" then
-    self:_recoverToSelection()
-    return
-  end
-  if self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil then
+  if self:_recoverable() then
     self:_recoverToSelection()
     return
   end
@@ -1185,20 +1181,20 @@ end
 -- keyboard, controller and touch. A pending soundtrack failure in loading
 -- shows the same diagnostic while retrying, so it owns the same escape.
 -- The press is consumed once and dispatches no stale movie/save action.
+function StartupTitleState:_recoverable()
+  return self.phase == "error" or (self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil)
+end
+
 function StartupTitleState:_recoverToSelection()
   if not self:_live() or self.onCancel == nil then
     return false
   end
-  if self.phase == "error" then
-  elseif self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil then
-  else
+  if not self:_recoverable() then
     return false
   end
   self.phase = "cancelled"
-  local onCancel = self.onCancel
-  if onCancel ~= nil then
-    onCancel()
-  end
+  local onCancel = assert(self.onCancel, "recoverable selection owns its cancel route")
+  onCancel()
   return true
 end
 
@@ -1322,13 +1318,7 @@ function StartupTitleState:keypressed(key, _, isrepeat)
   -- otherwise strand the diagnostic screen without a way back. A pending
   -- soundtrack failure in loading shows the same diagnostic while
   -- retrying, so it owns the same escape before loader delegation.
-  if self.phase == "error" then
-    if key == "escape" or key == "backspace" then
-      self:_recoverToSelection()
-    end
-    return
-  end
-  if self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil then
+  if self:_recoverable() then
     if key == "escape" or key == "backspace" then
       self:_recoverToSelection()
     end
@@ -1359,13 +1349,7 @@ function StartupTitleState:gamepadpressed(joystick, button)
   -- though the loader declines cancellation. Other buttons are swallowed so
   -- no stale skip leaks into the next stage. A pending soundtrack failure
   -- in loading owns the same escape.
-  if self.phase == "error" then
-    if button == "b" then
-      self:_recoverToSelection()
-    end
-    return
-  end
-  if self.phase == "loading" and self.audioError ~= nil and self.movie ~= nil then
+  if self:_recoverable() then
     if button == "b" then
       self:_recoverToSelection()
     end

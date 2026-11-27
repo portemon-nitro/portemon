@@ -544,10 +544,13 @@ function LauncherRenderer:drawDual(view, plan)
       local layout = pane.id == content.statusPaneId and content.statusLayout or content.layout
       self:_background(layout.viewport.width, layout.viewport.height)
       self:_header(view, layout)
-      if pane.id ~= content.statusPaneId and not layout.unavailable then
+      if pane.id ~= content.statusPaneId then
         if view.import ~= nil then
+          -- An operation view always paints through _operation, even when
+          -- its body does not fit: the fallback keeps the footer
+          -- cancel/back controls visible while acknowledging no receipt.
           receiptToken = self:_operation(view, layout)
-        else
+        elseif not layout.unavailable then
           for _, game in ipairs(view.games) do
             self:_cartridge(view, game, assert(layout.slots[game.versionId]))
           end

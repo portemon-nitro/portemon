@@ -55,16 +55,16 @@ end
 -- acknowledgement: the caller sees an unavailable plan with no receipt so
 -- an unpainted receipt is never acknowledged, while the footer cancel
 -- target stays escapable.
----@param inner table inner content rectangle
----@param fonts table? measured faces
+---@param inner { x: number, y: number, width: number, height: number } inner content rectangle
+---@param fonts { body: love.Font?, prompt: love.Font?, bold: love.Font? }? measured faces
 ---@param receiptTop number
 ---@param receiptHeight number
 ---@param statusTop number
 ---@param statusBottom number
----@return table? receipt
----@return table? status
----@return table? track
----@return table? indicator
+---@return { x: number, y: number, width: number, height: number }? receipt
+---@return { x: number, y: number, width: number, height: number }? status
+---@return { x: number, y: number, width: number, height: number }? track
+---@return { x: number, y: number, width: number, height: number }? indicator
 local function operationBody(inner, fonts, receiptTop, receiptHeight, statusTop, statusBottom)
   local bodyHeight = fontHeight(fonts, "body", 12)
   local statusHeight = math.max(0, statusBottom - statusTop)
@@ -231,13 +231,6 @@ function LauncherLayout.loading(width, height, options)
   local receipt, status, track, indicator
   if options.receipt ~= nil then
     receipt, status, track, indicator = operationBody(content, fonts, MARGIN + 34, 24, statusTop, statusBottom)
-    if receipt == nil then
-      receipt = true
-      status, track, indicator = nil, nil, nil
-    end
-  end
-  if receipt == true then
-    receipt = nil
   end
   plan.receiptRect = receipt
   plan.statusRect = status

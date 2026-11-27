@@ -872,7 +872,7 @@ local function withQueuedHost(fn)
     return channel
   end
   local function newThread(bootstrap)
-    local thread = { bootstrap = bootstrap, alive = true, starts = 0 }
+    local thread = { bootstrap = bootstrap, alive = true, starts = 0, waits = 0 }
     function thread:start(...)
       self.starts = self.starts + 1
       self.args = { ... }
@@ -883,6 +883,10 @@ local function withQueuedHost(fn)
     end
     function thread:getError()
       return self.threadError
+    end
+    function thread:wait()
+      self.waits = self.waits + 1
+      self.alive = false
     end
     threads[#threads + 1] = thread
     return thread
@@ -1624,7 +1628,9 @@ end
 
 -- Shutdown joins the retired worker at its owner: a queued import that is
 -- cancelled for process exit terminates its lease, drains late packets
--- without publishing, and leaves the lease free for a fresh import.
+-- without publishing, and leaves the lease free for a fresh import. The
+-- physical thread is joined at the shutdown boundary itself, not modelled
+-- as exiting afterwards.
 function T.shutdown_join_retires_the_worker_without_late_publication()
   withQueuedHost(function(host)
     local h = harness()
@@ -1634,12 +1640,14 @@ function T.shutdown_join_retires_the_worker_without_late_publication()
     Assert.equal(h.importer.state, "reading")
     local session = liveSession(h.importer)
     local sessionId = assert(session.inbox:pop()).id
-    -- Retire while the worker is still inside its source read.
-    h.importer:shutdownJoin(0.05)
+    -- Retire while the worker is still inside its source read: the join
+    -- itself terminates the physical worker.
+    h.importer:cancelQueued()
+    local freed = require("romdump.src.source.RomImporter").shutdownProcessLease()
     Assert.equal(h.importer.state, "idle", "shutdown returns the importer to idle")
-    -- Model the physical worker exit after it observes cancellation.
-    session.thread.alive = false
-    h.importer:update()
+    Assert.equal(session.thread.waits, 1, "shutdown joins the physical worker at the boundary")
+    Assert.isFalse(session.thread:isRunning(), "the worker terminated at the shutdown boundary")
+    Assert.isTrue(freed, "the process lease is free at the shutdown boundary")
     -- A late terminal packet from the retired session is discarded.
     session.outbox:push({
       id = sessionId,
@@ -1653,6 +1661,64 @@ function T.shutdown_join_retires_the_worker_without_late_publication()
     h.importer:update()
     Assert.isNil(h.importer:takeVerifiedSource(), "a retired session never publishes")
     Assert.equal(#h.events, 0, "no completion fires for a retired worker")
+    assertLeaseFree(host)
+  end)
+end
+
+-- Cancel-then-quit leaves no owner: the retired orphan still occupies the
+-- process lease until the module-level drain joins it. Final shutdown must
+-- terminate the physical worker even though no attempt is current.
+function T.shutdown_process_lease_drains_an_orphaned_retire_without_an_owner()
+  withQueuedHost(function(host)
+    local h = harness()
+    host:watch(h.importer)
+    h.importer:queuePath("synthetic.nds")
+    h.importer:update()
+    local session = liveSession(h.importer)
+    local sessionId = assert(session.inbox:pop()).id
+    -- Interactive cancellation is nonblocking: the retired worker stays
+    -- physically live and the owner is dropped, as in App._cancelImport.
+    h.importer:cancelQueued()
+    Assert.equal(h.importer.state, "idle")
+    Assert.isTrue(session.thread:isRunning(), "interactive cancel does not block on the worker")
+    local orphanThread, orphanOutbox = session.thread, session.outbox
+    h.importer = nil
+    -- Final process shutdown joins the orphan without an owning instance.
+    local RomImporterModule = require("romdump.src.source.RomImporter")
+    Assert.isTrue(RomImporterModule.shutdownProcessLease(), "the orphaned lease is joined")
+    Assert.isFalse(orphanThread:isRunning(), "the orphaned worker terminated at shutdown")
+    -- A late terminal packet from the orphan is discarded, never published.
+    orphanOutbox:push({
+      id = sessionId,
+      kind = "complete",
+      versionId = h.info.id,
+      report = { sha1 = h.info.sha1 },
+      sourceName = "synthetic.nds",
+      displayName = h.info.displayName,
+      byteData = love.data.newByteData(h.data),
+    })
+    assertLeaseFree(host)
+  end)
+end
+
+-- Quitting with an in-flight read joins the worker at the shutdown
+-- boundary: the physical thread terminates and the lease frees even
+-- though cancellation was never requested interactively first.
+function T.shutdown_join_terminates_an_in_flight_read_at_the_boundary()
+  withQueuedHost(function(host)
+    local h = harness()
+    host:watch(h.importer)
+    h.importer:queuePath("synthetic.nds")
+    h.importer:update()
+    local session = liveSession(h.importer)
+    assert(session.inbox:pop(), "the worker holds its live request")
+    Assert.isTrue(session.thread:isRunning(), "the read is still in flight")
+    h.importer:cancelQueued()
+    local freed = require("romdump.src.source.RomImporter").shutdownProcessLease()
+    Assert.isFalse(session.thread:isRunning(), "quit terminates the in-flight read at the boundary")
+    Assert.isTrue(freed, "the process lease is free at the shutdown boundary")
+    Assert.equal(h.importer.state, "idle")
+    Assert.isNil(h.importer:takeVerifiedSource(), "an in-flight read never publishes through shutdown")
     assertLeaseFree(host)
   end)
 end

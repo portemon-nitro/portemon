@@ -1057,6 +1057,129 @@ function T.android_quit_cancels_before_game_and_renderer_teardown()
   end)
 end
 
+function T.quit_from_a_retained_terminal_import_error_joins_before_teardown()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    local alive = true
+    local waits = 0
+    local thread = {}
+    function thread:isRunning()
+      return alive
+    end
+    function thread:wait()
+      waits = waits + 1
+      alive = false
+    end
+    local cancelCalls = 0
+    local importer = { state = RomImporter.STATES.ERROR }
+    function importer:status()
+      return { state = RomImporter.STATES.ERROR, canCancel = false }
+    end
+    function importer:cancelQueued()
+      cancelCalls = cancelCalls + 1
+    end
+    function importer:update()
+      error("shutdown must not pump a completion", 0)
+    end
+    local originalDrain = RomImporter.shutdownProcessLease
+    local drains = 0
+    local order = {}
+    RomImporter.shutdownProcessLease = function()
+      drains = drains + 1
+      thread:wait()
+      order[#order + 1] = "join"
+      return true
+    end
+    local originalShutdown = result.service.shutdown
+    function result.service:shutdown()
+      order[#order + 1] = "service"
+      return originalShutdown(self)
+    end
+    local originalSetState = App.setState
+    local constructed = 0
+    local state = countingState()
+    originalSetState(state)
+    function App.setState(nextState)
+      if nextState ~= nil then
+        constructed = constructed + 1
+      end
+      return originalSetState(nextState)
+    end
+    App._importAttempt = {
+      attemptId = {},
+      expectedVersionId = "heartgold",
+      mode = "error",
+      started = true,
+      error = "synthetic terminal failure",
+      canCancel = false,
+      elapsed = 0,
+    }
+    App.importer = importer
+    local ok, quitOrError = pcall(App.quit)
+    App.setState = originalSetState
+    RomImporter.shutdownProcessLease = originalDrain
+    result.service.shutdown = originalShutdown
+    assert(ok, quitOrError)
+    Assert.isNil(quitOrError, "a terminal error screen still permits final quit")
+    Assert.equal(cancelCalls, 1, "quit cancels the retained owner even though it is not cancellable")
+    Assert.equal(drains, 1, "quit always drains the module-level process lease")
+    Assert.equal(waits, 1, "the live worker is joined at the shutdown boundary")
+    Assert.isFalse(alive, "the worker terminated before teardown")
+    Assert.deepEqual(order, { "join", "service" }, "the join precedes resource teardown")
+    Assert.equal(constructed, 0, "shutdown constructs no replacement selector")
+    Assert.isNil(App.importer, "the retained importer is cleared by its owner")
+    Assert.isNil(App._importAttempt, "the terminal attempt is cleared by its owner")
+    Assert.isNil(App.state, "quit retires the live state without a replacement")
+    Assert.equal(state.disposed, 1, "the live state is disposed exactly once")
+  end)
+end
+
+function T.quit_honors_a_failed_process_lease_join()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    local importer = { state = RomImporter.STATES.ERROR }
+    function importer:status()
+      return { state = RomImporter.STATES.ERROR, canCancel = false }
+    end
+    function importer:cancelQueued() end
+    function importer:update()
+      error("shutdown must not pump a completion", 0)
+    end
+    local originalDrain = RomImporter.shutdownProcessLease
+    RomImporter.shutdownProcessLease = function()
+      return false
+    end
+    local shutdowns = 0
+    local originalShutdown = result.service.shutdown
+    function result.service:shutdown()
+      shutdowns = shutdowns + 1
+      return originalShutdown(self)
+    end
+    App.setState(countingState())
+    App._importAttempt = {
+      attemptId = {},
+      expectedVersionId = "heartgold",
+      mode = "error",
+      started = true,
+      error = "synthetic terminal failure",
+      canCancel = false,
+      elapsed = 0,
+    }
+    App.importer = importer
+    local ok, vetoed = pcall(App.quit)
+    RomImporter.shutdownProcessLease = originalDrain
+    result.service.shutdown = originalShutdown
+    assert(ok, vetoed)
+    Assert.isTrue(vetoed == true, "an unjoined lease vetoes quit")
+    Assert.equal(shutdowns, 0, "teardown never runs as if the lease were freed")
+    Assert.isTrue(App.importer == importer, "the retained owner survives the vetoed quit")
+    Assert.notNil(App._importAttempt, "the terminal attempt survives the vetoed quit")
+    Assert.notNil(App.service, "the process service survives the vetoed quit")
+  end)
+end
+
 function T.android_failed_game_construction_leaves_no_control_target()
   withAppHarness({ dev = false }, function()
     return false

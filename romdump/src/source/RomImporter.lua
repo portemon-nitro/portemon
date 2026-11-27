@@ -708,35 +708,69 @@ end
 -- thread actually exits and its outbox is drained. A direct (non-queued)
 -- import is untouched. A pending temporary stage has no reader and is removed
 -- immediately; an active worker removes its stage after source closure.
--- Process-shutdown drain for the single worker lease. Signals cancellation
--- for any queued session, then boundedly waits for the retired physical
--- worker to terminate and drains its outbox at this owner so no late
--- packet can publish after the LÖVE session closes. Never waits for a
--- worker-owned publication: the commit gate in App.quit vetoes shutdown
--- once publication was authorized. Bounded to avoid stalling quit on a
--- wedged worker.
----@param timeoutSeconds number? bounded join budget in seconds
-function RomImporter:shutdownJoin(timeoutSeconds)
-  self:cancelQueued()
-  local budget = timeoutSeconds or 2
-  local iterations = math.max(1, math.min(200, math.floor(budget / 0.01)))
-  for _ = 1, iterations do
+--
+-- Signal cancellation to whatever physical worker is live, whether or not
+-- an importer instance still owns it. A cancel-then-quit orphan keeps
+-- occupying the process lease after its attempt cleared, so final shutdown
+-- must reach the lease itself rather than the current attempt's session.
+local function signalProcessLeaseCancel()
+  local lease = activeWorkerLease
+  if lease == nil then
+    return
+  end
+  lease.retired = true
+  local inbox = lease.inbox
+  if inbox ~= nil then
+    pcall(inbox.push, inbox, { id = lease.id, op = "cancel" })
+  end
+end
+
+-- Join the physical worker thread after cancellation was signalled.
+-- LÖVE Thread:wait blocks until the worker exits: the final shutdown
+-- guarantee. Table fakes implement wait, so production and unit coverage
+-- share the one blocking ownership path.
+---@param thread table<string, function>|userdata|nil
+---@return boolean joined
+local function joinLeaseThread(thread)
+  if thread == nil then
+    return true
+  end
+  if type(thread.wait) == "function" then
+    pcall(function()
+      thread:wait()
+    end)
+    return not leaseThreadAlive(thread)
+  end
+  return not leaseThreadAlive(thread)
+end
+
+-- Final process-shutdown drain for the single worker lease, owned by this
+-- module. Signals cancellation to any live worker, joins the physical
+-- thread, then drains the retired outbox so no late packet can publish
+-- after the LÖVE session closes. Independent of any single attempt: call
+-- it unconditionally on final shutdown even when no importer is current.
+-- Never waits for a worker-owned publication: the commit gate in App.quit
+-- vetoes shutdown once publication was authorized.
+---@return boolean freed whether the process lease is free
+function RomImporter.shutdownProcessLease()
+  signalProcessLeaseCancel()
+  local lease = activeWorkerLease
+  if lease ~= nil then
+    joinLeaseThread(lease.thread)
+  end
+  for _ = 1, 128 do
+    serviceRetiredLease()
     if activeWorkerLease == nil then
-      break
-    end
-    self:update()
-    if activeWorkerLease == nil then
-      break
-    end
-    if love ~= nil and love.timer ~= nil and type(love.timer.sleep) == "function" then
-      pcall(love.timer.sleep, 0.01)
-    else
       break
     end
   end
-  self:update()
+  return activeWorkerLease == nil
 end
 
+-- Retire the queued background session without blocking: the worker is told
+-- to abandon its publication gate, late packets are invalidated, and the
+-- session returns to idle. The physical lease is retained until the retired
+-- thread actually exits and its outbox is drained.
 function RomImporter:cancelQueued()
   local queued = self._queued
   local pending = self._pendingStart

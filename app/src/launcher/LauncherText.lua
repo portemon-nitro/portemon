@@ -110,13 +110,16 @@ end
 
 -- Fits display text to a pixel width on a codepoint boundary, appending an
 -- ellipsis only when truncation occurred. Every measured candidate stays on
--- a glyph boundary so font metrics never see a byte midpoint.
+-- a glyph boundary so font metrics never see a byte midpoint. Single-row
+-- callers must never paint a line break: embedded newlines (legal in POSIX
+-- filenames) are folded to spaces here, while sanitize keeps them for
+-- multi-line diagnostics.
 ---@param font love.Font
 ---@param text string
 ---@param width number
 ---@return string
 function LauncherText.fitText(font, text, width)
-  text = LauncherText.sanitize(tostring(text))
+  text = LauncherText.sanitize(tostring(text)):gsub("\n", " ")
   if font:getWidth(text) <= width then
     return text
   end

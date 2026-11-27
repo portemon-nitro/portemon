@@ -2616,42 +2616,33 @@ function App.quit()
       return true
     end
   end
-  -- Final quit joins the importer lease at its owner: signal any
-  -- still-cancellable import, wait for the retired worker to terminate
-  -- and drain its result here. No replacement selector is constructed
-  -- purely to dispose it. The commit gate above already vetoed quit once
-  -- publication was authorized.
-  if attempt ~= nil then
+  -- Final quit drains the physical import worker at its module owner,
+  -- unconditionally: a cancel-then-quit orphan keeps occupying the process
+  -- lease after its attempt cleared, a retained terminal error still owns a
+  -- live worker, and an in-flight read must still terminate before teardown.
+  -- No replacement selector is constructed purely to dispose it. The commit
+  -- gate above already vetoed quit once publication was authorized, so this
+  -- cancellation never revokes a committed archive. Interactive cancellation
+  -- stays nonblocking; only this final path joins. A failed join vetoes quit
+  -- so teardown never runs as if the lease were freed when it was not.
+  if
+    attempt ~= nil
+    and attempt.descriptor ~= nil
+    and attempt.descriptor.kind == "temporary"
+    and not attempt.started
+  then
+    pcall(love.filesystem.remove, attempt.descriptor.value)
+  end
+  do
     local importer = App.importer
-    if importer ~= nil and type(importer.shutdownJoin) == "function" then
-      local status = nil
-      if type(importer.status) == "function" then
-        local ok, snapshot = pcall(function()
-          return importer:status()
-        end)
-        if ok then
-          status = snapshot
-        end
-      end
-      if status == nil or status.canCancel == true then
-        if attempt.descriptor ~= nil and attempt.descriptor.kind == "temporary" and not attempt.started then
-          pcall(love.filesystem.remove, attempt.descriptor.value)
-        end
-        pcall(function()
-          importer:shutdownJoin(2)
-        end)
-      end
-    elseif importer == nil then
-      if attempt.descriptor ~= nil and attempt.descriptor.kind == "temporary" and not attempt.started then
-        pcall(love.filesystem.remove, attempt.descriptor.value)
-      end
-    else
-      App._cancelImport()
-      App._importAttempt = nil
-      App.importer = nil
+    if importer ~= nil then
+      importer:cancelQueued()
     end
     -- The shutdown path above never constructs a replacement selector
-    -- purely to dispose it; clear the attempt directly.
+    -- purely to dispose it; the join is honored before the attempt clears.
+    if not RomImporter.shutdownProcessLease() then
+      return true
+    end
     App._importAttempt = nil
     App.importer = nil
   end

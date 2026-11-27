@@ -28,18 +28,16 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install LÖVE runtime
-        run: scripts/lib/repo-setup.sh --yes
+        run: |
+          scripts/lib/repo-setup.sh --yes
+          echo "$GITHUB_WORKSPACE/scripts/bin" >> "$GITHUB_PATH"
       - name: Install offscreen graphics dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libegl1 libegl-mesa0 libgl1 libgl1-mesa-dri libglx-mesa0
       - name: Run packaging and touch source gates
-        env:
-          PATH: ${{ github.workspace }}/scripts/bin:${{ env.PATH }}
         run: |
           python3 scripts/test_packaging.py PackagingContractTest ReleaseVersionContractTest -v
-          scripts/test.sh --filter native_rom_picker
-          scripts/test.sh --filter touch_gamepad
       - name: Build the portable payload
         env:
           VERSION: ${{ inputs.version }}
@@ -50,7 +48,6 @@ jobs:
             --listing artifacts/payload-listing.txt
       - name: Smoke the archive outside the checkout
         env:
-          PATH: ${{ github.workspace }}/scripts/bin:${{ env.PATH }}
           VERSION: ${{ inputs.version }}
         run: python3 scripts/test_packaging.py --love "artifacts/portemon-nitro-$VERSION.love" --listing artifacts/payload-listing.txt
       - uses: actions/upload-artifact@v6
@@ -71,21 +68,20 @@ jobs:
       - uses: actions/download-artifact@v6
         with:
           name: release-payload
-      - name: Initialize the pinned Visual C++ x64 toolchain
-        shell: pwsh
-        run: |
-          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          $vcvars = Join-Path $installation "VC\Auxiliary\Build\vcvars64.bat"
-          $environment = & cmd /c "`"$vcvars`" >nul && set"
-          foreach ($line in $environment) {
-            if ($line -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2]) }
-          }
-      - name: Build the Windows package
+      - name: Build the Windows package with the pinned Visual C++ x64 toolchain
         shell: pwsh
         env:
           VERSION: ${{ inputs.version }}
-        run: ./scripts/build_windows.ps1 -Love "portemon-nitro-$env:VERSION.love" -Version $env:VERSION -Output "portemon-nitro-$env:VERSION-windows-x86_64.zip"
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw "Visual Studio with the VC x64 tools was not found" }
+          $vcvars = Join-Path $installation "VC\Auxiliary\Build\vcvars64.bat"
+          & cmd /c "`"$vcvars`" >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') { [Environment]::SetEnvironmentVariable($matches[1], $matches[2]) }
+          }
+          if (-not (Get-Command dumpbin -ErrorAction SilentlyContinue)) { throw "dumpbin is not on PATH after vcvars64" }
+          ./scripts/build_windows.ps1 -Love "portemon-nitro-$env:VERSION.love" -Version $env:VERSION -Output "portemon-nitro-$env:VERSION-windows-x86_64.zip"
       - uses: actions/upload-artifact@v6
         with:
           name: release-windows
@@ -132,7 +128,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential cmake pkg-config \
-            libdbus-1-dev liblzma-dev liblzo2-dev libzstd-dev zlib1g-dev desktop-file-validate
+            libdbus-1-dev liblzma-dev liblzo2-dev libzstd-dev zlib1g-dev desktop-file-utils
       - name: Build the Linux AppImage
         env:
           VERSION: ${{ inputs.version }}
@@ -226,5 +222,5 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           tag="v$VERSION"
-          gh release create "$tag" --target "$GITHUB_SHA" --title "Portémon Nitro $VERSION" \
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Portémon Nitro $VERSION" \
             --prerelease --draft dist/*

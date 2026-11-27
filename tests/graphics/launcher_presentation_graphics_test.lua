@@ -590,6 +590,113 @@ local function writeCapture(name, pixels)
   encoded:release()
 end
 
+-- A compact dual-pane import cannot fit its measured status block: the
+-- content pane falls back to its footer controls instead of hiding them.
+-- The cancel target stays visible (real framebuffer pixels) and usable
+-- (escape activates it) while no receipt is acknowledged.
+function T.dual_compact_import_keeps_its_escape_visible_without_a_receipt(scope)
+  local renderer = require("app.src.launcher.LauncherRenderer").new()
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local width, height = 400, 160
+  local displayContext = DisplayContext.new({
+    graphics = {
+      getDimensions = function()
+        return width, height
+      end,
+      getDPIScale = function()
+        return 1
+      end,
+    },
+    topologyProvider = function()
+      return {
+        surfaces = {
+          {
+            id = "main",
+            role = "world",
+            rect = { x = 0, y = 0, width = 200, height = 160 },
+            safeRect = { x = 0, y = 0, width = 200, height = 160 },
+            touch = true,
+          },
+          {
+            id = "aux",
+            role = "auxiliary",
+            rect = { x = 200, y = 0, width = 200, height = 160 },
+            safeRect = { x = 200, y = 0, width = 200, height = 160 },
+            touch = true,
+          },
+        },
+      }
+    end,
+  })
+  local actions = {}
+  local importView = {
+    attemptId = "compact-dual-no-receipt",
+    mode = "receipt",
+    expectedVersionId = "heartgold",
+    receipt = "source.nds",
+    statusText = "Waiting for readers",
+    canCancel = true,
+  }
+  local selection = require("app.src.launcher.GameSelectState").new({
+    games = {
+      { versionId = "heartgold", label = "HeartGold", installed = false },
+      { versionId = "soulsilver", label = "SoulSilver", installed = false },
+    },
+    initialGameId = "heartgold",
+    renderer = renderer,
+    audio = audio(),
+    width = width,
+    height = height,
+    safeRect = { x = 0, y = 0, width = 200, height = 160 },
+    pixelRatio = 1,
+    displayContext = displayContext,
+    clock = LocalClock.new(function()
+      return { year = 2026, month = 12, day = 31, hour = 23, minute = 59, second = 0 }
+    end),
+    getImportView = function()
+      return importView
+    end,
+    onAction = function(targetId)
+      actions[#actions + 1] = targetId
+    end,
+  })
+  scope:own({
+    release = function()
+      selection:dispose()
+    end,
+  })
+  local view = selection:view()
+  Assert.equal(#view.presentation.panes, 2, "compact dual keeps its status pane")
+  Assert.isTrue(view.layout.unavailable == true, "the compact body cannot fit its measured status block")
+  Assert.isNil(view.layout.receiptRect, "an unpainted receipt is never acknowledged")
+  Assert.notNil(view.layout.graph.targets.cancel, "the compact fallback stays escapable")
+  Assert.notNil(view.layout.graph.targets.back, "the compact fallback keeps its back target")
+  local pixels = drawToPixels(scope, width, height, 1, function()
+    selection:draw()
+  end)
+  Assert.isNil(selection:paintedReceipt(), "no false receipt token without a painted receipt")
+  local contentPane = nil
+  for _, pane in ipairs(view.presentation.panes) do
+    if pane.id ~= view.presentation.content.statusPaneId then
+      contentPane = pane
+    end
+  end
+  Assert.notNil(contentPane, "dual content pane is present")
+  local cancel = view.layout.graph.targets.cancel
+  local faceX, faceY = physicalPoint(contentPane.placement, cancel.rect.x + 4, cancel.rect.y + 3, 1)
+  local face = samplePixel(pixels, faceX, faceY)
+  Assert.isTrue(
+    face.r > 250 and face.g > 250 and face.b > 250,
+    "the fallback cancel paints its face over the content grid"
+  )
+  selection:keypressed("escape", nil, false)
+  Assert.deepEqual(actions, { "cancel" }, "escape activates the visible fallback cancel")
+end
+
 function T.background_major_grid_uses_48_pixel_square_boundaries(scope)
   local renderer = require("app.src.launcher.LauncherRenderer").new()
   scope:own({
