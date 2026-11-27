@@ -718,4 +718,46 @@ function T.detail_main_scene_samples_staged_plane_palette_while_particles_stay_e
   Assert.isTrue(graphics.getShader() == nil, "main drawing restores the caller shader")
 end
 
+-- The compact single-pane viewport draws the thrown ball like the detail
+-- battlefield: captures, send-outs, and break-outs own the field in
+-- compact mode too, and dropping the fragment hides the ball behind its
+-- own shake sounds and messages.
+function T.compact_pane_draws_the_thrown_capture_ball()
+  local ballImage = {
+    width = 16,
+    height = 16,
+    getDimensions = function(self)
+      return self.width, self.height
+    end,
+  }
+  local view = {
+    encounterParticleSystems = {},
+    moveParticleSystems = {},
+    ballParticleSystems = {},
+    openingPresentation = {
+      playerTrainerVisible = false,
+      foeTrainerVisible = false,
+      ballThrow = {
+        selector = "ball:POKE_BALL",
+        x = 192,
+        y = 87,
+        drawableKey = "battle-ball:POKE_BALL:0",
+        rotation = 0,
+        visible = true,
+      },
+    },
+    drawables = {
+      ["battle-ball:POKE_BALL:0"] = ballImage,
+    },
+  }
+  local detailGraphics = FakeGraphics.new()
+  drawDetail(detailGraphics, view, nil)
+  Assert.isTrue(#drawsOfImages(detailGraphics.draws, { ballImage }) >= 1, "the detail baseline draws the thrown ball")
+  local compactGraphics = FakeGraphics.new()
+  drawCompactPane(compactGraphics, view, nil, {
+    scene = { x = 0, y = 0, width = 256, height = 136 },
+  })
+  Assert.isTrue(#drawsOfImages(compactGraphics.draws, { ballImage }) >= 1, "the compact viewport draws the thrown ball")
+end
+
 return { tests = T }

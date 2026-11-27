@@ -128,6 +128,36 @@ function T.ordered_observations_keep_arrival_order_across_save_restore()
   Assert.isTrue(restored:isCaught("TOTODILE"), "caught facts survive serialization")
 end
 
+function T.sparse_restored_rows_accept_later_catches()
+  local owner, monCatalog, pokedexCatalog = newOwner()
+  -- A seen-only encounter persists no language or caught-variant lists:
+  -- the bucket omits empty lists, so the restored rows arrive sparse.
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 }, "seen")
+  observe(owner, monCatalog, { species = "UNOWN", form = 5, personality = 0 }, "seen")
+  local restored = PokedexKnowledge.restore(owner:bucket(), PokedexDexFixture.refs(monCatalog, pokedexCatalog))
+  -- Catching either species after the reload must merge into the sparse
+  -- row instead of indexing a nil history list.
+  observe(restored, monCatalog, { species = "CHIKORITA", personality = 0 }, "caught")
+  observe(restored, monCatalog, { species = "UNOWN", form = 5, personality = 0 }, "caught")
+  Assert.isTrue(restored:isCaught("CHIKORITA"), "a post-reload catch records its capture")
+  Assert.deepEqual(
+    restored:observedGenders("CHIKORITA"),
+    { "female" },
+    "a post-reload catch keeps the pre-reload sighting gender"
+  )
+  Assert.deepEqual(
+    restored:caughtLanguages("CHIKORITA"),
+    { "english" },
+    "a post-reload catch records its language bank"
+  )
+  Assert.deepEqual(restored:caughtVariants("UNOWN"), { 5 }, "a post-reload catch records its caught letter")
+  Assert.deepEqual(
+    restored:observedVariants("UNOWN"),
+    { 5 },
+    "a post-reload catch keeps the pre-reload seen letter"
+  )
+end
+
 function T.gender_ratio_classes_derive_without_mutation()
   local owner, monCatalog = newOwner()
   local alwaysMale = owner:describe(PokedexDexFixture.makeMon(monCatalog, { species = "BURMY", personality = 0 }))

@@ -643,6 +643,23 @@ function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a broken opening cell is never ready")
 end
 
+function T.battle_ball_generic_burst_is_part_of_the_exact_readiness_closure()
+  -- The breakout's mode-1 open needs the shared generic burst beside
+  -- the per-ball seal/burst: the contract version bump records the
+  -- required payload shape change for previously published caches.
+  local Contract = require("libs.assets.src.DerivedAssetContract")
+  Assert.equal(
+    Contract.battlePresentation.ballSchema,
+    "g4-battle-ball-v5",
+    "the ball schema identity covers the mandatory generic set"
+  )
+  Assert.equal(
+    BattlePresentationSchema.BALL_SCHEMA,
+    "g4-battle-ball-v5",
+    "the ball validator follows the contract identity"
+  )
+end
+
 function T.trainer_picture_frames_are_part_of_the_exact_readiness_closure()
   local manifest = ManifestFixture.coreManifest()
   local selector = "back:PKMN_TRAINER_ETHAN"
@@ -1102,7 +1119,7 @@ function T.selective_leaf_records_stage_and_read_by_exact_selector()
   -- stays on disk.
   local replacementImage = "assets/generated/battle/balls/POKE_BALL-1.png"
   local replacement = {
-    schema = "g4-battle-ball-v4",
+    schema = "g4-battle-ball-v5",
     selector = "ball:POKE_BALL",
     catalogIdentity = core.catalogIdentity,
     entry = {
@@ -1257,9 +1274,13 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   stageBallLeafCells(cache, ballRecord.entry.frames)
   stageBallLeafCells(cache, ballRecord.entry.opening.frames)
   if ballRecord.entry.particles ~= nil then
-    for _, set in ipairs({ ballRecord.entry.particles.seal, ballRecord.entry.particles.burst }) do
-      for _, texture in ipairs(set.textures) do
-        stagePng(cache, texture.image, texture.width, texture.height)
+    for _, set in ipairs(
+      { ballRecord.entry.particles.seal, ballRecord.entry.particles.burst, ballRecord.entry.particles.genericBurst }
+    ) do
+      if type(set) == "table" then
+        for _, texture in ipairs(set.textures) do
+          stagePng(cache, texture.image, texture.width, texture.height)
+        end
       end
     end
   end

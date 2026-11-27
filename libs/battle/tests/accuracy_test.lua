@@ -75,17 +75,27 @@ function T.unrelated_prevention_blocks_without_a_roll()
   Assert.equal(airborne:capture().calls, 0, "unreachable targets are decided before the roll")
 end
 
--- Retail lesson strikes never hit (battle_controller_player.c:2425,
--- BattleSystem_CheckMoveHit under BATTLE_TYPE_TUTORIAL returns FALSE):
--- the tutorial misses without spending its accuracy draw.
-function T.tutorial_strikes_miss_without_a_roll()
+-- Retail lesson strikes skip the accuracy roll without missing
+-- (battle_controller_player.c:2425, BattleSystem_CheckMoveHit under
+-- BATTLE_TYPE_TUTORIAL returns FALSE before any roll, and the caller
+-- only treats a set MOVE_STATUS_MISSED flag as a miss, which the early
+-- return never sets): the tutorial hits without spending its draw,
+-- while independently applicable prevention still applies.
+function T.tutorial_strikes_skip_the_roll_without_missing()
   local Accuracy = accuracyOwner()
   local BattleRng = streamOwner()
   local lesson = BattleRng.new(1)
-  local missed = Accuracy.resolve({ accuracy = 100, target = target(1), cause = cause(), tutorial = true }, lesson)
-  Assert.equal(missed.kind, "miss", "the lesson strike misses")
-  Assert.equal(missed.reason, "tutorial", "the lesson miss names its tutorial")
+  local skipped = Accuracy.resolve({ accuracy = 100, target = target(1), cause = cause(), tutorial = true }, lesson)
+  Assert.equal(skipped.kind, "hit", "the lesson strike lands")
+  Assert.equal(skipped.reason, "tutorial_skipped", "the lesson hit names its skipped roll")
   Assert.equal(lesson:capture().calls, 0, "the lesson spends no accuracy draw")
+  local guarded = BattleRng.new(1)
+  local protection = Accuracy.resolve(
+    { accuracy = 100, target = target(1), cause = cause(), tutorial = true, protected = true },
+    guarded
+  )
+  Assert.equal(protection.kind, "protected", "the lesson never bypasses protection")
+  Assert.equal(guarded:capture().calls, 0, "blocked lesson rolls still draw nothing")
 end
 
 function T.skipped_rolls_never_skip_unrelated_prevention()

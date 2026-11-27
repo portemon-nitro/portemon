@@ -2252,6 +2252,71 @@ local function genderOf(mon, speciesFacts)
   return Personality.gender(ratio --[[@as integer]], mon.personality --[[@as integer]])
 end
 
+--- Stages the single typed capture target from the authoritative session
+--- owners (C01-C03): the catalog rate, base Speed, and weight ride the
+--- static species facts, both levels derive from growth curve and
+--- experience exactly like the stat projection, types follow the
+--- effective battle projection (including Color Change, Forecast, and
+--- Multitype), gender resolves through personality, and status reads
+--- the canonical persistent condition. A missing catalog or derived fact
+--- fails loudly here; the throw never guesses a species rate or status.
+---@param state table<string, unknown> live battle state under execution
+---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
+---@param actorId integer thrower combatant identity
+---@param targetId integer target combatant identity
+---@return table<string, unknown> staged target facts for the throw
+---@return table<string, unknown> staged attacker facts for the throw
+local function captureSessionFacts(state, speciesFacts, actorId, targetId)
+  local targetSlot = BattleState.combatant(state, targetId --[[@as integer]])
+  local targetMon = targetSlot.mon --[[@as table<string, unknown>]]
+  local statics = staticFacts(targetMon, speciesFacts) --[[@as table<string, unknown>]]
+  local baseStats = statics.baseStats --[[@as table<string, integer>]]
+  local growthCurve = statics.growthCurve --[[@as table<integer, integer>]]
+  local experience = targetMon.experience
+  if type(experience) ~= "number" then
+    error(BattleErrors.missingBehavior("capture reads its target experience", { combatant = targetId }))
+  end
+  local condition = persistentCondition(targetMon)
+  local actorSlot = BattleState.combatant(state, actorId --[[@as integer]])
+  local actorMon = actorSlot.mon --[[@as table<string, unknown>]]
+  local actorStatics = staticFacts(actorMon, speciesFacts) --[[@as table<string, unknown>]]
+  local actorExperience = actorMon.experience
+  if type(actorExperience) ~= "number" then
+    error(BattleErrors.missingBehavior("capture reads its attacker experience", { combatant = actorId }))
+  end
+  return {
+    catchRate = statics.catchRate,
+    maxHp = targetSlot.maxHp,
+    hp = targetSlot.hp,
+    status = condition or "healthy",
+    species = targetMon.species,
+    types = combatantTypes(targetSlot, speciesFacts, state),
+    level = Experience.level(growthCurve, experience --[[@as integer]]),
+    weight = statics.weightHg,
+    baseSpeed = baseStats.speed,
+    gender = genderOf(targetMon, speciesFacts),
+  }, {
+    level = Experience.level(
+      actorStatics.growthCurve --[[@as table<integer, integer>]],
+      actorExperience --[[@as integer]]
+    ),
+    species = actorMon.species,
+    gender = genderOf(actorMon, speciesFacts),
+  }
+end
+
+--- Resolves the throw capture facts through the session-owned species
+--- facts without an extra per-instance closure: the handler calls this
+--- shared method on its executor instead of scraping combatant records.
+---@param state table<string, unknown> live battle state under the throw
+---@param actorId integer thrower combatant identity
+---@param targetId integer target combatant identity
+---@return table<string, unknown> staged target facts for the throw
+---@return table<string, unknown> staged attacker facts for the throw
+function HgssSessionExecutor:captureSessionFacts(state, actorId, targetId)
+  return captureSessionFacts(state, self._speciesFacts, actorId, targetId)
+end
+
 ---@param mon table<string, unknown> battle mon record under the sleep read
 ---@return boolean true when the canonical mon sleeps
 local function asleepOf(mon)
@@ -5855,11 +5920,15 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       return
     end
     local planRecord = plan --[[@as table<string, unknown>]]
+    local sessionTarget, sessionAttacker =
+      executor:captureSessionFacts(state, actor.combatant --[[@as integer]], target.combatant --[[@as integer]])
     local outcome = Capture.execute({
       actor = actor.combatant,
       inventoryId = choice.inventoryId,
       ball = planRecord.item,
       target = { combatant = target.combatant },
+      sessionTarget = sessionTarget,
+      sessionAttacker = sessionAttacker,
     }, state, state.rng --[[@as table<string, unknown>]])
     local ledger = state.captures --[[@as table<integer, table<string, unknown>>]]
     ledger[#ledger + 1] = copyValue(outcome.result)
@@ -7650,6 +7719,9 @@ local function wrap(
       key --[[@as string]]
     ] = true
   end
+  -- Single typed capture staging bound to the session facts: the throw
+  -- boundary resolves its rates, types, levels, genders, and conditions
+  -- through this owner instead of scraping combatant records.
   local executor = setmetatable({
     _state = live,
     _content = content,
@@ -7715,9 +7787,9 @@ function HgssSessionExecutor.new(scenarioRecord, content)
   end
   -- Catching-tutorial marker rides the live state from the scenario
   -- (battle_bag_menu.c RunTutorial, battle_setup.c BattleSetup_New_Tutorial):
-  -- lesson strikes never hit, tutorial ball stock is never consumed,
-  -- and tutorial throws always catch. Closed boolean, absent keeps
-  -- historical behavior for older scenarios.
+  -- lesson strikes skip their accuracy rolls, tutorial ball stock is
+  -- never consumed, and tutorial throws always catch. Closed boolean,
+  -- absent keeps historical behavior for older scenarios.
   if validated.tutorial == true then
     live.tutorial = true
   else

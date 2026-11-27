@@ -343,7 +343,12 @@ local function copyHistory(history)
   local copy = {}
   for key, row in pairs(history) do
     local entry = row --[[@as table<string, unknown>]]
-    local fresh = {}
+    -- Rows always carry the four list fields: the persistable bucket
+    -- omits empty lists, so a restored row arrives sparse and observation
+    -- application reads every list unconditionally. Rehydrate the missing
+    -- lists as empty here, the single funnel for restored and scratch
+    -- copies, so later observations never index a nil list.
+    local fresh = { genders = {}, variants = {}, caughtVariants = {}, languages = {} }
     for _, field in ipairs({ "genders", "variants", "caughtVariants", "languages" }) do
       local list = entry[field]
       if type(list) == "table" then
@@ -869,6 +874,13 @@ function PokedexKnowledge:prepareChanges(changes)
     if row == nil then
       row = { genders = {}, variants = {}, caughtVariants = {}, languages = {} }
       scratchHistory[speciesKey] = row
+    end
+    -- Rows arrive normalized from the single copyHistory funnel, which
+    -- rehydrates sparse restored rows; new rows start complete here.
+    -- Keep validation at the ownership boundary instead of repairing
+    -- the same lists twice.
+    for _, field in ipairs({ "genders", "variants", "caughtVariants", "languages" }) do
+      assert(type(row[field]) == "table", "dex history rows carry their list fields")
     end
     local genders = row.genders --[[@as unknown[] ]]
     if not contains(genders, descriptor.gender) then

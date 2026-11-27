@@ -251,19 +251,16 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
       aiPasses = {},
     },
   }
-  local scenario = trainerScenario(
-    trainers,
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local scenario = trainerScenario(trainers, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local battle = BattleRuntime.new({
     request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
     scenario = scenario,
@@ -281,19 +278,16 @@ function T.trainer_win_pays_the_native_prize_once_without_injected_inputs()
   battle:dispose()
   -- Replaying the same terminal outcome under its launch identity reuses
   -- the recorded receipt instead of crediting the prize a second time.
-  local replayScenario = trainerScenario(
-    trainers,
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local replayScenario = trainerScenario(trainers, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local replay = BattleRuntime.new({
     request = { id = "launch-native-prize", kind = "trainer", payload = { trainer = "rival-early" } },
     scenario = replayScenario,
@@ -317,29 +311,26 @@ function T.trainer_win_doubles_the_prize_while_a_money_up_holder_stands()
   -- multiplier doubles the same native prize once.
   local foe = foeRecord("TOTODILE", 4, 0x5EED0002, 1, "AMULET_COIN")
   foe.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
-  local scenario = trainerScenario(
+  local scenario = trainerScenario({
     {
-      {
-        id = "rival-coin",
-        class = 2,
-        party = { foe },
-        partyLevels = { 4 },
-        prizeMoney = { trainerClass = 2, classRate = 4 },
-        program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
-        aiPasses = {},
-      },
+      id = "rival-coin",
+      class = 2,
+      party = { foe },
+      partyLevels = { 4 },
+      prizeMoney = { trainerClass = 2, classRate = 4 },
+      program = { key = "rival_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+      aiPasses = {},
     },
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  }, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local battle = BattleRuntime.new({
     request = { id = "launch-coin-prize", kind = "trainer", payload = { trainer = "rival-coin" } },
     scenario = scenario,
@@ -392,19 +383,16 @@ function T.capture_stages_party_dex_and_bag_through_the_committer()
   local caught = foeRecord("TOTODILE", 4, 0xC0FFEE01)
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE02))
   local launch = { id = "launch-capture-wire", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(
-    launch.payload,
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -451,19 +439,16 @@ function T.full_party_capture_spills_into_the_first_empty_box_slot()
   local dex = newDexOwner()
   local foe = tackleOnly(foeRecord("EEVEE", 4, 0xAAAA0004))
   local launch = { id = "launch-full-party-wire", kind = "wild", payload = { species = "EEVEE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(
-    launch.payload,
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local caught = foeRecord("EEVEE", 4, 0xAAAA0002)
   local battle = BattleRuntime.new({
     request = launch,
@@ -501,19 +486,16 @@ function T.roamer_battle_advances_the_roamer_revision()
   local standin = foeRecord("EEVEE", 14, 0x90A4E001, 1)
   local launch =
     { id = "launch-roamer-wire", kind = "wild", payload = { species = "EEVEE", level = 14, mon = standin } }
-  local scenario = ScenarioFactory.fromEncounter(
-    launch.payload,
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   -- The roaming record tracks its own battle health; the scenario foe is a
   -- 1-HP stand-in so the executed battle settles the standing. The stand-in
   -- races at level 14 so the level-5 lead still answers under exact STAB.
@@ -541,19 +523,16 @@ function T.unknown_capture_species_fails_the_resolution()
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0005))
   local launch =
     { id = "launch-unknown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(
-    launch.payload,
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local bogus = foeRecord("EEVEE", 4, 0xAAAA0003)
   bogus.species = "MISSINGNO"
   local battle = BattleRuntime.new({
@@ -579,19 +558,16 @@ function T.unstaged_dex_reference_fails_the_resolution()
   local dex = PokedexKnowledge.new(PokedexDexFixture.refsForSpecies({ "CHIKORITA" }))
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0006))
   local launch = { id = "launch-unstaged-dex", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(
-    launch.payload,
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -701,11 +677,19 @@ end
 local function thrownCapture()
   local Capture = requirePresent("libs.battle.src.gen4.Capture", "throwing owns live captures")
   local caught = foeRecord("TOTODILE", 4, 0xC0FFEE11)
-  local outcome = Capture.execute(
-    { actor = 1, inventoryId = "party", ball = "GREAT_BALL", target = { combatant = 2 } },
-    weakenedThrow(caught),
-    thrownStream({ 0, 0, 0 })
-  )
+  local outcome = Capture.execute({
+    actor = 1,
+    inventoryId = "party",
+    ball = "GREAT_BALL",
+    target = { combatant = 2 },
+    sessionTarget = {
+      catchRate = 255,
+      maxHp = 30,
+      hp = 1,
+      status = "healthy",
+      species = "TOTODILE",
+    },
+  }, weakenedThrow(caught), thrownStream({ 0, 0, 0 }))
   Assert.isTrue(outcome.result.success, "the thrown ball lands deterministically")
   return outcome.result
 end
@@ -736,19 +720,16 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE12))
   local launch =
     { id = "launch-thrown-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
-  local scenario = ScenarioFactory.fromEncounter(
-    launch.payload,
-    {
-      party = party,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local battle = BattleRuntime.new({
     request = launch,
     scenario = scenario,
@@ -798,19 +779,16 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   local fullFoe = tackleOnly(foeRecord("TOTODILE", 4, 0xBBBB0004))
   local fullLaunch =
     { id = "launch-thrown-capture-full", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = fullFoe } }
-  local fullScenario = ScenarioFactory.fromEncounter(
-    fullLaunch.payload,
-    {
-      party = fullParty,
-      player = {
-        trainerId = 99,
-        trainerName = "MINT",
-        language = "french",
-        trainerClassKey = "PKMN_TRAINER_ETHAN",
-        metBill = false,
-      },
-    }
-  )
+  local fullScenario = ScenarioFactory.fromEncounter(fullLaunch.payload, {
+    party = fullParty,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
   local fullBattle = BattleRuntime.new({
     request = fullLaunch,
     scenario = fullScenario,
@@ -835,6 +813,61 @@ function T.thrown_captures_commit_through_the_runtime_without_reconstruction()
   Assert.isTrue(fullDex:isCaught("TOTODILE"), "the spillover registers caught knowledge")
   Assert.equal(fullBag:quantity("GREAT_BALL"), 0, "the spillover consumes its ball exactly once")
   fullBattle:dispose()
+end
+
+-- The scripted catching lesson stages no Dex observation or first-catch
+-- registration for its temporary catch: the lesson is a nonpersistent
+-- isolated setup (BattleSetup_New_Tutorial), so an uncaught lesson
+-- target opens no registration card and mutates no Dex knowledge while
+-- the battle still settles normally. The ordinary first catches above
+-- prove the positive control.
+function T.tutorial_captures_stage_no_dex_registration()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with consequence staging")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+
+  local party = newPartyOwner()
+  local bag = newBagOwner()
+  local dex = newDexOwner()
+  local caught = foeRecord("TOTODILE", 4, 0xC0FFEE21)
+  local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xC0FFEE22))
+  local launch =
+    { id = "launch-tutorial-capture", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
+  local scenario = ScenarioFactory.fromEncounter(launch.payload, {
+    party = party,
+    player = {
+      trainerId = 99,
+      trainerName = "MINT",
+      language = "french",
+      trainerClassKey = "PKMN_TRAINER_ETHAN",
+      metBill = false,
+    },
+  })
+  scenario.tutorial = true
+  local intents = {}
+  local port = headlessDecliningPort()
+  local recordOpen = port.openCompletion
+  port.openCompletion = function(intent)
+    intents[#intents + 1] = intent
+    return recordOpen(intent)
+  end
+  local battle = BattleRuntime.new({
+    request = launch,
+    scenario = scenario,
+    party = party,
+    bag = bag,
+    bagDeltas = { { op = "take", item = "POKE_BALL", quantity = 1 } },
+    dex = dex,
+    captures = { { captureId = 31, ball = "POKE_BALL", success = true, mon = caught } },
+    presentation = port,
+  })
+  driveToSettlement(battle, scenario)
+  Assert.equal(battle:status().phase, "complete", "the lesson battle settles normally")
+  Assert.isFalse(dex:isCaught("TOTODILE"), "the lesson mutates no caught knowledge")
+  Assert.isFalse(dex:isSeen("TOTODILE"), "the lesson records no observation")
+  for _, intent in ipairs(intents) do
+    Assert.isTrue(intent.kind ~= "capture_nickname", "the lesson opens no registration card")
+  end
+  battle:dispose()
 end
 
 return { tests = T }

@@ -189,6 +189,8 @@ local function scopeFor(mode, view)
     -- the source two-option identities instead of the command menu, with
     -- the compact dock adapting those cells to one surface.
     return "two-option"
+  elseif mode == "outcome" and type(view) == "table" and view.completionQuestion == true then
+    return "two-option"
   end
   return "command"
 end
@@ -675,7 +677,11 @@ function BattleCompactInterface.contentFor(view)
     childPlan = childContent(view.childView --[[@as table<string, unknown>]])
   end
   local twoOptionDock = nil
-  if mode == "shift" or mode == "use-next" then
+  if
+    mode == "shift"
+    or mode == "use-next"
+    or (mode == "outcome" and type(view) == "table" and view.completionQuestion == true)
+  then
     local content = contentOf(TWO_OPTION_OUTER)
     local questionHeight = TWO_OPTION_QUESTION_LINES * 16
     local rows = {}
@@ -835,10 +841,34 @@ end
 
 ---@param content table<string, unknown> canonical compact plan content
 ---@param mode string controller mode under mapping
+---@param view table<string, unknown> internal semantic snapshot carrying the mode scope
 ---@return table<integer, table<string, unknown>>? active hit regions with their scopes
-local function regionsFor(content, mode)
+local function regionsFor(content, mode, view)
   if mode == "child" then
     return childRegions(content.child --[[@as table<string, unknown>?]])
+  end
+  if mode == "outcome" and type(view) == "table" and view.completionQuestion == true then
+    -- The capture-nickname Yes/No question answers its adapted dock rows
+    -- directly through the two-option scope while the outcome narration
+    -- holds the question text.
+    local dock = content.twoOption --[[@as table<string, unknown>?]]
+    if type(dock) ~= "table" then
+      return nil
+    end
+    local regions = {}
+    for _, row in
+      ipairs(dock.rows --[[@as table<integer, table<string, unknown>> ]])
+    do
+      regions[#regions + 1] = {
+        id = row.id,
+        x = row.x,
+        y = row.y,
+        width = row.width,
+        height = row.height,
+        scope = "two-option",
+      }
+    end
+    return regions
   end
   if mode == "narration" or mode == "outcome" then
     return { { id = "dialogue", x = 0, y = 0, width = 256, height = 192, scope = mode } }
@@ -946,10 +976,10 @@ function BattleCompactInterface.mapInput(event, view, plan)
     if nativeChild then
       regions = { { id = "native", x = 0, y = 0, width = 256, height = 192, scope = "child" } }
     else
-      regions = regionsFor(content, view.mode --[[@as string]])
+      regions = regionsFor(content, view.mode --[[@as string]], view)
     end
   else
-    regions = regionsFor(content, view.mode --[[@as string]])
+    regions = regionsFor(content, view.mode --[[@as string]], view)
   end
   if eventType == "pointer_cancel" then
     return { type = kinds.pointer_cancel, pointerId = event.pointerId }
@@ -2416,9 +2446,39 @@ local function drawChildModal(resources, view, content, placement)
         end
       end
     end
+    -- The lesson finger and the d-pad cursor corners paint after the
+    -- rows at the end of this function: both are OBJ sprites above the
+    -- BG text, so painting them here would leave the row labels covering
+    -- the indicator they highlight.
+  end
+  drawLabel(text, fitText(text, tostring(childPlan.title or ""), 200), 12, 10)
+  if type(childView) == "table" then
+    if childView.kind == "bag" and type(childView.stock) == "number" then
+      drawLabel(text, "Stock: " .. tostring(childView.stock), 176, 10)
+    end
+  end
+  local rows = childPlan.rows --[[@as table<integer, table<string, unknown>>?]]
+  local focusId = type(childView) == "table" and childView.focusId or nil
+  if type(rows) == "table" then
+    local columns = childPlan.kind == "bag" and CHILD_BAG_ROW_COLUMNS or CHILD_ROW_COLUMNS
+    for index, row in ipairs(rows) do
+      if childPlan.kind == "learn" then
+        drawLearnRow(text, row, index, focusId == row.id)
+      else
+        drawTabularRow(text, row, index, focusId == row.id, columns)
+      end
+    end
+  end
+  drawChildFooter(text, childPlan, childView)
+  windows.drawApplicationFrame({ x = 8, y = 8, width = 240, height = 176 }, resources.frameKey)
+  if type(childView) == "table" and childView.kind == "bag" and childView.empty ~= true then
     -- The lesson finger centers on its per-page spot while the tutorial
-    -- auto-plays (battle_bag_menu.c UpdateTutorialFinger). Missing
-    -- staged art keeps the page under the existing pending path.
+    -- auto-plays (battle_bag_menu.c UpdateTutorialFinger). It paints
+    -- after every row label and the application frame like the retail
+    -- OBJ sprite above the BG text, never under them. Missing staged
+    -- art keeps the page under the existing pending path.
+    local assets = assert(resources.assets, "the compact bag borrows its asset holder")
+    local bagPage = type(childView.bagPage) == "string" and childView.bagPage or "item_list"
     local finger = BattleBagPockets.fingerDraw(childView.native)
     if finger ~= nil then
       local fingerArt = assets:drawable(finger.key)
@@ -2462,26 +2522,6 @@ local function drawChildModal(resources, view, content, placement)
       end
     end
   end
-  drawLabel(text, fitText(text, tostring(childPlan.title or ""), 200), 12, 10)
-  if type(childView) == "table" then
-    if childView.kind == "bag" and type(childView.stock) == "number" then
-      drawLabel(text, "Stock: " .. tostring(childView.stock), 176, 10)
-    end
-  end
-  local rows = childPlan.rows --[[@as table<integer, table<string, unknown>>?]]
-  local focusId = type(childView) == "table" and childView.focusId or nil
-  if type(rows) == "table" then
-    local columns = childPlan.kind == "bag" and CHILD_BAG_ROW_COLUMNS or CHILD_ROW_COLUMNS
-    for index, row in ipairs(rows) do
-      if childPlan.kind == "learn" then
-        drawLearnRow(text, row, index, focusId == row.id)
-      else
-        drawTabularRow(text, row, index, focusId == row.id, columns)
-      end
-    end
-  end
-  drawChildFooter(text, childPlan, childView)
-  windows.drawApplicationFrame({ x = 8, y = 8, width = 240, height = 176 }, resources.frameKey)
 end
 
 -- Draws the resolved compact plan inside its placement: the source scene
@@ -2548,7 +2588,11 @@ function BattleCompactInterface.render(resources, view, plan)
         draw = drawTargetSubDock,
         rect = { x = 0, y = 120, width = 256, height = 72 },
       }
-    elseif mode == "shift" or mode == "use-next" then
+    elseif
+      mode == "shift"
+      or mode == "use-next"
+      or (mode == "outcome" and type(view) == "table" and view.completionQuestion == true)
+    then
       local function drawTwoOptionSubDock()
         drawTwoOptionDock(resources, view, content)
       end
