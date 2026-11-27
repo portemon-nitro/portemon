@@ -2759,7 +2759,7 @@ end
 ---@param graphics table<string, unknown> injected host graphics
 ---@param image table<string, unknown>|userdata staged ball drawable
 ---@param flash integer|nil source blend coefficient 0..16
----@param flashColor table<string, number>|number[]|nil source RGB blend target, default white
+---@param flashColor number[]|nil source RGB blend target as a normalized array, default white
 ---@param ... unknown placement arguments forwarded to the draw call
 local function drawBallCell(graphics, image, flash, flashColor, ...)
   if flash == nil or flash == 0 then
@@ -2772,11 +2772,11 @@ local function drawBallCell(graphics, image, flash, flashColor, ...)
   )
   local target = { 1, 1, 1 }
   if type(flashColor) == "table" then
-    local r = flashColor[1] or flashColor.r
-    local g = flashColor[2] or flashColor.g
-    local b = flashColor[3] or flashColor.b
-    assert(type(r) == "number" and type(g) == "number" and type(b) == "number", "ball flash colors carry RGB")
-    target = { r, g, b }
+    assert(
+      type(flashColor[1]) == "number" and type(flashColor[2]) == "number" and type(flashColor[3]) == "number",
+      "ball flash colors carry RGB array"
+    )
+    target = { flashColor[1], flashColor[2], flashColor[3] }
   end
   local drawable = image
   local palette = nil
@@ -2829,51 +2829,28 @@ local function drawThrownBall(graphics, assets, view)
     local image = assets:drawable(key)
     if image ~= nil then
       -- Ball cells anchor at their own center: the throw cells are 16x16
-      -- and the opening animation's burst cell is 32x32.
+      -- and the opening animation's burst cell is 32x32. The
+      -- successful-catch fade keeps opaque texels and lets the shared
+      -- compositor blend the translucent OBJ with the published EVA/EVB
+      -- pair; no host alpha approximation runs here.
       local width, height = imageCellExtent(image)
       local fadeAlpha = ball.fadeAlpha --[[@as integer?]]
       if type(fadeAlpha) == "number" then
-        -- The successful-catch fade runs the ball as a translucent OBJ:
-        -- the foreground coefficient steps 15 -> 0 while the hidden
-        -- lifecycle ends at zero. Emulate with normalized alpha under
-        -- the shared compositor; both layouts read this same state.
-        assert(fadeAlpha % 1 == 0 and fadeAlpha >= 0 and fadeAlpha <= 15, "ball fade carries native 15..0")
-        local alpha = fadeAlpha / 15
-        graphics.push("all")
-        graphics.setColor(1, 1, 1, alpha)
-        local ok, err = pcall(
-          drawBallCell,
-          graphics,
-          image,
-          ball.paletteFlash,
-          ball.paletteFlashColor,
-          x,
-          y,
-          rotation / 0x10000 * 2 * math.pi,
-          1,
-          1,
-          math.floor(width / 2),
-          math.floor(height / 2)
-        )
-        graphics.pop()
-        if not ok then
-          error(err, 0)
-        end
-      else
-        drawBallCell(
-          graphics,
-          image,
-          ball.paletteFlash --[[@as integer?]],
-          ball.paletteFlashColor, --[[@as table<string, number>?]]
-          x,
-          y,
-          rotation / 0x10000 * 2 * math.pi,
-          1,
-          1,
-          math.floor(width / 2),
-          math.floor(height / 2)
-        )
+        assert(fadeAlpha % 1 == 0 and fadeAlpha >= 0 and fadeAlpha <= 16, "ball fade carries native 16..0")
       end
+      drawBallCell(
+        graphics,
+        image,
+        ball.paletteFlash --[[@as integer?]],
+        ball.paletteFlashColor, --[[@as table<string, number>?]]
+        x,
+        y,
+        rotation / 0x10000 * 2 * math.pi,
+        1,
+        1,
+        math.floor(width / 2),
+        math.floor(height / 2)
+      )
     end
   end
 end
@@ -2984,8 +2961,10 @@ local function drawDetail(resources, view)
     end
     planes.transition = { draw = drawStripeTransition }
   end
-  local function drawDetailObjects()
+  local function drawDetailBall()
     drawThrownBall(graphics, assets, view)
+  end
+  local function drawDetailObjects()
     local players, enemies = BattleViewRoster.liveSides(view)
     local singles = not doublesFormat(view, players, enemies)
     if singles then
@@ -3002,12 +2981,26 @@ local function drawDetail(resources, view)
       )
     end
   end
+  -- The thrown ball rides its own OBJ fragment so the capture fade can
+  -- run it as translucent with the published EVA/EVB pair while HUD
+  -- fragments stay normal.
+  local ballThrow = type(view.openingPresentation) == "table" and view.openingPresentation.ballThrow or nil
+  local ballMode = type(ballThrow) == "table" and type(ballThrow.oamMode) == "string" and ballThrow.oamMode or "normal"
+  if ballMode ~= "normal" and ballMode ~= "translucent" and ballMode ~= "semitransparent" then
+    ballMode = "normal"
+  end
   -- While the level-up stat window is open, the source drops every HP
   -- box to OAM priority 1 so the window plane covers them.
   local objects = {
     {
-      objPriority = view.levelUpStats ~= nil and 1 or 0,
+      objPriority = 0,
       submissionOrder = 1,
+      oamMode = ballMode,
+      draw = drawDetailBall,
+    },
+    {
+      objPriority = view.levelUpStats ~= nil and 1 or 0,
+      submissionOrder = 2,
       oamMode = "normal",
       draw = drawDetailObjects,
     },

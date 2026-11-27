@@ -875,13 +875,6 @@ function PokedexKnowledge:prepareChanges(changes)
       row = { genders = {}, variants = {}, caughtVariants = {}, languages = {} }
       scratchHistory[speciesKey] = row
     end
-    -- Rows arrive normalized from the single copyHistory funnel, which
-    -- rehydrates sparse restored rows; new rows start complete here.
-    -- Keep validation at the ownership boundary instead of repairing
-    -- the same lists twice.
-    for _, field in ipairs({ "genders", "variants", "caughtVariants", "languages" }) do
-      assert(type(row[field]) == "table", "dex history rows carry their list fields")
-    end
     local genders = row.genders --[[@as unknown[] ]]
     if not contains(genders, descriptor.gender) then
       genders[#genders + 1] = descriptor.gender

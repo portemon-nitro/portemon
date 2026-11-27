@@ -4413,10 +4413,11 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
   -- Fixed-point truncation lands one pixel above the nominal spot with
   -- no snap (BattleAnimUtil_UpdateLinearMotion), matching the source.
   Assert.equal(ball.y, 87, "the ball rests where it fell")
-  -- BREAK_OUT hijacks the send-out with mode 1: the old capture ball
-  -- stays two frames while the attempted ball opens in place with the
-  -- generic burst, then the seal, the ball sound, and the cry follow
-  -- from the open.
+  -- BREAK_OUT hijacks the send-out with mode 1 (ThrowArcAndOpen): the
+  -- old capture ball stays two frames while the attempted ball holds
+  -- in place for 12 ticks, then opens with the forced frame-2 white
+  -- blend; the seal, the ball sound, and the cry follow from the open.
+  -- No generic burst plays on this path (mode 5 owns the recall burst).
   timeline:takeBallParticleStarts()
   local queued = #timeline._queue
   local broke = event("broke_free", { shakes = 1 }, { [1] = 52, [3] = 57 })
@@ -4461,7 +4462,7 @@ function T.capture_throw_rests_then_breaks_free_with_the_capture_ball()
     end
   end
   Assert.equal(#bursts, 0, "the re-open starts no ball-specific opening burst")
-  Assert.equal(#generics, 1, "the mode-1 open starts the generic burst")
+  Assert.equal(#generics, 0, "ordinary breakout never plays the mode-5 generic burst")
   Assert.equal(#seals, 1, "the re-open starts the capture ball's seal from the open")
   Assert.equal(seals[1].ballKey, "GREAT_BALL", "the seal rides the capture ball, not the origin ball")
 end

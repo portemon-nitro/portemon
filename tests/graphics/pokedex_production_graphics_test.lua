@@ -3731,9 +3731,6 @@ function T.registration_picture_slides_and_hides_on_departure(scope)
     )
     local dx, dy = opaqueOffset(baseData, qx, qy, qw, qh)
     local er, eg, eb = pixel(baseData, qx + dx, qy + dy)
-    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "registration", "information")
-    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "registration", "information")
-    local backdrop = Renderer.backdropOf(rig.manifest, "registration", "information")
     ---@param pictureX integer source picture center behind the frame
     ---@param hidden boolean true once departure hides the sprite art
     ---@return table 8-bit pixel buffer behind the composed card
@@ -3755,12 +3752,21 @@ function T.registration_picture_slides_and_hides_on_departure(scope)
         "the departing picture paints its specimen at center " .. center
       )
     end
-    -- Once hidden, the specimen bytes leave while the card background
-    -- stays: the probe lands on authored background, never the portrait.
+    -- SpritesHidden hides only the popup OBJ sprites at departure;
+    -- the centered captured picture stays visible through the exit.
+    -- Gating the picture on spritesHidden would blink the specimen
+    -- out just as it centers.
     do
       local data = drawCard(128, true)
-      local br, bg, bb = expectedBackground(layers, priorities, backdrop, 88 + dx, 32 + dy)
-      assertPixel(data, 88 + dx, 32 + dy, br, bg, bb, "the hidden departure frame clears the specimen from the card")
+      assertPixel(
+        data,
+        88 + dx,
+        32 + dy,
+        er,
+        eg,
+        eb,
+        "the hidden departure frame keeps the centered specimen while popup sprites hide"
+      )
     end
     lease:release()
     rig.owner:release()

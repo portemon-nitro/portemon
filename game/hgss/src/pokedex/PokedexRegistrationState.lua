@@ -444,14 +444,6 @@ local function stepSource(self)
     end
     return
   end
-  if self._phase == "entryFade" then
-    -- Legacy out-then-in step kept for saved-phase tolerance: treat an
-    -- already-entered fade as its single fade-in.
-    self._palette = fadeInit(FADE_MAX, 0, true)
-    self._picture = fadeInit(FADE_MAX, 0, false)
-    self._phase = "waitCardFade"
-    return
-  end
   if self._phase == "waitCardFade" then
     fadeStepPalette(self._palette)
     fadeStepPicture(self._picture)

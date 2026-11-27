@@ -164,11 +164,15 @@ function T.level_up_stats_window_draws_over_the_hud()
 
   local plain = composedFrame(nil)
   local windowPriority = plain.animation.priority.window --[[@as integer]]
-  Assert.equal(plain.objects[1].objPriority, windowPriority, "the HUD shares the window's top priority and wins ties")
+  -- Detail composes the ball on its own translucent-capable fragment
+  -- ahead of the HUD fragment so the capture fade can blend the ball
+  -- while HUD stays normal.
+  Assert.equal(#plain.objects, 2, "detail separates the ball and HUD fragments")
+  Assert.equal(plain.objects[2].objPriority, windowPriority, "the HUD shares the window's top priority and wins ties")
 
   local leveled = composedFrame({ rows = { { label = "Max. HP", value = "+3" } } })
   Assert.equal(leveled.animation.priority.window, windowPriority, "the stat window keeps its top BG priority")
-  Assert.isTrue(leveled.objects[1].objPriority > windowPriority, "the HUD drops behind the open level-up stat window")
+  Assert.isTrue(leveled.objects[2].objPriority > windowPriority, "the HUD drops behind the open level-up stat window")
 end
 
 -- Strip quads segregate by graphics namespace and strip dimensions: the same

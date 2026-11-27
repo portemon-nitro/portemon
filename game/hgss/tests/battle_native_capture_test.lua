@@ -540,7 +540,7 @@ function T.missing_required_effects_fail_instead_of_vanishing()
   Assert.equal(failed[1].reason, "missing-particles", "the failure names its staging loss")
 end
 
-function T.breakout_runs_mode1_with_generic_burst()
+function T.breakout_runs_mode1_without_generic_burst()
   local sounds = sink()
   local timeline = BattleTimeline.new({
     sound = function(name)
@@ -550,6 +550,14 @@ function T.breakout_runs_mode1_with_generic_burst()
   stageBallArt(timeline)
   timeline:reset(openingView())
   local driver = driveParticles(timeline)
+  local seenEffects = {}
+  local rawStep = driver.owner.step
+  function driver.owner:step(starts, queued, res)
+    for _, start in ipairs(starts) do
+      seenEffects[#seenEffects + 1] = start.effect
+    end
+    return rawStep(self, starts, queued, res)
+  end
   local packet = {
     launchId = "capture-breakout-probe",
     packetId = 1,
@@ -580,6 +588,16 @@ function T.breakout_runs_mode1_with_generic_burst()
   Assert.isTrue(timeline:settled(), "the breakout sequence drains")
   Assert.isTrue(battler(timeline:battlers(), 3).visible, "the breakout reveals its target")
   Assert.isFalse(ballOf(timeline).visible, "the breakout retires its ball")
+  for _, effect in ipairs(seenEffects) do
+    Assert.isTrue(effect ~= "generic-burst", "ordinary breakout never plays the mode-5 generic burst")
+  end
+  local sawSeal = false
+  for _, effect in ipairs(seenEffects) do
+    if effect == "seal" then
+      sawSeal = true
+    end
+  end
+  Assert.isTrue(sawSeal, "the breakout starts the attempted-ball seal")
   local order = symbols(sounds)
   local open = nil
   for index, symbol in ipairs(order) do
@@ -679,11 +697,7 @@ function T.flash_uses_native_colors_and_steps()
     "the open flash publishes its color"
   )
   local ball = ballOf(timeline)
-  Assert.deepEqual(
-    ball.paletteFlashColor,
-    { 1, 27 / 31, 0 },
-    "the open flash carries yellow RGB(31,27,0), not white"
-  )
+  Assert.deepEqual(ball.paletteFlashColor, { 1, 27 / 31, 0 }, "the open flash carries yellow RGB(31,27,0), not white")
   Assert.isTrue(ball.paletteFlash % 3 == 0, "the yellow coefficient advances by threes")
   Assert.isTrue(ball.paletteFlash <= 12, "the yellow coefficient peaks at native 12")
 end
@@ -733,11 +747,8 @@ function T.fade_publishes_translucent_alpha_not_a_hide_timer()
   )
   local ball = ballOf(timeline)
   Assert.equal(ball.oamMode, "translucent", "the fade runs as a translucent OBJ")
-  Assert.isTrue(
-    ball.fadeAlpha >= 0 and ball.fadeAlpha <= 15,
-    "the fade coefficient runs native 15..0"
-  )
-  Assert.equal(ball.fadeBeta, 15 - ball.fadeAlpha, "the background coefficient complements the foreground")
+  Assert.isTrue(ball.fadeAlpha >= 0 and ball.fadeAlpha <= 16, "the fade coefficient runs native 16..0")
+  Assert.equal(ball.fadeBeta, 16 - ball.fadeAlpha, "the background coefficient complements the foreground to 16")
 end
 
 function T.absorb_shrinks_affine_before_hiding()

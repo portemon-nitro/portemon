@@ -644,9 +644,11 @@ function T.battle_ball_frames_are_part_of_the_exact_readiness_closure()
 end
 
 function T.battle_ball_generic_burst_is_part_of_the_exact_readiness_closure()
-  -- The breakout's mode-1 open needs the shared generic burst beside
-  -- the per-ball seal/burst: the contract version bump records the
+  -- The recall mode-5 open needs the shared generic burst beside the
+  -- per-ball seal/burst: the contract version bump records the
   -- required payload shape change for previously published caches.
+  -- Full texture-closure is proved by the staged-ball audit below;
+  -- this pins the published schema identity itself.
   local Contract = require("libs.assets.src.DerivedAssetContract")
   Assert.equal(
     Contract.battlePresentation.ballSchema,
@@ -1274,9 +1276,11 @@ function T.edited_readable_records_load_while_strict_audits_reject_them()
   stageBallLeafCells(cache, ballRecord.entry.frames)
   stageBallLeafCells(cache, ballRecord.entry.opening.frames)
   if ballRecord.entry.particles ~= nil then
-    for _, set in ipairs(
-      { ballRecord.entry.particles.seal, ballRecord.entry.particles.burst, ballRecord.entry.particles.genericBurst }
-    ) do
+    for _, set in ipairs({
+      ballRecord.entry.particles.seal,
+      ballRecord.entry.particles.burst,
+      ballRecord.entry.particles.genericBurst,
+    }) do
       if type(set) == "table" then
         for _, texture in ipairs(set.textures) do
           stagePng(cache, texture.image, texture.width, texture.height)

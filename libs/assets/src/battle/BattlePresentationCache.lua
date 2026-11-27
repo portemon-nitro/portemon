@@ -140,7 +140,7 @@ BattlePresentationCache.TIMES = { "day", "evening", "night" }
 ---@class BattlePresentationCache.BallParticles
 ---@field seal BattlePresentationCache.BallParticleSet
 ---@field burst BattlePresentationCache.BallParticleSet
----@field genericBurst BattlePresentationCache.BallParticleSet shared generic burst the breakout mode-1 open plays
+---@field genericBurst BattlePresentationCache.BallParticleSet shared generic burst the recall mode-5 open plays
 ---@field clickEmitter integer burst emitter the capture click plays alone and the opening burst skips
 ---@field burstStartTick integer ticks after the ball starts opening until the burst emits
 
@@ -996,9 +996,9 @@ local function hasBallImageClosure(cacheFs, record)
   end
   local particles = entry.particles
   if particles ~= nil then
-    -- The breakout's mode-1 open needs the shared generic burst beside
+    -- The recall mode-5 open needs the shared generic burst beside
     -- the per-ball seal/burst: an older manifest lacking it cannot play
-    -- the current capture set.
+    -- the current set.
     if type(particles.genericBurst) ~= "table" then
       return false
     end

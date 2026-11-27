@@ -2844,7 +2844,6 @@ function PokedexRenderer:drawRegistration(prepared, plan)
   if type(pictureX) ~= "number" then
     pictureX = PokedexRenderer.REGISTRATION_PICTURE_HOME
   end
-  local _ = view.spritesHidden
   assert(type(graphics.push) == "function", "registration drawing requires its host state stack")
   graphics.push("all")
   local ok, err = pcall(function()
@@ -2866,12 +2865,13 @@ function PokedexRenderer:drawRegistration(prepared, plan)
           drawSampled(graphics, handle, nil, flash.x, flash.y)
           graphics.setCanvas(outerCanvas)
         end
-        if true then
-          -- The captured specimen stays visible from publication through
-          -- departure and the frozen exit: only the popup OBJ sprites
-          -- hide at departure, never the centered picture. Gating the
-          -- picture on spritesHidden would blink the specimen out just
-          -- as it centers.
+        -- The captured specimen stays visible from publication through
+        -- departure and the frozen exit: only the popup OBJ sprites
+        -- hide at departure, never the centered picture. Gating the
+        -- picture on spritesHidden would blink the specimen out just
+        -- as it centers. Popup sprite passes above already honor
+        -- spritesHidden; this picture pass intentionally does not.
+        do
           local pictures = assets.pictures
           assert(type(pictures) == "table", "prepared card bundles carry their pictures")
           local card = assert(pictures.registration, "prepared card bundles carry their captured picture")
