@@ -23,10 +23,10 @@ function Worker.run(requestChannel, replyChannel)
   pcall(require, "love.image")
 
   local Errors = require("libs.errors.src.Errors")
+  local StorageErrors = require("libs.storage.src.errors")
   local ImageDerivative = require("libs.hgss.src.presentation.ImageDerivative")
   local NativeTextureBank = require("libs.assets.src.model.NativeTextureBank")
   local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
-  local StorageErrors = require("libs.storage.src.errors")
   local TextureDecoder = require("libs.nds.src.gx.TextureDecoder")
 
   ---@param payload unknown

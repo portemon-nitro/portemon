@@ -32,6 +32,7 @@
 ---@field path string generated file path
 ---@field selector ModelAsset.TextureReference? native bank texture/palette selector for g4tx
 ---@field data love.Data? generated payload handed to the worker, absent for a selected source read
+---@field directData love.Data? base-resident bytes transferred without a kernel entry, set only on ready source records
 ---@field key string decoded-value identity in the shared CPU owner
 ---@field priority "demand"|"prefetch" list this record is queued on
 ---@field demandRequested boolean? a consumer is blocked on this logical acquisition, whatever stage it is at
@@ -114,7 +115,14 @@ Worker.run(requestChannel, replyChannel)
   WORKER_MODULE
 )
 
-local VALID_KINDS = { mesh = true, image = true, ["image-derivative"] = true, g4gx = true, g4tx = true, source = true }
+local VALID_KINDS = {
+  mesh = true,
+  image = true,
+  ["image-derivative"] = true,
+  g4gx = true,
+  g4tx = true,
+  source = true,
+}
 local VALID_PRIORITIES = { demand = true, prefetch = true }
 
 -- Estimated per-value metadata charge: small immutable Lua descriptors, not
@@ -1409,6 +1417,100 @@ function AssetPreparationQueue:take(token)
   self:_forgetReadyPayload(record)
   self._tokens[token] = nil
   return assert(record.lease, "ready preparation has no decoded lease")
+end
+
+-- Transfer a ready source token's resident bytes exactly once. The
+-- returned lease is shaped exactly like acquireSource: value is the
+-- selected bytes with idempotent exactly-once release through the shared
+-- owner. Base direct bytes transfer with no kernel entry; a disk-backed
+-- selected read unwraps the worker's bytes through its kernel lease.
+-- Unknown, pending, failed, or already-transferred tokens fail loudly.
+---@param token integer
+---@return AssetPreparationQueueSourceLease
+function AssetPreparationQueue:takeSource(token)
+  local record = self._tokens[token]
+  assert(record, "unknown preparation token")
+  self:_drain()
+  self:_dispatch()
+  record = self._tokens[token]
+  assert(record, "unknown preparation token")
+  assert(record.kind == "source", "source take requires a source token")
+  assert(record.state == "ready", "preparation result is not ready")
+  self:_forgetReadyPayload(record)
+  self._tokens[token] = nil
+  local direct = record.directData
+  if direct ~= nil then
+    record.directData = nil
+    local lease = { value = direct }
+    ---@cast lease AssetPreparationQueueSourceLease
+    function lease:release()
+      if self.value == nil then
+        return
+      end
+      self.value = nil
+    end
+    return lease
+  end
+  local kernelLease = assert(record.lease, "ready source has no decoded lease")
+  record.lease = nil
+  local decoded = self._decoded
+  local sourceLease = {
+    value = assert(kernelLease.value).payload --[[@as love.Data]],
+  }
+  ---@cast sourceLease AssetPreparationQueueSourceLease
+  function sourceLease:release()
+    if self.value == nil then
+      return
+    end
+    self.value = nil
+    decoded:returnLease(kernelLease)
+    decoded:trim()
+  end
+  return sourceLease
+end
+
+-- Borrow one selected source without blocking: base resident bytes answer
+-- immediately with no worker traffic, an already-resident selected source
+-- answers ready with its own lease, and a disk-backed selected member
+-- enrolls the one pending source read the stage polls once per update.
+-- The token polls/cancels/promotes through the existing paths; takeSource
+-- transfers its lease with acquireSource release semantics.
+---@param reference ResidentCache.BlobRef|CacheFs.PackageRef
+---@param priority "demand"|"prefetch"
+---@return integer
+function AssetPreparationQueue:requestSource(reference, priority)
+  assert(not self._released, "asset preparation queue is released")
+  assert(
+    type(reference) == "table" and type(reference.sourceId) == "string",
+    "source borrow requires a resolved reference"
+  )
+  assert(VALID_PRIORITIES[priority], "unknown preparation priority " .. tostring(priority))
+  if reference.data ~= nil then
+    self:_drain()
+    self:_checkWorkerHealth()
+    self._nextToken = self._nextToken + 1
+    local token = self._nextToken
+    self._tokens[token] = {
+      token = token,
+      kind = "source",
+      path = reference.path,
+      key = lengthPrefixedKey({ reference.sourceId, "direct" }),
+      priority = priority,
+      state = "ready",
+      stage = "decode",
+      directData = reference.data,
+    }
+    self:_dispatch()
+    return token
+  end
+  assert(
+    type(reference.contentId) == "string"
+      and type(reference.physicalPath) == "string"
+      and type(reference.path) == "string"
+      and type(reference.size) == "number",
+    "disk source borrow requires a resolved selected reference: " .. tostring(reference.path)
+  )
+  return self:_requestSource(reference --[[@as CacheFs.PackageRef]], reference.path, priority)
 end
 
 -- Drop logical interest; a running job is not preempted and its late result

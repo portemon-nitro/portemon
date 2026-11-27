@@ -2354,6 +2354,16 @@ local function physicalCoverageOptions(loader, runtimeMap, position)
     -- Physical cells borrow their compact collision through the same selected
     -- runtime as the logical map, so one source interest per live cell owner.
     acquireSource = loader.acquireSource,
+    -- The staged collision phase borrows cooperatively through this queue
+    -- when it offers the selected request/take adapter; explicitly
+    -- synchronous initialization keeps the blocking acquirer above.
+    sourceQueue = (function()
+      local queue = loader.assetPreparation
+      if type(queue) == "table" and type(queue.requestSource) == "function" then
+        return queue
+      end
+      return nil
+    end)(),
     anchorX = math.floor(position.fieldX / 32),
     anchorZ = math.floor(position.fieldZ / 32),
     mapPropsFactory = mapPropsFactory,

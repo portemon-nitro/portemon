@@ -677,11 +677,7 @@ function T.prepared_map_prediction_never_warms_banks_synchronously()
   controller:prewarmMapMusic(runtimeMap(fieldData))
 
   Assert.deepEqual(calls.sync, {}, "prepared-map prediction never blocks on a synchronous bank warm")
-  Assert.deepEqual(
-    calls.background,
-    { 7, 8 },
-    "the selected day and night banks enroll as background demand instead"
-  )
+  Assert.deepEqual(calls.background, { 7, 8 }, "the selected day and night banks enroll as background demand instead")
 end
 
 function T.production_position_is_read_through_a_narrow_fieldX_fieldZ_provider()
@@ -1462,6 +1458,39 @@ function T.resume_without_restore_releases_the_hold_silently()
   Assert.equal(sound:currentMusic(), 11, "a non-restoring release keeps the recovery decision")
   controller:updateField()
   Assert.equal(#spy.plays, playsBefore, "step policy stays ordinary after release")
+end
+
+-- The battle bank bridge stages required selected sources without
+-- voicing: pending reports pending with no terminal cause, failure
+-- propagates its cause, holds release exactly once, and providers
+-- without the required-source contract keep the derived-bank-only
+-- readiness.
+function T.battle_bank_bridge_reports_pending_and_releases_holds()
+  local required = {}
+  local stub = {
+    requireBankSources = function(_, bankId)
+      required[#required + 1] = bankId
+      return false, nil
+    end,
+    releaseBankSources = function(_, bankId)
+      required[#required + 1] = "release:" .. tostring(bankId)
+      return 2
+    end,
+  }
+  local controller = prewarmController(stub, {}, function()
+    return "day"
+  end)
+  local ready, failure = controller:requireBattleBankSources(12)
+  Assert.equal(ready, false, "an unsettled required source reports pending, never ready")
+  Assert.isNil(failure, "pending carries no terminal cause")
+  Assert.equal(required[1], 12, "the bridge stages the exact required bank")
+  Assert.equal(controller:releaseBattleBankSources(12), 2, "release returns every retained hold once")
+
+  local plain = prewarmController({}, {}, function()
+    return "day"
+  end)
+  Assert.isTrue(plain:requireBattleBankSources(12), "a provider without the required-source contract stays ready")
+  Assert.equal(plain:releaseBattleBankSources(12), 0, "no hold exists to return without the contract")
 end
 
 return { tests = T }

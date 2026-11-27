@@ -79,6 +79,8 @@ local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
 ---@field acquireSample fun(self: AudioAssetProvider, key: string): AudioAssetSampleLease
 ---@field prewarmBank fun(self: AudioAssetProvider, idOrSymbol: integer|string): AudioAssetSample[]
 ---@field prewarmBankBackground fun(self: AudioAssetProvider, idOrSymbol: integer|string): integer
+---@field requireBankSources fun(self: AudioAssetProvider, idOrSymbol: integer|string): (boolean?, string?)
+---@field releaseBankSources fun(self: AudioAssetProvider, idOrSymbol: integer|string): integer
 ---@field bindQueue fun(self: AudioAssetProvider, queue: table<string, unknown>?)
 ---@field drainReadySamples fun(self: AudioAssetProvider): integer
 ---@field cancelUnpredicted fun(self: AudioAssetProvider, predictedSet: table<string, boolean>): integer
@@ -116,6 +118,7 @@ function AudioAssetProvider.new(cacheFs, opts)
     _banks = {},
     _activeSamples = {},
     _sampleSources = {},
+    _requiredSources = {},
     _bankKeysMemo = {},
     _bankKeysOrder = {},
     _acquisitions = 0,
@@ -474,6 +477,153 @@ function AudioAssetProvider:drainReadySamples()
   return adopted
 end
 
+-- Stages the required sample sources of one bank without voicing early:
+-- true once every closure sample is base resident or retained, false while
+-- any selected read is unsettled, nil plus a bank-and-key failure on a
+-- terminal read. Missing interests schedule at demand priority and rejoin
+-- instead of duplicating; ready reads transfer into retained holds that
+-- survive until first-use transfer or releaseBankSources, so eviction
+-- cannot reintroduce a synchronous disk wait. Never cancels a ready read
+-- to idle.
+---@param idOrSymbol integer|string
+---@return boolean? ready true when every required source is held, false while pending, nil on failure
+---@return string? terminal failure naming the bank and sample key, nil otherwise
+function AudioAssetProvider:requireBankSources(idOrSymbol)
+  -- Bank record resolution stays with the existing derived-bank paths:
+  -- the bridge stages selected-source holds only for closures the
+  -- provider can actually resolve. An unresolvable bank stages no hold
+  -- and reports ready, so voice-time behavior is exactly the baseline;
+  -- genuine missing derived banks already fail closed before this bridge.
+  local bankOk, bank = pcall(function()
+    return self:bank(idOrSymbol)
+  end)
+  if not bankOk or type(bank) ~= "table" then
+    return true, nil
+  end
+  local bankId = assert(bank.id, "audio bank carries its numeric identity")
+  local keysOk, keys = pcall(function()
+    return self:_closureKeys(idOrSymbol)
+  end)
+  if not keysOk or type(keys) ~= "table" then
+    return true, nil
+  end
+  local memoKey = tostring(bankId)
+  local state = self._requiredSources[memoKey]
+  if state == nil then
+    state = { tokens = {}, holds = {} }
+    self._requiredSources[memoKey] = state
+  end
+  if state.failed ~= nil then
+    return nil, state.failed
+  end
+  local queue = self._queue
+  local pending = false
+  for _, key in ipairs(keys) do
+    if state.holds[key] == nil then
+      local reference = self:_sampleSource(key)
+      if reference ~= nil then
+        local token = state.tokens[key]
+        if token == nil then
+          local background = self._sampleSources[key]
+          if background ~= nil and queue ~= nil then
+            local backgroundState = queue:poll(background)
+            if backgroundState == "pending" or backgroundState == "ready" then
+              pcall(queue.promote, queue, background, "demand")
+              self._sampleSources[key] = nil
+              state.tokens[key] = background
+              token = background
+            else
+              pcall(queue.cancel, queue, background)
+              self._sampleSources[key] = nil
+            end
+          end
+        end
+        if token == nil then
+          if queue == nil then
+            pending = true
+          else
+            token = queue:request("source", AudioCache.samplePath(key), "demand")
+            state.tokens[key] = token --[[@as integer]]
+          end
+        end
+        token = state.tokens[key]
+        if token ~= nil and queue ~= nil then
+          local status, cause = queue:poll(token)
+          if status == "ready" then
+            local lease = queue:take(token)
+            state.tokens[key] = nil
+            state.holds[key] = lease
+          elseif status == "failed" then
+            local failure = "battle audio bank "
+              .. tostring(bankId)
+              .. " sample "
+              .. tostring(key)
+              .. " is not staged: "
+              .. tostring(cause or "selected source read failed")
+            for otherKey, otherToken in pairs(state.tokens) do
+              state.tokens[otherKey] = nil
+              pcall(queue.cancel, queue, otherToken)
+            end
+            for heldKey, heldLease in pairs(state.holds) do
+              state.holds[heldKey] = nil
+              pcall(function()
+                heldLease:release()
+              end)
+            end
+            state.failed = failure
+            return nil, failure
+          else
+            pcall(queue.promote, queue, token, "demand")
+            pending = true
+          end
+        elseif token ~= nil then
+          pending = true
+        end
+      end
+    end
+  end
+  if pending then
+    return false, nil
+  end
+  return true, nil
+end
+
+-- Returns every retained required hold of one bank exactly once. Pending
+-- required interests cancel without counting toward the returned holds.
+---@param idOrSymbol integer|string
+---@return integer released hold count
+function AudioAssetProvider:releaseBankSources(idOrSymbol)
+  local ok, bank = pcall(function()
+    return self:bank(idOrSymbol)
+  end)
+  if not ok or bank == nil then
+    return 0
+  end
+  local memoKey = tostring(assert(bank.id, "audio bank carries its numeric identity"))
+  local state = self._requiredSources[memoKey]
+  if state == nil then
+    return 0
+  end
+  local queue = self._queue
+  for key, token in pairs(state.tokens) do
+    state.tokens[key] = nil
+    if queue ~= nil then
+      pcall(queue.cancel, queue, token)
+    end
+  end
+  local released = 0
+  for key, lease in pairs(state.holds) do
+    state.holds[key] = nil
+    local done, _ = pcall(function()
+      lease:release()
+    end)
+    if done then
+      released = released + 1
+    end
+  end
+  return released
+end
+
 -- Drops this provider's predicted source interests outside the caller's key
 -- set. Voices and other consumers keep their own interests, and a physically
 -- running read still settles before its bytes are released.
@@ -536,6 +686,21 @@ function AudioAssetProvider:dispose()
       pcall(queue.cancel, queue, token)
     end
   end
+  for _, state in pairs(self._requiredSources) do
+    for key, token in pairs(state.tokens) do
+      state.tokens[key] = nil
+      if queue ~= nil then
+        pcall(queue.cancel, queue, token)
+      end
+    end
+    for key, lease in pairs(state.holds) do
+      state.holds[key] = nil
+      pcall(function()
+        lease:release()
+      end)
+    end
+  end
+  self._requiredSources = {}
   self._sequences = {}
   self._banks = {}
   self._bankKeysMemo = {}

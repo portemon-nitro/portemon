@@ -80,6 +80,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _musicStarted boolean true once battle music was attempted for the launch
 ---@field _musicNote string? battle-music start note, set once the staged track voices
 ---@field _musicBankIds integer[]? admission snapshot behind the gated music start, refreshed while empty
+---@field _cryBankIds integer[]? admission snapshot of demanded cry banks behind the gated music start
 ---@field _musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field _resultMusicPlayed boolean true once the result music swap was attempted for the launch
 ---@field _captureAnimationRng (fun(): table<string, unknown>) | nil detached visual-launch capture closure behind the shared seed
@@ -1111,6 +1112,7 @@ function FieldBattlePresentation.new(opts)
     _musicStarted = false,
     _musicNote = nil,
     _musicBankIds = nil,
+    _cryBankIds = nil,
     _musicRole = nil,
     _resultMusicPlayed = false,
     _captureAnimationRng = opts.captureAnimationRng,
@@ -4270,6 +4272,7 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._musicStarted = false
   self._musicNote = nil
   self._musicBankIds = nil
+  self._cryBankIds = nil
   self._musicRole = descriptor.musicRole
   self._resultMusicPlayed = false
   self._transition = nil
@@ -4900,6 +4903,70 @@ end
 -- from tick one: eggs and unresolvable records pre-seed nothing and the
 -- required preparation path reports with its context later. Never raises:
 -- admission must not fail on speculative demands.
+-- Resolves the cry sample bank behind one launch combatant, or nothing
+-- when the record cannot voice: eggs, unresolvable records, unknown
+-- species, and malformed forms pre-seed nothing, and the required
+-- preparation path reports with its context later. Never raises.
+---@param catalog table<string, unknown>? borrowed mon catalog behind species facts
+---@param mon table<string, unknown>? party lead or foe mon record under pre-seeding
+---@return integer? cry bank id behind the combatant, nil when it voices nothing
+local function cryBankForMon(catalog, mon)
+  if type(mon) ~= "table" or mon.isEgg == true then
+    return nil
+  end
+  if type(catalog) ~= "table" or type(catalog.species) ~= "function" then
+    return nil
+  end
+  local speciesKey = mon.species
+  local form = mon.form
+  if type(speciesKey) ~= "string" or speciesKey == "" then
+    return nil
+  end
+  if type(form) ~= "number" or form % 1 ~= 0 or form < 0 then
+    return nil
+  end
+  local okFacts, facts = pcall(catalog.species, catalog, speciesKey)
+  if not okFacts or type(facts) ~= "table" then
+    return nil
+  end
+  local nativeId = facts.nativeId
+  if type(nativeId) ~= "number" or nativeId % 1 ~= 0 or nativeId < 0 then
+    return nil
+  end
+  return CryPlayer.bankFor(nativeId --[[@as integer]], form --[[@as integer]])
+end
+
+-- Snapshots the demanded cry banks behind the admitted launch combatants:
+-- the lead and foe send-out cries voice before any screen demand exists,
+-- so the music gate retains their selected sources from this admission
+-- snapshot instead of the later launch demand. Banks already covered by
+-- the music closure keep their single music hold.
+---@param envelope FieldBattlePresentation launch envelope behind the snapshot
+---@param musicBanks integer[] music-closure bank ids already retaining their holds
+---@return integer[] distinct demanded cry bank ids in stable ascending order
+local function demandedCryBanks(envelope, musicBanks)
+  local musicSeen = {}
+  for _, bankId in ipairs(musicBanks) do
+    musicSeen[bankId] = true
+  end
+  local seen = {}
+  local banks = {}
+  local descriptor = envelope._descriptor
+  local combatants = {}
+  if type(descriptor) == "table" then
+    combatants = { descriptor.leadMon, descriptor.foeMon }
+  end
+  for _, mon in ipairs(combatants) do
+    local bankId = cryBankForMon(envelope._monCatalog, mon)
+    if bankId ~= nil and not musicSeen[bankId] and not seen[bankId] then
+      seen[bankId] = true
+      banks[#banks + 1] = bankId
+    end
+  end
+  table.sort(banks)
+  return banks
+end
+
 ---@param mon table<string, unknown>? party lead or foe mon record under pre-seeding
 function FieldBattlePresentation:_preseedCombatant(mon)
   if type(mon) ~= "table" or mon.isEgg == true then
@@ -4911,21 +4978,10 @@ function FieldBattlePresentation:_preseedCombatant(mon)
     return
   end
   local speciesKey = mon.species
-  local form = mon.form
   if type(speciesKey) == "string" and speciesKey ~= "" then
-    local okFacts, facts = pcall(catalog.species, catalog, speciesKey)
-    if
-      okFacts
-      and type(facts) == "table"
-      and type(facts.nativeId) == "number"
-      and facts.nativeId % 1 == 0
-      and facts.nativeId >= 0
-      and type(form) == "number"
-      and form % 1 == 0
-      and form >= 0
-      and type(derived.requestAudioBank) == "function"
-    then
-      pcall(derived.requestAudioBank, CryPlayer.bankFor(facts.nativeId, form --[[@as integer]]), "required")
+    local cryBank = cryBankForMon(catalog, mon)
+    if cryBank ~= nil and type(derived.requestAudioBank) == "function" then
+      pcall(derived.requestAudioBank, cryBank, "required")
     end
     local okSelector, selector = pcall(SummaryModel.portraitSelectorFor, catalog, mon)
     if okSelector and type(selector) == "string" and selector ~= "" and self._cacheFs ~= nil then
@@ -4948,6 +5004,11 @@ end
 -- host method.
 ---@param descriptor table<string, unknown> admitted launch descriptor under pre-seeding
 function FieldBattlePresentation:_preseedLaunchDemands(descriptor)
+  -- The demanded cry banks snapshot before any derived demand: the
+  -- send-out cries voice before the screen issues its launch demand, so
+  -- the music gate retains their selected sources from admission. Needs
+  -- only the descriptor and the catalog, never the derived host.
+  self._cryBankIds = demandedCryBanks(self, self._musicBankIds or {})
   local derived = self._derivedAssets
   if type(derived) ~= "table" then
     return
@@ -5483,7 +5544,52 @@ function FieldBattlePresentation:_battleMusicStaged()
     bankIds = self:_audioBanks()
     self._musicBankIds = bankIds
   end
-  return checkAudioBanks(self, { audio = { banks = bankIds, cries = {} } })
+  local staged, failure = checkAudioBanks(self, { audio = { banks = bankIds, cries = {} } })
+  if staged ~= true then
+    return staged, failure
+  end
+  -- The derived banks are staged; the battle voice additionally needs the
+  -- required selected sample sources retained through first use. Pending
+  -- holds the same cover without voicing or suspending field policy; a
+  -- terminal selected read fails through the existing music failure path.
+  -- Audio owners without the required-source contract keep the
+  -- derived-bank-only behavior.
+  local descriptor = self._descriptor
+  local audio = descriptor ~= nil and descriptor.audio or nil
+  local requireSources = type(audio) == "table" and audio.requireBattleBankSources or nil
+  if type(requireSources) ~= "function" then
+    return true
+  end
+  for _, bankId in ipairs(bankIds) do
+    local ok, ready, sourceFailure = pcall(requireSources, audio, bankId)
+    if not ok then
+      return nil, tostring(ready)
+    end
+    if sourceFailure ~= nil then
+      return nil, sourceFailure
+    end
+    if ready ~= true then
+      return false
+    end
+  end
+  -- The demanded send-out cry banks retain their selected sources through
+  -- the same gate: a pending cry read holds the same cover without voicing
+  -- or suspending field policy, and a terminal cry read fails through the
+  -- existing music failure path. Voice-time acquisition then hits the
+  -- retained or resident lease instead of a disk wait.
+  for _, bankId in ipairs(self._cryBankIds or {}) do
+    local ok, ready, sourceFailure = pcall(requireSources, audio, bankId)
+    if not ok then
+      return nil, tostring(ready)
+    end
+    if sourceFailure ~= nil then
+      return nil, sourceFailure
+    end
+    if ready ~= true then
+      return false
+    end
+  end
+  return true
 end
 
 -- Starts the source-defined battle music role once its files stage: an
@@ -5665,6 +5771,31 @@ end
 -- observation or full disposal, never from port disposal.
 function FieldBattlePresentation:_dropLaunch()
   self:_disposeTransition()
+  -- Required selected sample sources retained for the battle voice return
+  -- with the launch: first use already owns its own source lease, so the
+  -- admission hold must not outlive the launch. The demanded cry holds
+  -- release with the music holds, exactly once per bank.
+  local musicBanks = self._musicBankIds
+  local cryBanks = self._cryBankIds
+  local launchAudio = self._descriptor ~= nil and self._descriptor.audio or nil
+  if (musicBanks ~= nil or cryBanks ~= nil) and type(launchAudio) == "table" then
+    local releaseSources = launchAudio.releaseBattleBankSources
+    if type(releaseSources) == "function" then
+      local released = {}
+      for _, bankId in ipairs(musicBanks or {}) do
+        if not released[bankId] then
+          released[bankId] = true
+          pcall(releaseSources, launchAudio, bankId)
+        end
+      end
+      for _, bankId in ipairs(cryBanks or {}) do
+        if not released[bankId] then
+          released[bankId] = true
+          pcall(releaseSources, launchAudio, bankId)
+        end
+      end
+    end
+  end
   local staged = self._pendingSceneImage
   self._pendingSceneImage = nil
   if staged ~= nil and self._pool ~= nil then
@@ -5704,6 +5835,7 @@ function FieldBattlePresentation:_dropLaunch()
   self._musicStarted = false
   self._musicNote = nil
   self._musicBankIds = nil
+  self._cryBankIds = nil
   self._musicRole = nil
   self._resultMusicPlayed = false
   self._transitionFailed = false

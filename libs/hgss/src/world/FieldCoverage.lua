@@ -40,6 +40,7 @@ local TILES_PER_CELL = 32
 ---@field matrixMemberId integer
 ---@field loadCell fun(descriptor: table<string, unknown>): table<string, unknown>
 ---@field acquireSource fun(reference: ResidentCache.BlobRef|CacheFs.PackageRef): AssetPreparationQueueSourceLease selected runtime's compact source acquirer
+---@field sourceQueue table<string, unknown>? cooperative selected-source queue behind staged collision reads
 ---@field mapPropsFactory (fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?)?
 ---@field presentationLoader fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
 ---@field presentationTaskFactory fun(runtime: table<string, unknown>, descriptor: table<string, unknown>): table<string, unknown>?
@@ -290,6 +291,18 @@ local function releasePending(pending)
     pending.sourceLease = nil
     sourceLease:release()
   end
+  -- A staged cell waiting on its cooperative source read drops only its
+  -- own token; the shared physical read survives for its siblings.
+  local sourceToken = pending.sourceToken
+  if sourceToken ~= nil then
+    pending.sourceToken = nil
+    pending.collisionPath = nil
+    local queue = pending.sourceQueue
+    if queue ~= nil then
+      pending.sourceQueue = nil
+      pcall(queue.cancel, queue, sourceToken)
+    end
+  end
 end
 
 local function publishPending(pending, presentation)
@@ -324,12 +337,42 @@ local function advancePending(self, pending, maxWorkUnits)
     elseif pending.phase == "readCollision" then
       local collisionPath = assert(assert(pending.cell).collision.file, "field cell descriptor names no collision")
       local reference = assert(self.cacheFs:resolveAsset(collisionPath), "field cell collision is unavailable")
-      local acquireSource =
-        assert(self.acquireSource, "loading field cell collision requires the selected runtime's source acquirer")
-      pending.sourceLease = acquireSource(reference)
-      pending.collisionPath = collisionPath
-      pending.phase = "decodeCollision"
-      consumed = consumed + 1
+      local queue = self.sourceQueue
+      if queue == nil then
+        local acquireSource =
+          assert(self.acquireSource, "loading field cell collision requires the selected runtime's source acquirer")
+        pending.sourceLease = acquireSource(reference)
+        pending.collisionPath = collisionPath
+        pending.phase = "decodeCollision"
+        consumed = consumed + 1
+      else
+        -- Cooperative staged borrow: enroll the selected source read once
+        -- and yield without advancing until its lease transfers. Pending
+        -- keeps the descriptor and the collision phase intact instead of
+        -- treating the wait as missing collision.
+        if pending.sourceToken == nil then
+          pending.collisionPath = collisionPath
+          pending.sourceQueue = queue
+          pending.sourceToken = queue:requestSource(reference, "demand")
+        end
+        local status, cause = queue:poll(pending.sourceToken)
+        if status == "failed" then
+          local token = pending.sourceToken
+          pending.sourceToken = nil
+          pending.sourceQueue = nil
+          pending.collisionPath = nil
+          pcall(queue.cancel, queue, token)
+          error(cause or ("selected collision source failed: " .. tostring(collisionPath)), 0)
+        end
+        if status ~= "ready" then
+          break
+        end
+        pending.sourceLease = queue:takeSource(assert(pending.sourceToken, "a ready source token transfers"))
+        pending.sourceToken = nil
+        pending.sourceQueue = nil
+        pending.phase = "decodeCollision"
+        consumed = consumed + 1
+      end
     elseif pending.phase == "decodeCollision" then
       local sourceLease = assert(pending.sourceLease, "a staged cell carries no collision source")
       local view, openErr = CollisionGridAsset.open(sourceLease.value, { path = pending.collisionPath })
@@ -428,7 +471,46 @@ end
 
 local function finishPending(self, pending)
   while not pending.complete do
-    if pending.phase == "presentationTask" then
+    if pending.phase == "readCollision" and self.sourceQueue ~= nil then
+      -- Explicit synchronous finish stays a true blocking boundary:
+      -- enroll the cooperative read when the staged passes never ran,
+      -- transfer a settled read through the same task, and borrow
+      -- through the blocking acquirer for anything still unsettled
+      -- instead of looping on a pending token.
+      local queue = self.sourceQueue --[[@as table<string, unknown>]]
+      if pending.sourceToken == nil then
+        local collisionPath = assert(assert(pending.cell).collision.file, "field cell descriptor names no collision")
+        local reference = assert(self.cacheFs:resolveAsset(collisionPath), "field cell collision is unavailable")
+        pending.collisionPath = collisionPath
+        pending.sourceQueue = queue
+        pending.sourceToken = queue:requestSource(reference, "demand")
+      end
+      local status, cause = queue:poll(pending.sourceToken)
+      if status == "ready" then
+        pending.sourceLease = queue:takeSource(pending.sourceToken)
+        pending.sourceToken = nil
+        pending.sourceQueue = nil
+        pending.phase = "decodeCollision"
+      else
+        if status == "failed" then
+          local token = pending.sourceToken
+          pending.sourceToken = nil
+          pending.sourceQueue = nil
+          pending.collisionPath = nil
+          pcall(queue.cancel, queue, token)
+          error(cause or "selected collision source failed", 0)
+        end
+        queue:cancel(pending.sourceToken)
+        pending.sourceToken = nil
+        pending.sourceQueue = nil
+        local collisionPath = assert(pending.collisionPath, "a staged cell carries its collision path")
+        local reference = assert(self.cacheFs:resolveAsset(collisionPath), "field cell collision is unavailable")
+        local acquireSource =
+          assert(self.acquireSource, "loading field cell collision requires the selected runtime's source acquirer")
+        pending.sourceLease = acquireSource(reference)
+        pending.phase = "decodeCollision"
+      end
+    elseif pending.phase == "presentationTask" then
       local task = assert(pending.presentationTask)
       publishPending(pending, task:finish())
       pending.presentationTask = nil
@@ -698,6 +780,7 @@ local function blankCoverage(options, index)
     matrixMemberId = options.matrixMemberId,
     loadCell = options.loadCell,
     acquireSource = options.acquireSource,
+    sourceQueue = options.sourceQueue,
     mapPropsFactory = options.mapPropsFactory,
     presentationLoader = options.presentationLoader,
     presentationTaskFactory = options.presentationTaskFactory,

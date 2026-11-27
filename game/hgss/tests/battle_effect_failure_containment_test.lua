@@ -1203,4 +1203,82 @@ function T.worker_ready_effect_demands_without_preloading_its_payload()
   envelope:dispose()
 end
 
+-- An admitted effect keeps its staged record and texture holds through
+-- playback: admission loads the validated record once, the admitted texture
+-- survives admission without an immediate probe release, an unexpected
+-- called root stays pending instead of failing, and the retained hold
+-- returns exactly once at disposal.
+function T.admitted_effects_retain_staged_resources_through_playback()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local launchId = "launch-effect-admission-retention"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  local record = EffectStagingFixture.effectRecord("TACKLE", {
+    {
+      key = "probe-spark",
+      kind = "texture",
+      payload = "effects/probe-spark.lua",
+      contentIdentity = Hashing.sha1hex(textureBytes),
+    },
+  })
+  local program = lowered("TACKLE", { 29, 50, 4 })
+  record.program = {
+    entry = program.entry,
+    instructions = program.instructions,
+    subprograms = program.subprograms,
+    taskKinds = program.taskKinds,
+  }
+  staging:stageEffect("TACKLE", record, {
+    ["effects/probe-spark.lua"] = { width = 4, height = 4, rgba8888 = textureBytes },
+  })
+  local serviceLoads = 0
+  local serviceLoad = staging.services.loadEffect
+  staging.services.loadEffect = function(key)
+    serviceLoads = serviceLoads + 1
+    return serviceLoad(key)
+  end
+  local screen = openFailingScreen(launchId, staging)
+  local pending, pendingFailure = screen._assets:demandEffect("SNARL")
+  Assert.equal(pending, false, "an unexpected called root stays pending instead of failing")
+  Assert.isNil(pendingFailure, "pending carries no terminal cause")
+  presentFailingStrike(screen, launchId)
+  local admitted = false
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+    if screen._liveEffectHandle ~= nil then
+      admitted = true
+      break
+    end
+    if screen:status().mode == "failed" then
+      break
+    end
+  end
+  Assert.isTrue(admitted, "the known direct root admits its occurrence")
+  Assert.equal(serviceLoads, 1, "admission loads the validated record once, never reacquiring it")
+  Assert.isNil(staging.drops["probe-spark"], "the admitted texture survives admission without a probe release")
+  Assert.equal(staging.uploads, 1, "admission stages the texture exactly once")
+  local reloaded, reloadFailure = screen._assets:loadEffect("TACKLE")
+  Assert.isNil(reloadFailure, "the retained record answers while admitted")
+  Assert.notNil(reloaded, "a second load hands back the validated record")
+  Assert.equal(serviceLoads, 1, "a second load reuses the validated record instead of reacquiring it")
+  local settled = false
+  for _ = 1, 1200 do
+    screen:updateFixed(1 / 30)
+    if failingDisplayedFoeHp(screen:view()) == 43 then
+      settled = true
+      break
+    end
+    if screen:status().mode == "failed" then
+      break
+    end
+  end
+  Assert.isTrue(settled, "the admitted occurrence runs to its checkpoint")
+  Assert.equal(serviceLoads, 1, "playback never reacquires the staged record")
+  Assert.isNil(staging.drops["probe-spark"], "the retained admission hold survives until the run no longer needs it")
+  screen:dispose()
+  Assert.equal(staging.drops["probe-spark"], 1, "disposal returns the retained admission hold exactly once")
+  Assert.equal(staging.refcounts["probe-spark"], 0, "no admitted reference lingers after disposal")
+end
+
 return { tests = T }

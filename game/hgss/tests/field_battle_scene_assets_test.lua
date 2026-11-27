@@ -2689,6 +2689,96 @@ function T.battle_music_waits_for_staged_files_and_suspends_with_the_start()
   envelope:dispose()
 end
 
+-- Battle music additionally holds for the demanded cry sample sources:
+-- a pending cry source holds the voice without suspending the field, a
+-- terminal cry read fails through the music path naming its bank, and
+-- the launch releases every retained cry hold with the music banks.
+function T.battle_music_holds_for_demanded_cry_sample_sources()
+  local record = sceneRecord(SCENE_KEY)
+  local catalog = probeCatalog()
+  local cacheFs = admissionCacheFs(record, {})
+  local pool = ledgerPool(0, {})
+  local host = recordingDemands({})
+  local bridge = { suspends = {}, plays = {}, required = {}, released = {}, staged = {}, failures = {} }
+  function bridge:suspendFieldPolicy(token)
+    self.suspends[#self.suspends + 1] = token
+  end
+  function bridge:playMusic(symbol)
+    self.plays[#self.plays + 1] = symbol
+    return true
+  end
+  function bridge:requireBattleBankSources(bankId)
+    self.required[#self.required + 1] = bankId
+    if self.failures[bankId] ~= nil then
+      return nil, self.failures[bankId]
+    end
+    if self.staged[bankId] == true then
+      return true, nil
+    end
+    return false, nil
+  end
+  function bridge:releaseBattleBankSources(bankId)
+    self.released[#self.released + 1] = bankId
+    return 1
+  end
+  local envelope = admissionEnvelope(cacheFs, pool, host, catalog, nil)
+  envelope:factory()({
+    launchId = "cry-hold",
+    kind = "wild",
+    environment = { sceneKey = SCENE_KEY },
+    textSpeed = "fastest",
+    audio = bridge,
+    musicRole = MUSIC_ROLE,
+    leadMon = probeMon("CHIKORITA"),
+    foeMon = probeMon("PIDGEY"),
+    host = {},
+  })
+  host.bankReady = true
+  bridge.staged[7] = true
+  local function requiredSet()
+    local seen = {}
+    for _, bankId in ipairs(bridge.required) do
+      seen[bankId] = true
+    end
+    return seen
+  end
+  -- The gate enrolls one bank per tick up to its first pending read, so
+  -- the cover polls while the worker settles each source in turn.
+  local staged, failure = envelope:_battleMusicStaged()
+  Assert.equal(staged, false, "a pending cry source holds the music voice")
+  Assert.isNil(failure, "a pending cry source carries no terminal cause")
+  Assert.isTrue(requiredSet()[16] == true, "the launch retains its foe cry bank sources")
+  envelope:_startBattleMusic()
+  Assert.equal(#bridge.suspends, 0, "a pending cry source holds without suspending the field")
+  Assert.equal(#bridge.plays, 0, "a pending cry source holds without voicing")
+  Assert.isNil(envelope:musicNote(), "a pending cry source records no start note")
+  bridge.failures[16] = "battle audio bank 16 sample cry:PIDGEY is not staged: boom"
+  local failed, cryFailure = envelope:_battleMusicStaged()
+  Assert.isNil(failed, "a terminal cry read fails the music staging")
+  Assert.equal(
+    cryFailure,
+    "battle audio bank 16 sample cry:PIDGEY is not staged: boom",
+    "a terminal cry read names its bank through the music failure path"
+  )
+  bridge.failures[16] = nil
+  bridge.staged[16] = true
+  staged = envelope:_battleMusicStaged()
+  Assert.equal(staged, false, "the next cry source holds the music voice in turn")
+  Assert.isTrue(requiredSet()[152] == true, "the launch retains its lead cry bank sources")
+  bridge.staged[152] = true
+  Assert.isTrue(envelope:_battleMusicStaged(), "retained cry sources stage the music voice")
+  envelope:_startBattleMusic()
+  Assert.deepEqual(bridge.suspends, { "cry-hold" }, "the staged start suspends the field policy once")
+  Assert.deepEqual(bridge.plays, { MUSIC_ROLE }, "the staged start voices its role once")
+  envelope:_dropLaunch()
+  local freed = {}
+  for _, bankId in ipairs(bridge.released) do
+    freed[bankId] = (freed[bankId] or 0) + 1
+  end
+  Assert.deepEqual(freed, { [7] = 1, [152] = 1, [16] = 1 }, "the launch releases its music and cry holds once")
+  envelope:dispose()
+end
+
 -- Encounter particle textures carrying source repeat flags are admitted
 -- under a repeat sampler on both the idle and foreground routes, and the
 -- particle renderer never mutates the staged sampler at draw time.

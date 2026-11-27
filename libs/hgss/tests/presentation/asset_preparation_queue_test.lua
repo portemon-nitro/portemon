@@ -1207,7 +1207,13 @@ local function pushesFor(state, token)
   local pushed = {}
   for _, entry in ipairs(state.allPushes) do
     local value = entry.value
-    if type(value) == "table" and value.token == token and value.path ~= nil and value.kind ~= nil and value.ok == nil then
+    if
+      type(value) == "table"
+      and value.token == token
+      and value.path ~= nil
+      and value.kind ~= nil
+      and value.ok == nil
+    then
       pushed[#pushed + 1] = value
     end
   end
@@ -1491,17 +1497,11 @@ function T.an_awaited_prefetch_progresses_past_the_ready_payload_ceiling()
     local awaited = queue:request("mesh", "geometry/ceiling-awaited.g4mesh", "prefetch")
     Assert.isFalse(requestWasPushedFor(host, awaited), "the ceiling holds the next speculative dispatch")
     Assert.equal(queue:poll(awaited), "pending", "the awaited resource is still queued")
-    Assert.isFalse(
-      requestWasPushedFor(host, awaited),
-      "a speculative probe alone never changes scheduling"
-    )
+    Assert.isFalse(requestWasPushedFor(host, awaited), "a speculative probe alone never changes scheduling")
     Assert.equal(queue:poll(awaited), "pending", "promotion alone dispatches nothing")
     queue:promote(awaited, "demand")
     Assert.equal(queue:poll(awaited), "pending", "the promoted frontier still waits on its reply")
-    Assert.isTrue(
-      requestWasPushedFor(host, awaited),
-      "promoting the awaited resource dispatches past the ceiling"
-    )
+    Assert.isTrue(requestWasPushedFor(host, awaited), "promoting the awaited resource dispatches past the ceiling")
 
     local awaitedIndex = requestChannelIndexFor(host, awaited)
     responseChannelFor(host, awaitedIndex):push(meshResponse(awaited, "geometry/ceiling-awaited.g4mesh"))
@@ -1875,9 +1875,7 @@ function T.worker_death_keeps_a_healthy_decode_input_pinned_until_release()
     -- The healthy job's late reply is discarded without publishing into the
     -- shared owner, and only then does its physical lease return.
     local pinnedAfterDeath = decoded:stats().pinnedBytes
-    responseChannelFor(host, requestChannelIndexFor(host, tokenA)):push(
-      meshResponse(tokenA, pathA)
-    )
+    responseChannelFor(host, requestChannelIndexFor(host, tokenA)):push(meshResponse(tokenA, pathA))
     Assert.equal(queue:poll(tokenA), "failed", "a late result never revives a failed token")
     Assert.isTrue(
       decoded:stats().pinnedBytes < pinnedAfterDeath,
@@ -1886,6 +1884,69 @@ function T.worker_death_keeps_a_healthy_decode_input_pinned_until_release()
     queue:release()
     Assert.equal(decoded:stats().pinnedBytes, 0, "the release join returns every remaining decode lease")
     Assert.equal(next(queue._decodeLeases), nil, "no borrowed decode lease survives disposal")
+  end)
+end
+
+-- Staged coverage borrows its collision sources without waiting on the
+-- worker: base bytes answer immediately with no worker traffic, a
+-- disk-backed selected source enrolls a pending token the stage polls once
+-- per update, cancelling one waiter never disturbs its sibling, and a ready
+-- take unwraps exactly the selected bytes with single-owner release. The
+-- staged phase keeps its descriptor while pending instead of treating the
+-- wait as missing collision.
+function T.staged_coverage_borrows_selected_sources_without_blocking()
+  local AssetPreparationQueue = requireQueue()
+  local baseHost = fakeThreadHost()
+  withLove(baseHost.love, function()
+    local queue = newQueue(diskCacheFs())
+    Assert.isTrue(
+      type(queue.requestSource) == "function" and type(queue.takeSource) == "function",
+      "staged collision borrows its selected source without waiting on the worker: "
+        .. "the queue lends resolved sources through a cooperative request/take adapter"
+    )
+
+    local baseFs = fakeCacheFs()
+    local baseReference = assert(baseFs:resolveAsset("geometry/base.g4mesh"), "the base member resolves")
+    local baseToken = queue:requestSource(baseReference, "demand")
+    Assert.equal(queue:poll(baseToken), "ready", "base bytes borrow without a worker round trip")
+    Assert.equal(sourcePushCount(baseHost), 0, "base bytes borrow with no worker traffic")
+    local baseLease = queue:takeSource(baseToken)
+    Assert.isTrue(baseLease.value == baseReference.data, "the base lease carries the resolved bytes directly")
+    baseLease:release()
+    Assert.isNil(baseLease.value, "a returned base lease clears its reference")
+    baseLease:release()
+    queue:release()
+  end)
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local cacheFs = diskCacheFs()
+    local queue = newQueue(cacheFs)
+    local path = "collision/staged-cell.lua"
+    local reference = assert(cacheFs:resolveAsset(path), "the selected member resolves")
+    local token = queue:requestSource(reference, "demand")
+    Assert.equal(queue:poll(token), "pending", "the selected read pends instead of blocking the stage")
+    local sibling = queue:requestSource(reference, "demand")
+    queue:cancel(sibling)
+    Assert.equal(queue:poll(token), "pending", "cancelling one waiter keeps the survivor pending")
+    Assert.throws(function()
+      queue:takeSource(sibling)
+    end, "a cancelled waiter takes nothing")
+    local requestIndex = requestChannelIndexFor(host, token)
+    Assert.notNil(requestIndex, "the pending selected read dispatches its worker source job")
+    local bytes = string.rep("s", 24)
+    local response = sourceResponse(token, path, bytes)
+    responseChannelFor(host, requestIndex):push(response)
+    Assert.equal(queue:poll(token), "ready", "the settled read answers ready without a second dispatch")
+    local lease = queue:takeSource(token)
+    Assert.isTrue(lease.value == response.payload, "the taken lease unwraps exactly the selected bytes the worker read")
+    Assert.equal(lease.value:getSize(), #bytes, "the unwrapped bytes carry their read length")
+    lease:release()
+    Assert.isNil(lease.value, "a returned selected lease clears its reference")
+    lease:release()
+    Assert.throws(function()
+      queue:takeSource(token)
+    end, "a transferred selected lease takes only once")
+    queue:release()
   end)
 end
 

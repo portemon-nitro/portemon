@@ -278,6 +278,35 @@ function FieldAudioController:cancelUnpredictedSamples(predictedSet)
   self._provider:cancelUnpredicted(predictedSet)
 end
 
+-- Stages one battle bank's required selected sample sources without
+-- voicing: true once every closure sample is base resident or retained,
+-- false while any selected read is unsettled, nil plus a terminal cause
+-- on failure. The retained holds survive the admission boundary so
+-- eviction cannot reintroduce a synchronous disk wait at first use.
+-- Providers without the required-source contract stay ready, preserving
+-- the derived-bank-only behavior.
+---@param bankId integer
+---@return boolean? ready true when every required source is held, false while pending, nil on failure
+---@return string? terminal failure naming the bank and sample key, nil otherwise
+function FieldAudioController:requireBattleBankSources(bankId)
+  local provider = self._provider
+  if type(provider.requireBankSources) ~= "function" then
+    return true
+  end
+  return provider:requireBankSources(bankId)
+end
+
+-- Returns every retained required hold of one battle bank exactly once.
+---@param bankId integer
+---@return integer released hold count
+function FieldAudioController:releaseBattleBankSources(bankId)
+  local provider = self._provider
+  if type(provider.releaseBankSources) ~= "function" then
+    return 0
+  end
+  return provider:releaseBankSources(bankId)
+end
+
 -- The reachable audio bank ids of the current prediction round, in stable
 -- ascending order. A read-only copy: callers must not mutate the round.
 ---@return integer[]

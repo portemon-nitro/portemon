@@ -420,7 +420,7 @@ end
 -- recorded, tokens complete only when the test says so, and cancellation is
 -- observable. Source reads themselves belong to the queue suite.
 local function recordingQueue()
-  local queue = { requests = {}, states = {}, cancelled = {}, nextToken = 0 }
+  local queue = { requests = {}, states = {}, cancelled = {}, takes = {}, promoted = {}, nextToken = 0 }
   function queue:request(kind, path, priority)
     assert(kind == "source", "prediction must request the selected source kind")
     self.nextToken = self.nextToken + 1
@@ -433,6 +433,20 @@ local function recordingQueue()
   function queue:cancel(token)
     self.cancelled[#self.cancelled + 1] = token
     self.states[token] = nil
+  end
+  function queue:take(token)
+    assert(self.states[token] == "ready", "takes transfer ready tokens")
+    self.takes[#self.takes + 1] = token
+    self.states[token] = nil
+    local lease = { value = "selected-bytes:" .. tostring(token), released = 0 }
+    function lease:release()
+      self.value = nil
+      self.released = self.released + 1
+    end
+    return lease
+  end
+  function queue:promote(token, priority)
+    self.promoted[#self.promoted + 1] = { token = token, priority = priority }
   end
   return queue
 end
@@ -543,6 +557,92 @@ function T.base_resident_prediction_stays_a_no_op()
   Assert.equal(#queue.requests, 0, "base resident samples schedule no source read")
   Assert.equal(p:drainReadySamples(), 0, "nothing is in flight to adopt")
   Assert.equal(p:cancelUnpredicted({}), 0, "nothing is in flight to cancel")
+end
+
+-- Required battle music waits for its selected sample sources instead of
+-- voicing early or reintroducing a synchronous disk wait: the provider
+-- promotes the bank closure to demand work, reports pending while any
+-- selected read is unsettled, retains the ready source holds through the
+-- admission boundary, names terminal failures with their bank and sample
+-- key, and returns every hold exactly once.
+function T.required_bank_sources_gate_music_start_until_selected_bytes_are_held()
+  local bundle = AudioFixture.bundle()
+  local cache, _ = selectedSampleCache(bundle)
+  local queue = recordingQueue()
+  local api, _ = recordingAcquirer(cache)
+  local p = AudioAssetProvider.new(cache, { acquireSource = api.acquireSource, assetPreparation = queue })
+  Assert.isTrue(
+    type(p.requireBankSources) == "function" and type(p.releaseBankSources) == "function",
+    "required battle music waits for its selected sample sources instead of voicing early: "
+      .. "the provider stages required bank source holds with an exact pending/ready/failed contract"
+  )
+  local firstKey = AudioFixture.key(1)
+  local firstPath = AudioCache.samplePath(firstKey)
+
+  local ready, failure = p:requireBankSources(12)
+  Assert.equal(ready, false, "the unsettled selected closure reports pending, never ready")
+  Assert.isNil(failure, "pending carries no terminal cause")
+  Assert.equal(#queue.requests, 2, "every closure sample enrolls its selected source")
+  for _, request in ipairs(queue.requests) do
+    Assert.equal(request.priority, "demand", "required sources outrank speculative prediction")
+  end
+  ready, failure = p:requireBankSources(12)
+  Assert.equal(ready, false, "a repeated query joins instead of duplicating the pending reads")
+  Assert.isNil(failure, "repeated pending carries no terminal cause")
+  Assert.equal(#queue.requests, 2, "the repeated query schedules no second read")
+
+  for _, request in ipairs(queue.requests) do
+    queue.states[request.token] = "ready"
+  end
+  ready, failure = p:requireBankSources(12)
+  Assert.isTrue(ready == true, "the settled selected closure reports ready")
+  Assert.isNil(failure, "readiness carries no terminal cause")
+  Assert.equal(#queue.takes, 2, "ready selected reads transfer into retained holds")
+  Assert.equal(#queue.cancelled, 0, "required holds are retained, never cancelled to idle")
+  Assert.equal(p:releaseBankSources(12), 2, "release returns every retained hold exactly once")
+  Assert.equal(p:releaseBankSources(12), 0, "a second release returns nothing")
+  p:dispose()
+
+  local sadCache, _ = selectedSampleCache(bundle)
+  local sadQueue = recordingQueue()
+  local sadApi, _ = recordingAcquirer(sadCache)
+  local sad = AudioAssetProvider.new(sadCache, { acquireSource = sadApi.acquireSource, assetPreparation = sadQueue })
+  ready, failure = sad:requireBankSources(12)
+  Assert.equal(ready, false, "the failing closure starts pending like any unsettled read")
+  local failedToken, survivorToken = nil, nil
+  for _, request in ipairs(sadQueue.requests) do
+    if request.path == firstPath then
+      failedToken = request.token
+    else
+      survivorToken = request.token
+    end
+  end
+  Assert.notNil(failedToken, "the probed sample enrolls its own read")
+  sadQueue.states[failedToken] = "failed"
+  sadQueue.states[survivorToken] = "ready"
+  ready, failure = sad:requireBankSources(12)
+  Assert.isNil(ready, "a terminal selected read never reports ready")
+  Assert.isTrue(
+    type(failure) == "string"
+      and tostring(failure):find("12", 1, true) ~= nil
+      and tostring(failure):find(firstKey, 1, true) ~= nil,
+    "the failure names its bank and sample key: " .. tostring(failure)
+  )
+  Assert.equal(sad:releaseBankSources(12), 0, "a failed requirement retains no partial hold")
+  sad:dispose()
+
+  local residentCache = AudioFixture.residentCache(bundle)
+  local residentQueue = recordingQueue()
+  local residentApi, _ = recordingAcquirer(residentCache)
+  local resident = AudioAssetProvider.new(
+    residentCache,
+    { acquireSource = residentApi.acquireSource, assetPreparation = residentQueue }
+  )
+  ready, failure = resident:requireBankSources(12)
+  Assert.isTrue(ready == true, "base resident samples are ready with no selected read")
+  Assert.isNil(failure, "resident readiness carries no terminal cause")
+  Assert.equal(#residentQueue.requests, 0, "base resident samples schedule no source read")
+  resident:dispose()
 end
 
 return { tests = T }

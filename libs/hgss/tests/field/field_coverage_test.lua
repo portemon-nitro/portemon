@@ -2182,10 +2182,7 @@ function T.initial_coverage_assembles_its_aggregate_incrementally_before_publica
   Assert.isFalse(pcall(task.takeResult, task), "no partial coverage escapes during assembly")
   local assembly = task:advance(1)
   Assert.isTrue(assembly >= 0 and assembly <= 1, "assembly advances stay within budget")
-  Assert.isFalse(
-    task:isReady(),
-    "the initial aggregate assembles incrementally instead of publishing synchronously"
-  )
+  Assert.isFalse(task:isReady(), "the initial aggregate assembles incrementally instead of publishing synchronously")
   Assert.isFalse(pcall(task.takeResult, task), "no partial coverage escapes during assembly")
   local guard = 0
   while not task:isReady() do
@@ -2255,6 +2252,153 @@ function T.initial_coverage_assembles_its_aggregate_incrementally_before_publica
     Assert.equal(count, 1, "a second release keeps cancelled cell " .. cellKey .. " at one release")
   end
   Assert.isFalse(pcall(cancelled.takeResult, cancelled), "no result is transferable after cancellation")
+end
+
+-- A staged collision phase borrows its selected source cooperatively: the
+-- advance yields without publishing while the read pends, cancellation
+-- drops only its own token, and the synchronous finish still completes
+-- through the same task owner.
+function T.staged_collision_borrows_sources_without_blocking_publication()
+  local collision = CollisionFixture.asset(32, 32)
+  local residentCollision = assert(love.data.newByteData(collision))
+  local cells = {}
+  local cellFiles = {}
+  local terrainFiles = {}
+  for z = 0, 2 do
+    for x = 0, 2 do
+      local index = z * 3 + x
+      local cellPath = FieldCellCache.cellPath(1, index)
+      local collisionPath = FieldCellCache.collisionPath(1, index)
+      local terrainPath = FieldCellCache.terrainPath(1, index)
+      local cell = {
+        schema = FieldCellCache.CELL_SCHEMA,
+        matrixMemberId = 1,
+        index = index,
+        x = x,
+        z = z,
+        mapHeaderId = 60,
+        altitude = 0,
+        origin = { x = x * 32, y = 0, z = z * 32 },
+        landDataMemberId = 1,
+        areaDataMemberId = 1,
+        file = cellPath,
+        collision = { file = collisionPath },
+        terrain = { schema = "g4-terrain-surfaces-v1", file = terrainPath },
+        batches = {},
+        materials = {},
+        buildingInstances = {},
+        terrainAnimations = { textureSrt = false },
+      }
+      cells[#cells + 1] = cell
+      cellFiles[cellPath] = cell
+      terrainFiles[terrainPath] = {
+        schema = "g4-terrain-surfaces-v1",
+        source = { bdhcSha1 = "staged-coverage-" .. index },
+        plates = {},
+      }
+    end
+  end
+  local coverageIndex = {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = { { matrixMemberId = 1, width = 3, height = 3, cells = cells } },
+  }
+  local cacheFs = {
+    loadLua = function(_, path)
+      if cellFiles[path] then
+        return cellFiles[path]
+      end
+      return terrainFiles[path]
+    end,
+    -- Disk-backed selected references carry no resident bytes, so the
+    -- staged phase must borrow them cooperatively instead of blocking.
+    resolveAsset = function(_, path)
+      return {
+        path = path,
+        sourceId = "mod:coverage-stage-test",
+        contentId = "coverage-stage-test\0" .. path,
+        size = #collision,
+        physicalPath = "__package/" .. path,
+      }
+    end,
+  }
+  local function blockingAcquire(_)
+    local lease = { value = residentCollision }
+    function lease:release()
+      self.value = nil
+    end
+    return lease
+  end
+  local function fakeSourceQueue()
+    local queue = { tokens = {}, next = 0 }
+    function queue:requestSource(reference, priority)
+      self.next = self.next + 1
+      local token = self.next
+      self.tokens[token] = { reference = reference, priority = priority, state = "pending", bytes = nil }
+      return token
+    end
+    function queue:poll(token)
+      return assert(self.tokens[token], "unknown source token").state
+    end
+    function queue:takeSource(token)
+      local entry = assert(self.tokens[token], "unknown source token")
+      Assert.equal(entry.state, "ready", "takes transfer ready sources")
+      self.tokens[token] = nil
+      local lease = { value = entry.bytes }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end
+    function queue:cancel(token)
+      self.tokens[token] = nil
+    end
+    return queue
+  end
+  local queue = fakeSourceQueue()
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    cacheFs = cacheFs,
+    index = coverageIndex,
+    acquireSource = blockingAcquire,
+    sourceQueue = queue,
+    anchorX = 1,
+    anchorZ = 1,
+  })
+  local progressed = task:advance(9)
+  while progressed > 0 and not task:isReady() do
+    progressed = task:advance(9)
+  end
+  Assert.equal(progressed, 0, "pending selected collision returns zero without publication")
+  Assert.isFalse(task:isReady(), "no partial collision publishes while the source pends")
+  local enrolled = 0
+  for _, entry in pairs(queue.tokens) do
+    entry.state = "ready"
+    entry.bytes = residentCollision
+    enrolled = enrolled + 1
+  end
+  Assert.isTrue(enrolled >= 1, "the staged phase enrolled its selected source read")
+  local coverage = task:finish()
+  Assert.notNil(coverage, "the settled stage finishes through the same task owner")
+  Assert.isNil(next(queue.tokens), "finish transfers every staged source token")
+  coverage:release()
+
+  local pendingQueue = fakeSourceQueue()
+  local pending = FieldCoverage.begin({
+    matrixMemberId = 1,
+    cacheFs = cacheFs,
+    index = coverageIndex,
+    acquireSource = blockingAcquire,
+    sourceQueue = pendingQueue,
+    anchorX = 1,
+    anchorZ = 1,
+  })
+  local first = pending:advance(9)
+  while first > 0 and not pending:isReady() do
+    first = pending:advance(9)
+  end
+  Assert.equal(first, 0, "the second stage also yields while its source pends")
+  pending:release()
+  Assert.isNil(next(pendingQueue.tokens), "cancellation drops the staged source token")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

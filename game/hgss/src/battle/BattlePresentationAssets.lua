@@ -783,6 +783,9 @@ function BattlePresentationAssets:loadEffect(key)
   if not state.ready then
     return nil, "battle effect " .. effectKey .. " is not ready for launch " .. self._launchId
   end
+  if state.record ~= nil then
+    return state.record
+  end
   local record, failure = self._assets.loadEffect(effectKey)
   if record == nil then
     state.failed = self:_withLaunch(failure or ("battle effect " .. effectKey .. " is not staged"))

@@ -748,8 +748,10 @@ local function nativeEffectAdmit(screen, cue)
   end
   -- Admission probe: every declared staged texture must upload
   -- before the occurrence starts, so a terminal driver or payload
-  -- failure names its resource instead of failing mid-run. The probe
-  -- releases immediately; the run stages its own leases.
+  -- failure names its resource instead of failing mid-run. The admitted
+  -- lease is retained by the holder until the run stages its own lease
+  -- and through playback, so the run never reacquires what admission
+  -- already validated; launch disposal returns the retained hold.
   local declared = record.resources
   if type(declared) == "table" then
     for resourceKey, descriptor in pairs(declared) do
@@ -767,7 +769,6 @@ local function nativeEffectAdmit(screen, cue)
           )
           return nil
         end
-        screen._assets:releaseEffectResource(lease)
       end
     end
   end
