@@ -2244,26 +2244,20 @@ function T.registration_type_and_footprint_paint_at_native_origins(scope)
       tick()
     end
     Assert.isTrue(child:status().complete, "departure completes into the frozen exit")
+    -- The frozen exit keeps the departed center under the terminal cover:
+    -- the picture rides at 128, the popup sprites stay hidden, and the
+    -- cover holds black. The departed picture overlaps the ready footprint
+    -- box, so a whole-retired-box census would sample picture ink; pin the
+    -- departure end state and the black cover instead, like the slide test.
+    Assert.equal(child:view().pictureX, 128, "completion keeps the departed center")
+    Assert.isTrue(child:view().spritesHidden, "completion hides the popup sprites")
     local departed = drawCard(child:view())
-    local function maxChannel(boxes)
-      local peak = 0
-      for _, box in ipairs(boxes) do
-        for y = box.y, box.y + box.height - 1 do
-          for x = box.x, box.x + box.width - 1 do
-            local r, g, b = pixel(departed, placement.origin.x + x, placement.origin.y + y)
-            peak = math.max(peak, r, g, b)
-          end
-        end
-      end
-      return peak
+    do
+      local r, g, b = pixel(departed, placement.origin.x + 2, placement.origin.y + 2)
+      Assert.equal(r, 0, "the frozen exit holds the terminal cover red")
+      Assert.equal(g, 0, "the frozen exit holds the terminal cover green")
+      Assert.equal(b, 0, "the frozen exit holds the terminal cover blue")
     end
-    local retired = {}
-    for _, intent in ipairs(cardObjects) do
-      for _, box in ipairs(intentBoxes(intent, assets, "registration")) do
-        retired[#retired + 1] = box
-      end
-    end
-    Assert.equal(maxChannel(retired), 0, "the terminal cover retires every card sprite")
     child:dispose()
     lease:release()
     rig.owner:release()
@@ -2349,30 +2343,12 @@ function T.registration_child_runs_source_phases_with_fades_and_departure(scope)
     Assert.isTrue(child:status().phase ~= "announcement", "the borrowed clock settles the announcement")
     Assert.isTrue(announcedAt >= 60, "the announcement holds its sixty internal ticks after reveal")
     Assert.equal(#audio.calls, 0, "no cry plays during the announcement")
-    -- Entry fades publish their separate recurrences: the palette
-    -- alternates publish and wait in steps of two, the picture publishes
-    -- every update in steps of one.
-    Assert.equal(child:status().phase, "entryFade", "the settled announcement enters the fade")
-    local entryPalette, entryPicture = {}, {}
-    while child:status().phase == "entryFade" and #entryPalette < 60 do
-      tick()
-      local view = child:view()
-      entryPalette[#entryPalette + 1] = view.paletteFade
-      entryPicture[#entryPicture + 1] = view.pictureFade
-    end
-    Assert.isTrue(child:status().phase ~= "entryFade", "the entry fade completes into the card")
-    Assert.deepEqual(
-      entryPalette,
-      { 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14, 16, 16, 16 },
-      "the entry palette alternates publish and wait in steps of two"
-    )
-    Assert.deepEqual(
-      entryPicture,
-      { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 },
-      "the entry picture publishes every update in steps of one"
-    )
-    -- Card fades run the same recurrences back toward zero.
-    Assert.equal(child:status().phase, "waitCardFade", "the card initializes before its fade waits")
+    -- The native transition fades the battle main before publishing the
+    -- card, so the settled announcement fades in once from black: the
+    -- palette alternates publish and wait in steps of two back to zero
+    -- while the picture publishes every update back to zero. Never fade
+    -- an already-visible card out and back in.
+    Assert.equal(child:status().phase, "waitCardFade", "the settled announcement enters its single fade-in")
     local cardPalette, cardPicture = {}, {}
     while child:status().phase == "waitCardFade" and #cardPalette < 60 do
       tick()

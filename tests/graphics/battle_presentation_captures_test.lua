@@ -321,6 +321,30 @@ local function captureServices(scope, cacheFs, versionId)
   for _, frame in ipairs(pokeBall.frames) do
     images[frame.drawableKey] = stagedImage(scope, cacheFs, frame.image, versionId .. " fixture ball frame")
   end
+  -- Ball send-out, burst, and click particles resolve through the same
+  -- staged leaves production reads: the capture harness stages every
+  -- seal/burst/genericBurst texture the POKE_BALL entry carries, so the
+  -- seal the opening send-out starts never waits past its texture limit.
+  do
+    local particles = pokeBall.particles
+    if type(particles) == "table" then
+      for _, setName in ipairs({ "seal", "burst", "genericBurst" }) do
+        local set = particles[setName]
+        if type(set) == "table" and type(set.textures) == "table" then
+          for _, texture in ipairs(set.textures) do
+            local textureId = assert(texture.id, versionId .. " stages its ball particle texture id")
+            local key = "battle-ball-particle:POKE_BALL:" .. setName .. ":" .. tostring(textureId)
+            images[key] = stagedImage(
+              scope,
+              cacheFs,
+              assert(texture.image, versionId .. " stages its ball particle image"),
+              versionId .. " fixture ball particle " .. key
+            )
+          end
+        end
+      end
+    end
+  end
   images["hud:enemy"] = stagedImage(
     scope,
     cacheFs,
@@ -840,6 +864,7 @@ local function openingPacket()
         portraitSelector = MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"),
         name = LEAD_SPECIES,
         gender = "male",
+        ballKey = "POKE_BALL",
         level = 9,
         hp = 30,
         maxHp = 30,
@@ -854,6 +879,7 @@ local function openingPacket()
         selector = "back",
         portraitSelector = MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back"),
         name = LEAD_SPECIES,
+        ballKey = "POKE_BALL",
         level = 9,
         hp = 28,
         maxHp = 28,
@@ -2600,6 +2626,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
         selector = "back",
         portraitSelector = portraitByPosition[3].selector,
         name = "CHIKORITA",
+        ballKey = "POKE_BALL",
         level = 9,
         hp = 30,
         maxHp = 30,
@@ -2615,6 +2642,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
         selector = "back",
         portraitSelector = portraitByPosition[4].selector,
         name = "HERACROSS",
+        ballKey = "POKE_BALL",
         level = 12,
         hp = 18,
         maxHp = 24,
@@ -4048,6 +4076,7 @@ function T.compact_active_lead_draws_its_exact_canonical_portrait(scope, context
         selector = "back",
         portraitSelector = maleBack,
         name = "BENCH",
+        ballKey = "POKE_BALL",
         level = 9,
         hp = 0,
         maxHp = 30,
@@ -4062,6 +4091,7 @@ function T.compact_active_lead_draws_its_exact_canonical_portrait(scope, context
         selector = "back",
         portraitSelector = femaleBack,
         name = "LIVE",
+        ballKey = "POKE_BALL",
         level = 9,
         hp = 28,
         maxHp = 28,
