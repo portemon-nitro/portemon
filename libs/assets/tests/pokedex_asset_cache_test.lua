@@ -214,6 +214,7 @@ local function fixtureManifest(catalog)
         information = { { chrome = "panel", layer = 0, x = 0, y = 0, priority = 0, paletteGroup = "panel" } },
         controls = {},
       },
+      layerPriorities = { information = { 0, 1, 2, 3 }, controls = { 2, 0, 1, 3 } },
       cells = { "panel-cell" },
       sprites = { "panel-sprite" },
       windows = { "body-window" },
@@ -231,7 +232,7 @@ local function fixtureManifest(catalog)
   local pictures = { backYOffset = {} }
   pictures.backYOffset[MonCache.portraitSelector("custom.alpha", 0, "male", false, "back")] = 4
   return {
-    schema = "g4-pokedex-assets-v3",
+    schema = "g4-pokedex-assets-v4",
     versionId = "heartgold",
     fonts = { body = 0, header = 4 },
     pages = pages,
@@ -277,6 +278,10 @@ local function fixtureManifest(catalog)
         background = rgba(0, 0, 0, 0),
         align = "left",
         paletteGroup = "panel",
+        printX = 0,
+        printY = 0,
+        lineAdvance = 16,
+        textRole = "body-window",
       },
     },
     sprites = {
@@ -291,7 +296,14 @@ local function fixtureManifest(catalog)
       },
     },
     pictures = pictures,
-    footprints = { ["custom.alpha"] = { chrome = "panel", source = { x = 0, y = 0, width = 16, height = 16 } } },
+    footprints = {
+      ["custom.alpha"] = {
+        chrome = "panel",
+        source = { x = 0, y = 0, width = 16, height = 16 },
+        anchorX = -8,
+        anchorY = -8,
+      },
+    },
     areaMaps = {
       johto = {
         role = "map",
@@ -369,7 +381,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   local PokedexCacheWriter, PokedexCache, DerivedAssetContract = requireProduction()
   Assert.deepEqual(
     DerivedAssetContract.pokedex,
-    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v3" },
+    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v4" },
     "the contract names the exact pokedex family identities"
   )
   Assert.equal(PokedexCache.dir(), "data/generated/pokedex", "the pokedex data directory is stable")
@@ -424,7 +436,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   )
   Assert.equal(
     PokedexCache.loadManifest(cacheFs).schema,
-    "g4-pokedex-assets-v3",
+    "g4-pokedex-assets-v4",
     "the loaded manifest keeps its schema identity"
   )
 end
@@ -666,6 +678,123 @@ function T.strict_catalog_accepts_only_complete_second_revision_payloads()
   Assert.isNil(
     PokedexAssetSchema.validateCatalog(missingMarker, nil),
     "a dungeon without a marker shape must not validate"
+  )
+end
+
+function T.presentation_pages_require_explicit_native_priorities()
+  local PokedexAssetSchema = assert(require("libs.assets.src.PokedexAssetSchema"))
+  local catalog = fixtureCatalog()
+  -- Every page carries its own explicit four-priority vector per pane:
+  -- a page that borrows another page's priorities cannot validate.
+  local missing = fixtureManifest(catalog)
+  missing.pages.grid.layerPriorities = nil
+  Assert.isNil(
+    PokedexAssetSchema.validateManifest(missing, catalog),
+    "a page without explicit per-pane priorities must not validate"
+  )
+  local short = fixtureManifest(catalog)
+  short.pages.grid.layerPriorities = { information = { 0, 1, 2 }, controls = { 2, 0, 1, 3 } }
+  Assert.isNil(
+    PokedexAssetSchema.validateManifest(short, catalog),
+    "a pane priority vector must cover all four native layers"
+  )
+  local ranged = fixtureManifest(catalog)
+  ranged.pages.grid.layerPriorities = { information = { 0, 1, 2, 4 }, controls = { 2, 0, 1, 3 } }
+  Assert.isNil(PokedexAssetSchema.validateManifest(ranged, catalog), "priorities stay inside the native 0..3 range")
+end
+
+-- A stale pre-v4 presentation never reads ready: only the current
+-- schema identity publishes through the staged flow, and the runtime
+-- readiness gate rejects the old generation without clearing saves.
+function T.stale_presentation_generations_never_read_ready()
+  local PokedexCacheWriter, PokedexCache = requireProduction()
+  local cacheFs = CacheFs.forVersion("heartgold", FakeCache.new())
+  local catalog = fixtureCatalog()
+  stageScope(PokedexCacheWriter, cacheFs, "pokedex-data", "data-stage", "stageData", {
+    marker = "data-marker",
+    catalog = catalog,
+    assets = {},
+    provenance = { staged = true },
+  })
+  local manifest = fixtureManifest(catalog)
+  manifest.schema = "g4-pokedex-assets-v3"
+  local assets = {}
+  for _, path in ipairs(PokedexCache.referencedPaths(manifest)) do
+    assets[path] = "payload:" .. path
+  end
+  -- Staged publication itself refuses the old generation: the writer
+  -- validates the manifest before anything publishes.
+  local staged = pcall(stageScope, PokedexCacheWriter, cacheFs, "pokedex", "presentation-stale", "stagePresentation", {
+    marker = "presentation-marker-stale",
+    manifest = manifest,
+    assets = assets,
+    provenance = { staged = true },
+  })
+  Assert.isFalse(staged, "a stale pre-v4 presentation must not stage")
+  local current = fixtureManifest(catalog)
+  local currentAssets = {}
+  for _, path in ipairs(PokedexCache.referencedPaths(current)) do
+    currentAssets[path] = "payload:" .. path
+  end
+  local currentMarker =
+    stageScope(PokedexCacheWriter, cacheFs, "pokedex", "presentation-current", "stagePresentation", {
+      marker = "presentation-marker-current",
+      manifest = current,
+      assets = currentAssets,
+      provenance = { staged = true },
+    })
+  Assert.isTrue(
+    PokedexCache.isReady(cacheFs, currentMarker),
+    "the current v4 presentation reads ready after the stale rejection"
+  )
+end
+
+-- Every staged footprint carries the integer center anchor the renderer
+-- draws through: a record without it, or with a fractional offset,
+-- cannot validate.
+function T.presentation_footprints_require_their_native_center_anchor()
+  local PokedexAssetSchema = assert(require("libs.assets.src.PokedexAssetSchema"))
+  local catalog = fixtureCatalog()
+  local missing = fixtureManifest(catalog)
+  missing.footprints["custom.alpha"].anchorX = nil
+  Assert.isNil(
+    PokedexAssetSchema.validateManifest(missing, catalog),
+    "a footprint without its center anchor must not validate"
+  )
+  local fractional = fixtureManifest(catalog)
+  fractional.footprints["custom.alpha"].anchorX = -8.5
+  Assert.isNil(
+    PokedexAssetSchema.validateManifest(fractional, catalog),
+    "a footprint anchor stays on the integer pixel grid"
+  )
+  local anchored = fixtureManifest(catalog)
+  Assert.notNil(PokedexAssetSchema.validateManifest(anchored, catalog), "the anchored footprint atlas validates")
+end
+
+-- Window print origins live inside their own clip: an origin past the
+-- right or bottom edge cannot validate, while the exact boundary
+-- stays legal for right and center anchors.
+function T.presentation_windows_keep_their_print_origin_inside_the_clip()
+  local PokedexAssetSchema = assert(require("libs.assets.src.PokedexAssetSchema"))
+  local catalog = fixtureCatalog()
+  local outside = fixtureManifest(catalog)
+  outside.windows["body-window"].printX = outside.windows["body-window"].width + 1
+  Assert.isNil(
+    PokedexAssetSchema.validateManifest(outside, catalog),
+    "a print origin past the window edge must not validate"
+  )
+  local below = fixtureManifest(catalog)
+  below.windows["body-window"].printY = below.windows["body-window"].height + 1
+  Assert.isNil(
+    PokedexAssetSchema.validateManifest(below, catalog),
+    "a print origin below the window edge must not validate"
+  )
+  local edge = fixtureManifest(catalog)
+  edge.windows["body-window"].align = "right"
+  edge.windows["body-window"].printX = edge.windows["body-window"].width
+  Assert.notNil(
+    PokedexAssetSchema.validateManifest(edge, catalog),
+    "a right-anchored origin may address the right boundary"
   )
 end
 

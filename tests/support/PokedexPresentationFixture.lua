@@ -145,17 +145,41 @@ function PokedexPresentationFixture.registrationDemand(snapshot, key, monCatalog
       types = assert(monCatalog:species(species).types, "the fixture species carries its types")
     end
     if type(types[1]) == "string" then
-      objects[#objects + 1] =
-        { subject = "type-1", choice = types[1], pane = "information", x = 168, y = 72, age = 0, visible = true }
+      objects[#objects + 1] = {
+        subject = "type-1",
+        choice = types[1],
+        pane = "information",
+        priority = 0,
+        x = 168,
+        y = 72,
+        age = 0,
+        visible = true,
+      }
       if type(types[2]) == "string" and types[2] ~= types[1] then
-        objects[#objects + 1] =
-          { subject = "type-2", choice = types[2], pane = "information", x = 217, y = 72, age = 0, visible = true }
+        objects[#objects + 1] = {
+          subject = "type-2",
+          choice = types[2],
+          pane = "information",
+          priority = 0,
+          x = 217,
+          y = 72,
+          age = 0,
+          visible = true,
+        }
       end
     end
     local originHidden = species == "GIRATINA" and form == 1
     if not originHidden then
-      objects[#objects + 1] =
-        { subject = "footprint", choice = species, pane = "information", x = 120, y = 80, age = 0, visible = true }
+      objects[#objects + 1] = {
+        subject = "footprint",
+        choice = species,
+        pane = "information",
+        priority = 0,
+        x = 120,
+        y = 80,
+        age = 0,
+        visible = true,
+      }
     end
   end
   return {

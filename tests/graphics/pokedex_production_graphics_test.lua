@@ -3726,15 +3726,7 @@ function T.registration_picture_slides_and_hides_on_departure(scope)
     -- target while banner 0 stayed correct.
     for _, banner in ipairs({ 0, 7 }) do
       local data = drawCard(128, false, banner)
-      assertPixel(
-        data,
-        88 + dx,
-        32 + dy,
-        er,
-        eg,
-        eb,
-        "banner " .. banner .. " paints the centered specimen"
-      )
+      assertPixel(data, 88 + dx, 32 + dy, er, eg, eb, "banner " .. banner .. " paints the centered specimen")
     end
     for _, center in ipairs({ 48, 88, 128 }) do
       local data = drawCard(center, false)
@@ -3910,14 +3902,17 @@ function T.registration_card_paints_placed_banner_art(scope)
       256,
       192
     )
+    -- The palette fade covers the popup OBJ with the interface chrome:
+    -- the departure cover blacks the emblem while the picture coefficient
+    -- stays lit, matching the native Main BG+OBJ fade selection.
     assertPixel(
       faded,
       entry.record.x + part.x + dx,
       entry.record.y + part.y + dy,
-      er,
-      eg,
-      eb,
-      "the banner emblem survives the cover fade unfaded"
+      0,
+      0,
+      0,
+      "the banner emblem fades with the interface palette"
     )
     lease:release()
     rig.owner:release()
@@ -4713,7 +4708,677 @@ function T.header_font_pages_converge_behind_the_icon_provider(scope)
   end)
 end
 
+-- Two fully overlapping live footprints with different priorities prove
+-- the single winning subject rule: the priority winner paints whether it
+-- was submitted first or last, and a transparent texel never donates its
+-- rectangle metadata over an earlier opaque texel.
+function T.overlapping_live_subjects_resolve_by_priority_not_painter_order(scope)
+  local Renderer = requireRenderer("overlapping live subject pixels")
+  local Interface = requireInterface("registration layout resolution")
+  requireOwner("prepared card bundles")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local demand = Fixture.registrationDemand(snapshot, "overlap-subjects", rig.monCatalog)
+    demand.objects[#demand.objects + 1] = {
+      subject = "footprint",
+      choice = "SPINDA",
+      pane = "information",
+      priority = 3,
+      x = 120,
+      y = 80,
+      age = 0,
+      visible = true,
+    }
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
+    seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, false)
+    local lease = rig.owner:acquire({ purpose = "registration" })
+    local assets = prepareReady(rig, lease, demand)
+    Assert.notNil(assets.footprintParts["TOTODILE"], "the card bundle stages the leading footprint")
+    Assert.notNil(assets.footprintParts["SPINDA"], "the card bundle stages the overlapping footprint")
+    -- Independent oracle bytes: the staged footprint atlas behind the
+    -- manifest source rects, never a production surface.
+    local chrome = assert(rig.manifest.chrome.footprints, "the manifest carries the footprint atlas")
+    local atlas = decodePage(rig.cacheFs, assert(chrome.path, "the footprint atlas carries its path"))
+    local totoRect =
+      assert(rig.manifest.footprints["TOTODILE"].source, "the manifest carries the leading footprint rect")
+    local spindaRect =
+      assert(rig.manifest.footprints["SPINDA"].source, "the manifest carries the overlapping footprint rect")
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "registration", "information")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "registration", "information")
+    local backdrop = Renderer.backdropOf(rig.manifest, "registration", "information")
+    local probe = nil
+    for dy = 0, 15 do
+      for dx = 0, 15 do
+        local r, g, b, a = pixel(atlas, totoRect.x + dx, totoRect.y + dy)
+        if a > 0 then
+          local _, _, _, sa = pixel(atlas, spindaRect.x + dx, spindaRect.y + dy)
+          local er, eg, eb = expectedBackground(layers, priorities, backdrop, 112 + dx, 72 + dy)
+          if (r ~= er or g ~= eg or b ~= eb) and (probe == nil or (sa == 0 and probe.holdover)) then
+            probe = { dx = dx, dy = dy, r = r, g = g, b = b, holdover = sa ~= 0 }
+          end
+        end
+      end
+    end
+    Assert.notNil(probe, "the footprint pair offers an opaque probe texel over background")
+    Assert.isFalse(probe.holdover, "the probe sits under the trailing transparent texel")
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.registration(), measurement, {})
+    local placement = placementOf(plan, "registration")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local function drawCard(objects)
+      return drawPlan(scope, plan, resources, {
+        view = {
+          pictureX = 48,
+          paletteFade = 0,
+          pictureFade = 0,
+          banner = 0,
+          spritesHidden = false,
+          objects = objects,
+        },
+        assets = assets,
+      }, 256, 192)
+    end
+    local function intent(choice, priority)
+      return {
+        subject = "footprint",
+        choice = choice,
+        pane = "information",
+        priority = priority,
+        x = 120,
+        y = 80,
+        age = 0,
+        visible = true,
+      }
+    end
+    local px = placement.origin.x + 112 + probe.dx
+    local py = placement.origin.y + 72 + probe.dy
+    local leadingFirst = drawCard({ intent("TOTODILE", 0), intent("SPINDA", 3) })
+    assertPixel(leadingFirst, px, py, probe.r, probe.g, probe.b, "the priority winner paints when submitted first")
+    local trailingFirst = drawCard({ intent("SPINDA", 3), intent("TOTODILE", 0) })
+    assertPixel(trailingFirst, px, py, probe.r, probe.g, probe.b, "the priority winner paints when submitted last")
+    lease:release()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- The information-window mask belongs to the retract interval only: a
+-- compared portrait stays visible through the masked band on its own
+-- page, while an explicitly armed mask still excludes it.
+function T.information_portraits_ignore_the_retract_mask_outside_the_move_phase(scope)
+  local Renderer = requireRenderer("compared portrait band pixels")
+  local Interface = requireInterface("paired native layout resolution")
+  requireOwner("prepared comparison bundles")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedIcon(pool, "PICHU/f0", 1, 1, 0)
+    seedIcon(pool, "PICHU/f1", 1, 0, 1)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.compare")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local function observe(species, personality, form, kind)
+      local specimen = dexOwner:describe(PokedexDexFixture.makeMon(rig.monCatalog, {
+        species = species,
+        personality = personality,
+        form = form,
+      }))
+      dexOwner:prepareChanges({ observations = { { kind = kind, specimen = specimen } } }):publish()
+    end
+    observe("PICHU", 127, 0, "seen")
+    observe("PICHU", 0, 0, "seen")
+    observe("PICHU", 0, 1, "caught")
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    selectSpecies(controller, "PICHU")
+    openEntry(controller)
+    openTab(controller, "forms")
+    press(controller, { { type = "navigate", direction = "down" } })
+    idle(controller, 2)
+    press(controller, { { type = "navigate", direction = "down" } })
+    idle(controller, 2)
+    press(controller, { { type = "activate", action = "compare" } })
+    idle(controller, 2)
+    local view = controller:view()
+    Assert.equal(view.page, "forms", "the comparison rests on its forms page")
+    Assert.equal(#view.pictures, 2, "the comparison projects exactly two specimens")
+    local demand = browserDemandFor(Renderer, view)
+    -- A synthetic live subject inside the retract band rides the real
+    -- browser demand and draw path; production pages project no live
+    -- art that low, which is exactly why the permanent mask went
+    -- unnoticed there.
+    demand.objects[#demand.objects + 1] = {
+      subject = "footprint",
+      choice = "TOTODILE",
+      pane = "information",
+      priority = 0,
+      x = 100,
+      y = 170,
+      age = 0,
+      visible = true,
+    }
+    local seeded = {}
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, seeded)
+    local lease = rig.owner:acquire({ purpose = "browser" })
+    local assets = prepareReady(rig, lease, demand)
+    Assert.notNil(assets.footprintParts["TOTODILE"], "the bundle stages the band probe")
+    local measurement = measurementFor("dualDisplay")
+    local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+    local info = placementOf(plan, "information")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "entry.compare", "information")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "entry.compare", "information")
+    local backdrop = Renderer.backdropOf(rig.manifest, "entry.compare", "information")
+    -- Independent oracle: the staged footprint atlas behind the
+    -- manifest source rect, never a production surface.
+    local chrome = assert(rig.manifest.chrome.footprints, "the manifest carries the footprint atlas")
+    local atlas = decodePage(rig.cacheFs, assert(chrome.path, "the footprint atlas carries its path"))
+    local rect = assert(rig.manifest.footprints["TOTODILE"].source, "the manifest carries the probe rect")
+    local probe = nil
+    for dy = 0, 15 do
+      for dx = 0, 15 do
+        local r, g, b, a = pixel(atlas, rect.x + dx, rect.y + dy)
+        if a > 0 then
+          local er, eg, eb = expectedBackground(layers, priorities, backdrop, 100 + dx, 170 + dy)
+          if r ~= er or g ~= eg or b ~= eb then
+            probe = { dx = dx, dy = dy, r = r, g = g, b = b }
+            break
+          end
+        end
+      end
+      if probe ~= nil then
+        break
+      end
+    end
+    Assert.notNil(probe, "the band probe offers an opaque texel over background")
+    local objects = { demand.objects[#demand.objects] }
+    local px = info.origin.x + 100 + probe.dx
+    local py = info.origin.y + 170 + probe.dy
+    -- NOTE: the probe draws through the same browser passes with only
+    -- the intent overridden; the page itself projects no live art here.
+    local probed = {}
+    for key, value in pairs(view) do
+      probed[key] = value
+    end
+    probed.objects = objects
+    local probedData = drawPlan(scope, plan, resources, preparedBrowserView(probed, assets), 512, 384)
+    assertPixel(
+      probedData,
+      px,
+      py,
+      probe.r,
+      probe.g,
+      probe.b,
+      "live subjects ignore the retract mask outside the move phase"
+    )
+    -- The armed mask still excludes the same band: the machinery is
+    -- gated, never deleted.
+    local masked = {}
+    for key, value in pairs(view) do
+      masked[key] = value
+    end
+    masked.visual = { informationClip = true }
+    masked.objects = objects
+    local maskedData = drawPlan(scope, plan, resources, preparedBrowserView(masked, assets), 512, 384)
+    do
+      local er, eg, eb = expectedBackground(layers, priorities, backdrop, 100 + probe.dx, 170 + probe.dy)
+      assertPixel(maskedData, px, py, er, eg, eb, "the armed move-phase mask excludes the retract band")
+    end
+    lease:release()
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- The footprint assembly centers on its published anchor: the staged
+-- 16x16 top-left lands eight pixels left and above the specimen center
+-- instead of pinning the center as a top-left corner.
+function T.native_footprints_center_on_the_published_anchor(scope)
+  local Renderer = requireRenderer("footprint anchor pixels")
+  local Interface = requireInterface("registration layout resolution")
+  requireOwner("prepared card bundles")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local demand = Fixture.registrationDemand(snapshot, "footprint-center", rig.monCatalog)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
+    seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, false)
+    local lease = rig.owner:acquire({ purpose = "registration" })
+    local assets = prepareReady(rig, lease, demand)
+    Assert.notNil(assets.footprintParts["TOTODILE"], "the card bundle stages the footprint")
+    -- Independent oracle: the staged footprint atlas behind the
+    -- manifest source rect, never a production surface.
+    local chrome = assert(rig.manifest.chrome.footprints, "the manifest carries the footprint atlas")
+    local atlas = decodePage(rig.cacheFs, assert(chrome.path, "the footprint atlas carries its path"))
+    local rect = assert(rig.manifest.footprints["TOTODILE"].source, "the manifest carries the probe rect")
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "registration", "information")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "registration", "information")
+    local backdrop = Renderer.backdropOf(rig.manifest, "registration", "information")
+    local probe = nil
+    for dy = 0, 15 do
+      for dx = 0, 15 do
+        local r, g, b, a = pixel(atlas, rect.x + dx, rect.y + dy)
+        if a > 0 then
+          local er, eg, eb = expectedBackground(layers, priorities, backdrop, 112 + dx, 72 + dy)
+          if r ~= er or g ~= eg or b ~= eb then
+            probe = { dx = dx, dy = dy, r = r, g = g, b = b }
+            break
+          end
+        end
+      end
+      if probe ~= nil then
+        break
+      end
+    end
+    Assert.notNil(probe, "the footprint offers an opaque texel over background")
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.registration(), measurement, {})
+    local placement = placementOf(plan, "registration")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local data = drawPlan(scope, plan, resources, {
+      view = {
+        pictureX = 48,
+        paletteFade = 0,
+        pictureFade = 0,
+        banner = 0,
+        spritesHidden = false,
+        objects = demand.objects,
+      },
+      assets = assets,
+    }, 256, 192)
+    assertPixel(
+      data,
+      placement.origin.x + 112 + probe.dx,
+      placement.origin.y + 72 + probe.dy,
+      probe.r,
+      probe.g,
+      probe.b,
+      "the footprint centers on its published anchor"
+    )
+    lease:release()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- A scaled live subject shares its transform across color and
+-- metadata: every covered texel keeps the subject's class and priority,
+-- and texels the untransformed rectangle never covered still resolve.
+function T.scaled_live_subjects_share_transforms_across_color_and_metadata(scope)
+  local Renderer = requireRenderer("scaled live subject pixels")
+  local Interface = requireInterface("registration layout resolution")
+  requireOwner("prepared card bundles")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local demand = Fixture.registrationDemand(snapshot, "scaled-subject", rig.monCatalog)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
+    seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, false)
+    local lease = rig.owner:acquire({ purpose = "registration" })
+    local assets = prepareReady(rig, lease, demand)
+    -- Independent oracle: the staged type art behind the manifest
+    -- binding, with the authored frame pose applied before the owner
+    -- pose, never a production surface.
+    local page = assert(rig.manifest.pages.registration, "the manifest carries the card page")
+    local subjects = assert(page.spriteSubjects, "the card page binds its live subjects")
+    local typeMap = assert(subjects["type-1"], "the card page binds its first type")
+    local binding = assert(typeMap["water"], "the card binds the captured water type")
+    local sprite = assert(rig.manifest.sprites[binding.sprite], "the sprite inventory carries the type art")
+    local animation = assert(rig.manifest.animations[sprite.animation], "the type art resolves its animation")
+    local frame = assert(animation.frames[1], "the type art carries its resting frame")
+    for _, field in ipairs({ "offsetX", "offsetY", "rotation", "scaleX", "scaleY" }) do
+      Assert.isTrue(type(frame[field]) == "number", "the resting frame normalizes its " .. field)
+    end
+    local cell = assert(rig.manifest.cells[frame.cell], "the resting frame resolves its cell")
+    local part = assert(cell.parts[1], "the resting cell carries its part")
+    local source = assert(part.source, "the resting part carries its source viewport")
+    local partChrome = assert(rig.manifest.chrome[part.chrome], "the part chrome resolves")
+    local art = decodePage(rig.cacheFs, assert(partChrome.path, "the part chrome stages its bytes"))
+    local function framePose(lx, ly)
+      local sx, sy = lx * frame.scaleX, ly * frame.scaleY
+      local cosine, sine = math.cos(frame.rotation), math.sin(frame.rotation)
+      return frame.offsetX + sx * cosine - sy * sine, frame.offsetY + sx * sine + sy * cosine
+    end
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "registration", "information")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "registration", "information")
+    local backdrop = Renderer.backdropOf(rig.manifest, "registration", "information")
+    local probe = nil
+    for _, candidate in ipairs(cell.parts) do
+      local viewport = assert(candidate.source, "every resting part carries its viewport")
+      for ly = 0, viewport.height - 1 do
+        for lx = math.floor(viewport.width / 2), viewport.width - 1 do
+          local r, g, b, a = pixel(art, viewport.x + lx, viewport.y + ly)
+          if a > 0 then
+            local qx, qy = framePose(candidate.x + lx, candidate.y + ly)
+            local whole = math.abs(qx - math.floor(qx + 0.5)) < 1e-6 and math.abs(qy - math.floor(qy + 0.5)) < 1e-6
+            local tx, ty = 8 + 2 * qx, 120 + 2 * qy
+            local insideUntransformed = tx >= 8 + candidate.x
+              and tx < 8 + candidate.x + viewport.width
+              and ty >= 120 + candidate.y
+              and ty < 120 + candidate.y + viewport.height
+            if not insideUntransformed and whole and tx >= 0 and ty >= 0 and tx < 256 and ty < 192 then
+              local er, eg, eb = expectedBackground(layers, priorities, backdrop, tx, ty)
+              if r ~= er or g ~= eg or b ~= eb then
+                probe = { tx = tx, ty = ty, r = r, g = g, b = b }
+                break
+              end
+            end
+          end
+        end
+        if probe ~= nil then
+          break
+        end
+      end
+      if probe ~= nil then
+        break
+      end
+    end
+    Assert.notNil(probe, "the scaled art reaches past its untransformed rectangle")
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.registration(), measurement, {})
+    local placement = placementOf(plan, "registration")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local data = drawPlan(scope, plan, resources, {
+      view = {
+        pictureX = 48,
+        paletteFade = 0,
+        pictureFade = 0,
+        banner = 0,
+        spritesHidden = false,
+        objects = {
+          {
+            subject = "type-1",
+            choice = "water",
+            pane = "information",
+            priority = 0,
+            x = 8,
+            y = 120,
+            scale = 2,
+            age = 0,
+            visible = true,
+          },
+        },
+      },
+      assets = assets,
+    }, 256, 192)
+    assertPixel(
+      data,
+      placement.origin.x + math.floor(probe.tx + 0.5),
+      placement.origin.y + math.floor(probe.ty + 0.5),
+      probe.r,
+      probe.g,
+      probe.b,
+      "scaled texels outside the resting rectangle keep subject metadata"
+    )
+    lease:release()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- The card splits its fades: interface art follows the palette fade
+-- while the captured portrait follows only the picture fade, the hidden
+-- popup retires every anchored emblem, and the draw leaves hostile
+-- caller graphics state untouched.
+function T.registration_card_splits_portrait_and_interface_fades(scope)
+  local Renderer = requireRenderer("registration card fade pixels")
+  local Interface = requireInterface("registration layout resolution")
+  requireOwner("prepared card bundles")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local demand = Fixture.registrationDemand(snapshot, "split-fades", rig.monCatalog)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
+    seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, false)
+    local lease = rig.owner:acquire({ purpose = "registration" })
+    local assets = prepareReady(rig, lease, demand)
+    local page = assert(rig.manifest.pages.registration, "the manifest carries the card page")
+    local subjects = assert(page.spriteSubjects, "the card page binds its live subjects")
+    local typeMap = assert(subjects["type-1"], "the card page binds its first type")
+    local typeBinding = assert(typeMap["water"], "the card binds the captured water type")
+    local typeSprite = assert(rig.manifest.sprites[typeBinding.sprite], "the type sprite resolves")
+    local typeAnimation = assert(rig.manifest.animations[typeSprite.animation], "the type art animates")
+    local typeFrame = assert(typeAnimation.frames[1], "the type art carries its resting frame")
+    local typeCell = assert(rig.manifest.cells[typeFrame.cell], "the resting frame resolves its cell")
+    local typePart = assert(typeCell.parts[1], "the resting cell carries its part")
+    local typeSource = assert(typePart.source, "the resting part carries its viewport")
+    local typeChrome = assert(rig.manifest.chrome[typePart.chrome], "the part chrome resolves")
+    local typeArt = decodePage(rig.cacheFs, assert(typeChrome.path, "the part chrome stages its bytes"))
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "registration", "information")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "registration", "information")
+    local backdrop = Renderer.backdropOf(rig.manifest, "registration", "information")
+    -- Independent oracle: an opaque non-black type texel away from the
+    -- sliding portrait, never a production surface.
+    local typeProbe = nil
+    for ly = 0, typeSource.height - 1 do
+      for lx = 1, typeSource.width - 1 do
+        local r, g, b, a = pixel(typeArt, typeSource.x + lx, typeSource.y + ly)
+        if a > 0 and (r ~= 0 or g ~= 0 or b ~= 0) then
+          local tx, ty = 168 + typePart.x + lx, 72 + typePart.y + ly
+          local er, eg, eb = expectedBackground(layers, priorities, backdrop, tx, ty)
+          if r ~= er or g ~= eg or b ~= eb then
+            typeProbe = { tx = tx, ty = ty, r = r, g = g, b = b }
+            break
+          end
+        end
+      end
+      if typeProbe ~= nil then
+        break
+      end
+    end
+    Assert.notNil(typeProbe, "the type icon offers an opaque probe texel")
+    -- The anchored banner emblem resolves through its static placement
+    -- with the same independence; the banner strip never covers it.
+    local emblem = assert(rig.manifest.sprites["sprite-registration-1"], "the card stages its emblem")
+    local emblemAnimation = assert(rig.manifest.animations[emblem.animation], "the emblem animates")
+    local emblemFrame = assert(emblemAnimation.frames[1], "the emblem carries its resting frame")
+    local emblemCell = assert(rig.manifest.cells[emblemFrame.cell], "the emblem frame resolves its cell")
+    local strip = page.bannerFlash
+    local emblemProbe = nil
+    for _, candidate in ipairs(emblemCell.parts) do
+      local viewport = assert(candidate.source, "every emblem part carries its viewport")
+      local emblemChrome = assert(rig.manifest.chrome[candidate.chrome], "the emblem chrome resolves")
+      local emblemArt = decodePage(rig.cacheFs, assert(emblemChrome.path, "the emblem chrome stages"))
+      for ly = 0, viewport.height - 1 do
+        for lx = 0, viewport.width - 1 do
+          local r, g, b, a = pixel(emblemArt, viewport.x + lx, viewport.y + ly)
+          if a > 0 and (r ~= 0 or g ~= 0 or b ~= 0) then
+            local tx, ty = emblem.x + candidate.x + lx, emblem.y + candidate.y + ly
+            local covered = tx >= 8 and tx < 88 and ty >= 32 and ty < 112
+            if strip ~= nil then
+              covered = covered
+                or (tx >= strip.x and tx < strip.x + strip.width and ty >= strip.y and ty < strip.y + strip.height)
+            end
+            if not covered and tx >= 0 and ty >= 0 and tx < 256 and ty < 192 then
+              emblemProbe = { tx = tx, ty = ty }
+              break
+            end
+          end
+        end
+        if emblemProbe ~= nil then
+          break
+        end
+      end
+      if emblemProbe ~= nil then
+        break
+      end
+    end
+    Assert.notNil(emblemProbe, "the emblem offers a probe texel outside the portrait and strip")
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.registration(), measurement, {})
+    local placement = placementOf(plan, "registration")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local function drawCard(view)
+      return drawPlan(scope, plan, resources, { view = view, assets = assets }, 256, 192)
+    end
+    -- Hostile caller tint must not leak into the card, and the draw
+    -- hands the caller state back exactly as it found it.
+    love.graphics.setColor(1, 0, 0, 1)
+    local unfaded = drawCard({
+      pictureX = 128,
+      paletteFade = 0,
+      pictureFade = 0,
+      banner = 0,
+      spritesHidden = false,
+      objects = demand.objects,
+    })
+    do
+      local r, g, b, a = love.graphics.getColor()
+      Assert.equal(r, 1, "the card draw restores the caller tint red")
+      Assert.equal(g, 0, "the card draw restores the caller tint green")
+      Assert.equal(b, 0, "the card draw restores the caller tint blue")
+      Assert.equal(a, 1, "the card draw restores the caller tint alpha")
+    end
+    love.graphics.setColor(1, 1, 1, 1)
+    assertPixel(
+      unfaded,
+      placement.origin.x + typeProbe.tx,
+      placement.origin.y + typeProbe.ty,
+      typeProbe.r,
+      typeProbe.g,
+      typeProbe.b,
+      "the interface art paints unfaded under hostile tint"
+    )
+    -- Divergent fades: the interface stays lit while the portrait fades
+    -- to black on its own coefficient.
+    local split = drawCard({
+      pictureX = 128,
+      paletteFade = 0,
+      pictureFade = 16,
+      banner = 0,
+      spritesHidden = false,
+      objects = demand.objects,
+    })
+    assertPixel(
+      split,
+      placement.origin.x + typeProbe.tx,
+      placement.origin.y + typeProbe.ty,
+      typeProbe.r,
+      typeProbe.g,
+      typeProbe.b,
+      "the interface ignores the portrait fade"
+    )
+    assertPixel(
+      split,
+      placement.origin.x + 128,
+      placement.origin.y + 72,
+      0,
+      0,
+      0,
+      "the portrait fades on its own coefficient"
+    )
+    -- The hidden popup retires its anchored emblem while the portrait
+    -- slot stays outside the sprite gate.
+    local hidden = drawCard({
+      pictureX = 48,
+      paletteFade = 16,
+      pictureFade = 0,
+      banner = 7,
+      spritesHidden = true,
+      objects = {},
+    })
+    assertPixel(
+      hidden,
+      placement.origin.x + emblemProbe.tx,
+      placement.origin.y + emblemProbe.ty,
+      0,
+      0,
+      0,
+      "the hidden popup retires its anchored emblem"
+    )
+    lease:release()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- The card flavor glyphs paint in their native flavor-bank colors: no
+-- placeholder white survives inside the flavor window once the staged
+-- palette triple reaches the draw.
+function T.registration_flavor_glyphs_use_the_native_flavor_bank(scope)
+  local Renderer = requireRenderer("registration card flavor pixels")
+  local Interface = requireInterface("registration layout resolution")
+  requireOwner("prepared card bundles")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local demand = Fixture.registrationDemand(snapshot, "flavor-glyphs", rig.monCatalog)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
+    seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, false)
+    local lease = rig.owner:acquire({ purpose = "registration" })
+    local assets = prepareReady(rig, lease, demand)
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.registration(), measurement, {})
+    local placement = placementOf(plan, "registration")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local data = drawPlan(scope, plan, resources, {
+      view = {
+        pictureX = 48,
+        paletteFade = 0,
+        pictureFade = 0,
+        banner = 0,
+        spritesHidden = false,
+        objects = demand.objects,
+      },
+      assets = assets,
+    }, 256, 192)
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "registration", "information")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "registration", "information")
+    local backdrop = Renderer.backdropOf(rig.manifest, "registration", "information")
+    local ink = 0
+    for y = 136, 136 + 48 - 1 do
+      for x = 16, 16 + 224 - 1 do
+        local er, eg, eb = expectedBackground(layers, priorities, backdrop, x, y)
+        local ar, ag, ab = pixel(data, placement.origin.x + x, placement.origin.y + y)
+        if math.abs(ar - er) + math.abs(ag - eg) + math.abs(ab - eb) > 0 then
+          ink = ink + 1
+          -- The native flavor bank paints glyph cores and shadows in
+          -- its own resolved triple: placeholder white or black never
+          -- survives here.
+          local core = ar == 90 and ag == 90 and ab == 90
+          local shadow = ar == 181 and ag == 181 and ab == 181
+          Assert.isTrue(
+            core or shadow,
+            string.format("the flavor glyphs keep the native bank triple (got %d,%d,%d at %d,%d)", ar, ag, ab, x, y)
+          )
+        end
+      end
+    end
+    Assert.isTrue(ink > 0, "the flavor window carries glyph ink")
+    lease:release()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
-suite.metadata.derivedAssets = { "pokedex-data:global", "pokedex:global", "mon-catalog:global", "field-font:global" }
+suite.metadata.derivedAssets = {
+  "pokedex-data:global",
+  "pokedex:global",
+  "mon-catalog:global",
+  "mon-summary:global",
+  "field-font:global",
+}
 return suite

@@ -21,6 +21,8 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 ---@field _text table<string, unknown>? borrowed font0 text renderer
 ---@field _shader table<string, unknown>? private composite shader, nil until validated
 ---@field _shaderFailed string? visible composite failure, raised as a draw-time cause
+---@field _metaShader table<string, unknown>? private OBJ metadata shader, nil until validated
+---@field _metaShaderFailed string? visible metadata failure, raised as a draw-time cause
 ---@field _released boolean
 local PokedexRenderer = {}
 PokedexRenderer.__index = PokedexRenderer
@@ -88,6 +90,8 @@ uniform float u_secondBits;
 uniform vec2 u_blend;
 uniform vec3 u_bgFadeTarget;
 uniform float u_bgFadeCoeff;
+uniform vec3 u_bg0FadeTarget;
+uniform float u_bg0FadeCoeff;
 uniform vec3 u_objFadeTarget;
 uniform float u_objFadeCoeff;
 uniform vec4 u_winRect;
@@ -146,22 +150,35 @@ vec4 effect(vec4 color, Image tex, vec2 uv, vec2 screenCoords) {
   pris[1] = u_bgPriority.y;
   pris[2] = u_bgPriority.z;
   pris[3] = u_bgPriority.w;
-  vec3 bgColor = u_backdrop;
+  // The registration picture plane carries its own fade coefficient;
+  // every other BG plane, the backdrop, and the popup OBJ share the
+  // palette fade. Browser passes set both coefficients equal.
+  vec3 faded0 = fadeColor(layers[0].rgb, u_bg0FadeTarget, u_bg0FadeCoeff);
+  vec3 faded1 = fadeColor(layers[1].rgb, u_bgFadeTarget, u_bgFadeCoeff);
+  vec3 faded2 = fadeColor(layers[2].rgb, u_bgFadeTarget, u_bgFadeCoeff);
+  vec3 faded3 = fadeColor(layers[3].rgb, u_bgFadeTarget, u_bgFadeCoeff);
+  vec3 fadedBackdrop = fadeColor(u_backdrop, u_bgFadeTarget, u_bgFadeCoeff);
+  // The visible stack: the topmost opaque BG by (priority, layer) with
+  // ties to the lower layer number, then the backdrop. Only the one
+  // winning OBJ ever joins the stack: OBJ beats BG on equal priority.
+  vec3 bgColor = fadedBackdrop;
   float bgPri = 255.0;
   float bgLayer = -1.0;
   for (int layer = 0; layer < 4; layer++) {
     if (layers[layer].a > 0.003 && pris[layer] < bgPri) {
       bgPri = pris[layer];
       bgLayer = float(layer);
-      bgColor = layers[layer].rgb;
+      if (layer == 0) { bgColor = faded0; }
+      else if (layer == 1) { bgColor = faded1; }
+      else if (layer == 2) { bgColor = faded2; }
+      else { bgColor = faded3; }
     }
   }
   vec4 objSample = Texel(u_obj, uv);
   vec3 objBytes = objSample.rgb;
   vec4 meta = Texel(u_meta, uv);
-  // A rectangle metadata mark never confers presence by itself: the
-  // pixel is an OBJ candidate only when its actual sampled texel is
-  // opaque as well.
+  // Metadata never confers presence by itself: the pixel is an OBJ
+  // candidate only when its actual sampled texel is opaque as well.
   float objPresent = step(0.5, meta.a * 255.0) * step(0.003, objSample.a);
   float objClass = floor(meta.r * 255.0 + 0.5);
   float objPri = floor(meta.g * 255.0 + 0.5);
@@ -169,58 +186,55 @@ vec4 effect(vec4 color, Image tex, vec2 uv, vec2 screenCoords) {
     && pane.x >= u_winRect.x && pane.x <= u_winRect.z
     && pane.y >= u_winRect.y && pane.y < u_winRect.w;
   bool objAllowed = objPresent > 0.5 && !insideWindow;
-  bool objFirst = bitSelected(u_firstBits, 4.0) > 0.5;
   float eva = u_blend.x;
   float evb = u_blend.y;
-  vec3 outBytes = fadeColor(bgColor, u_bgFadeTarget, u_bgFadeCoeff);
+  vec3 outBytes = bgColor;
   float outAlpha = 1.0;
   if (objAllowed && objPri <= bgPri) {
     vec3 fadedObj = fadeColor(objBytes, u_objFadeTarget, u_objFadeCoeff);
-    if (objFirst) {
-      vec3 secondBytes = vec3(0.0);
-      bool haveSecond = false;
-      for (int layer = 0; layer < 4; layer++) {
-        if (!haveSecond && bitSelected(u_secondBits, float(layer)) > 0.5 && layers[layer].a > 0.003) {
-          secondBytes = fadeColor(layers[layer].rgb, u_bgFadeTarget, u_bgFadeCoeff);
-          haveSecond = true;
-        }
-      }
-      if (!haveSecond && bitSelected(u_secondBits, 5.0) > 0.5) {
-        secondBytes = fadeColor(u_backdrop, u_bgFadeTarget, u_bgFadeCoeff);
-        haveSecond = true;
-      }
-      if (haveSecond) {
-        outBytes = blendPixels(fadedObj, secondBytes, eva, evb);
-      } else {
-        outBytes = fadedObj;
-      }
+    // The blend pair is the foremost pixel and the immediately
+    // underlying visible pixel only: never a deeper layer past the
+    // winner, and never another OBJ.
+    float secondBit = 5.0;
+    vec3 secondBytes = fadedBackdrop;
+    if (bgLayer >= 0.0) {
+      secondBit = bgLayer;
+      secondBytes = bgColor;
+    }
+    if (bitSelected(u_firstBits, 4.0) > 0.5 && bitSelected(u_secondBits, secondBit) > 0.5) {
+      outBytes = blendPixels(fadedObj, secondBytes, eva, evb);
     } else if (objClass > 0.5) {
       outBytes = blendPixels(fadedObj, outBytes, 6.0, 10.0);
     } else {
       outBytes = fadedObj;
     }
   } else if (bgLayer >= 0.0) {
-    float firstLayer = -1.0;
-    for (int layer = 0; layer < 4; layer++) {
-      if (bitSelected(u_firstBits, float(layer)) > 0.5 && layers[layer].a > 0.003) {
-        firstLayer = float(layer);
-        break;
-      }
-    }
-    if (firstLayer >= 0.0) {
+    if (bitSelected(u_firstBits, bgLayer) > 0.5) {
+      // The immediately underlying visible pixel: the visible BG plane
+      // ranked just below the winner, else the backdrop. No scanning
+      // past the blocking winner.
       float secondLayer = -1.0;
+      float secondPri = 255.0;
       for (int layer = 0; layer < 4; layer++) {
-        if (float(layer) != firstLayer && bitSelected(u_secondBits, float(layer)) > 0.5 && layers[layer].a > 0.003) {
-          secondLayer = float(layer);
-          break;
+        if (float(layer) != bgLayer && layers[layer].a > 0.003
+            && (pris[layer] > bgPri || (pris[layer] == bgPri && float(layer) > bgLayer))) {
+          if (pris[layer] < secondPri || (pris[layer] == secondPri && float(layer) < secondLayer)) {
+            secondPri = pris[layer];
+            secondLayer = float(layer);
+          }
         }
       }
-      vec3 firstBytes = fadeColor(layers[int(firstLayer + 0.5)].rgb, u_bgFadeTarget, u_bgFadeCoeff);
+      vec3 underBytes = fadedBackdrop;
+      float underBit = 5.0;
       if (secondLayer >= 0.0) {
-        vec3 secondBytes = fadeColor(layers[int(secondLayer + 0.5)].rgb, u_bgFadeTarget, u_bgFadeCoeff);
-        outBytes = blendPixels(firstBytes, secondBytes, eva, evb);
-      } else {
-        outBytes = firstBytes;
+        underBit = secondLayer;
+        if (secondLayer < 0.5) { underBytes = faded0; }
+        else if (secondLayer < 1.5) { underBytes = faded1; }
+        else if (secondLayer < 2.5) { underBytes = faded2; }
+        else { underBytes = faded3; }
+      }
+      if (bitSelected(u_secondBits, underBit) > 0.5) {
+        outBytes = blendPixels(bgColor, underBytes, eva, evb);
       }
     }
   }
@@ -270,6 +284,8 @@ function PokedexRenderer.new(opts)
     _text = opts.text,
     _shader = nil,
     _shaderFailed = nil,
+    _metaShader = nil,
+    _metaShaderFailed = nil,
     _released = false,
   }, PokedexRenderer)
   if graphics ~= nil and type(graphics.newShader) == "function" then
@@ -279,8 +295,27 @@ function PokedexRenderer.new(opts)
     else
       self._shaderFailed = tostring(shader)
     end
+    -- The metadata shader samples the identical exact texel rule as
+    -- the color path but outputs the command's class and priority only
+    local metaSource = ImageSampling.samplingGlsl()
+      .. "\nuniform float u_metaClass;\n"
+      .. "uniform float u_metaPriority;\n"
+      .. "vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoords) {\n"
+      .. "  vec4 texel = resolveExactTexel(Texel(tex, texCoord));\n"
+      .. "  if (texel.a < 0.01) {\n"
+      .. "    discard;\n"
+      .. "  }\n"
+      .. "  return vec4(u_metaClass / 255.0, u_metaPriority / 255.0, 0.0, 1.0);\n"
+      .. "}\n"
+    local metaOk, metaShader = pcall(graphics.newShader, metaSource)
+    if metaOk then
+      self._metaShader = metaShader
+    else
+      self._metaShaderFailed = tostring(metaShader)
+    end
   else
     self._shaderFailed = "the pokedex compositor requires its host shader compiler"
+    self._metaShaderFailed = "the pokedex metadata pass requires its host shader compiler"
   end
   return self
 end
@@ -443,76 +478,33 @@ function PokedexRenderer.backdropOf(manifest, role, paneId)
   return { r = pane.r or 0, g = pane.g or 0, b = pane.b or 0 }
 end
 
--- Resolves the winning BG priority per layer from the compiled
--- backgrounds: the lowest authored priority number paints in front, and
--- a layer with no staged background keeps the native priority of its
--- pane and layer, read from any role that stages it. Every producer
--- entry for one pane/layer shares the same source priority, so the
--- borrowed value is exact. A pane/layer staged nowhere falls back to
--- the pane minimum: with first-layer-wins ties that reproduces the
--- native order exactly for the imageless text layers, which must still
--- beat the backdrop wherever no staged layer covers them.
+-- Reads the exact per-page native priority vector the producer compiled
+-- for the drawn pane: a dense BG0..BG3 assignment, values 0..3, with no
+-- fallback to unrelated pages. An inactive empty layer stays transparent
+-- in the serial passes, so the vector alone decides the order.
 ---@param manifest table<string, unknown> compiled presentation manifest
 ---@param role string manifest page role
 ---@param paneId string browser pane identity
----@return number[] four layer priorities, undrawn layers keep their native order
+---@return number[] four explicit native layer priorities behind the pane
 function PokedexRenderer.layerPrioritiesOf(manifest, role, paneId)
-  local priorities = { 255, 255, 255, 255 }
-  if type(manifest) ~= "table" then
-    return priorities
-  end
-  local pages = manifest.pages
-  if type(pages) ~= "table" then
-    return priorities
-  end
-  local page = pages[role]
-  if type(page) == "table" and type(page.backgrounds) == "table" then
-    local entries = page.backgrounds[paneId]
-    if type(entries) == "table" then
-      for _, entry in ipairs(entries) do
-        if type(entry) == "table" and type(entry.layer) == "number" then
-          local layer = entry.layer + 1
-          if layer >= 1 and layer <= 4 and type(entry.priority) == "number" then
-            if entry.priority < priorities[layer] then
-              priorities[layer] = entry.priority
-            end
-          end
-        end
-      end
-    end
-  end
-  local staged = { 255, 255, 255, 255 }
-  for _, other in pairs(pages) do
-    if type(other) == "table" and type(other.backgrounds) == "table" then
-      local entries = other.backgrounds[paneId]
-      if type(entries) == "table" then
-        for _, entry in ipairs(entries) do
-          if type(entry) == "table" and type(entry.layer) == "number" then
-            local layer = entry.layer + 1
-            if layer >= 1 and layer <= 4 and type(entry.priority) == "number" then
-              if entry.priority < staged[layer] then
-                staged[layer] = entry.priority
-              end
-            end
-          end
-        end
-      end
-    end
-  end
-  local paneMinimum = 255
+  assert(type(manifest) == "table", "page priorities resolve from the compiled manifest")
+  local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
+  assert(type(pages) == "table", "page roles stay a record")
+  local page = assert(pages[role], "the compiled manifest carries the drawn page role " .. tostring(role))
+  assert(type(page) == "table", "page roles stay records")
+  local vectors =
+    assert(page.layerPriorities, "the drawn page carries its explicit layer priorities: " .. tostring(role))
+  assert(type(vectors) == "table", "page priorities stay a record: " .. tostring(role))
+  local vector = assert(vectors[paneId], "page priorities carry the drawn pane: " .. tostring(paneId))
+  assert(type(vector) == "table" and #vector == 4, "pane priorities cover all four native layers")
+  local priorities = {}
   for layer = 1, 4 do
-    if staged[layer] < paneMinimum then
-      paneMinimum = staged[layer]
-    end
-  end
-  for layer = 1, 4 do
-    if priorities[layer] == 255 then
-      if staged[layer] < 255 then
-        priorities[layer] = staged[layer]
-      else
-        priorities[layer] = paneMinimum
-      end
-    end
+    local priority = vector[layer]
+    assert(
+      type(priority) == "number" and priority % 1 == 0 and priority >= 0 and priority <= 3,
+      "pane priorities stay inside the native 0..3 range"
+    )
+    priorities[layer] = priority
   end
   return priorities
 end
@@ -708,25 +700,236 @@ local function clearSurface(graphics, surface)
   graphics.clear(0, 0, 0, 0)
 end
 
--- Marks one authored OBJ rectangle in the metadata surface: blend class 0
--- draws opaque, class 1 blends as seen-only, with the OBJ template
--- priority (the source bgPriority, 0 front .. 3 behind) and full coverage.
+-- One draw-local OBJ command behind a pane flush. A sampled part paints one
+-- prepared texture with identical placement on the color and metadata
+-- surfaces; a fill paints one deliberate rectangle; a text command paints
+-- compact glyphs on the color surface only, riding the fill beneath it.
+-- `priority` is the source OAM priority (0 foremost) and `order` the
+-- collection sequence, which follows the deterministic template, part, and
+-- intent order of the pass that submitted it. `clip` optionally bounds the
+-- command to its caller scissor. `bare` fills paint color only, like the
+-- slider tracks and selection rings that never carried metadata.
+---@param commands table[] draw-local OBJ command buffer behind one pane
+---@param cmd table<string, unknown> one fill, part, or text command
+local function submitObjCommand(commands, cmd)
+  assert(type(commands) == "table", "OBJ commands collect behind their pane buffer")
+  assert(type(cmd) == "table", "OBJ commands stay records")
+  cmd.order = #commands + 1
+  commands[#commands + 1] = cmd
+end
+
+-- Runs one placement body under the command's owner and source-frame
+-- geometry: the owner pose (translate, pivot, rotate, scale) applies
+-- outside the cell-local frame pose (translate, rotate, scale), so color
+-- and metadata share the transformed vertices and texel sampling.
 ---@param graphics table<string, unknown> host graphics namespace
----@param meta table<string, unknown> realized OBJ metadata surface
----@param rect { x: number, y: number, width: number, height: number } authored OBJ rectangle
----@param blendClass integer 0 for opaque, 1 for seen-only
----@param priority integer? source OAM priority (defaults to the front plane)
-local function markObjRect(graphics, meta, rect, blendClass, priority)
-  assert(type(graphics.setCanvas) == "function", "metadata passes target their surface")
-  assert(type(graphics.setColor) == "function", "metadata passes encode their classes")
-  assert(type(graphics.rectangle) == "function", "metadata passes mark their rectangles")
-  local objPriority = priority
-  if type(objPriority) ~= "number" then
-    objPriority = PokedexRenderer.OBJ_PRIORITY
+---@param cmd table<string, unknown> placed part command behind the flush
+---@param body fun() placement body behind the geometry
+local function withPartPlacement(graphics, cmd, body)
+  local owner, frame = cmd.owner, cmd.frame
+  if owner == nil and frame == nil then
+    body()
+    return
   end
-  graphics.setCanvas(meta.canvas)
-  graphics.setColor(blendClass / 255, objPriority / 255, 0, 1)
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  assert(type(graphics.push) == "function", "placed parts preserve their graphics state")
+  graphics.push("all")
+  if owner ~= nil then
+    assert(type(graphics.translate) == "function", "placed parts translate to their origin")
+    graphics.translate(owner.x, owner.y)
+    graphics.translate(owner.pivotX, owner.pivotY)
+    if owner.rotation ~= nil then
+      assert(type(graphics.rotate) == "function", "rotated parts declare rotation")
+      graphics.rotate(owner.rotation)
+    end
+    if owner.scale ~= nil then
+      assert(type(graphics.scale) == "function", "scaled parts declare scale")
+      graphics.scale(owner.scale, owner.scale)
+    end
+    graphics.translate(-owner.pivotX, -owner.pivotY)
+  end
+  if frame ~= nil then
+    assert(type(graphics.translate) == "function", "framed parts translate to their cell")
+    graphics.translate(frame.offsetX, frame.offsetY)
+    if frame.rotation ~= 0 then
+      assert(type(graphics.rotate) == "function", "framed parts rotate with their cell")
+      graphics.rotate(frame.rotation)
+    end
+    if frame.scaleX ~= 1 or frame.scaleY ~= 1 then
+      assert(type(graphics.scale) == "function", "framed parts scale with their cell")
+      graphics.scale(frame.scaleX, frame.scaleY)
+    end
+  end
+  body()
+  if type(graphics.pop) == "function" then
+    graphics.pop()
+  end
+end
+
+-- Paints one part command on the OBJ color surface through the shared
+-- exact sampler, under its placement geometry.
+---@param graphics table<string, unknown> host graphics namespace
+---@param cmd table<string, unknown> placed part command behind the flush
+local function paintPartColor(graphics, cmd)
+  withPartPlacement(graphics, cmd, function()
+    if cmd.hasExtra == true then
+      drawSampled(graphics, cmd.handle, cmd.quad, cmd.x, cmd.y, cmd.r, cmd.sx, cmd.sy, cmd.ox, cmd.oy)
+    else
+      drawSampled(graphics, cmd.handle, cmd.quad, cmd.x, cmd.y)
+    end
+  end)
+end
+
+-- Paints one part command on the OBJ metadata surface: the identical
+-- geometry and texel sampling as the color pass, but the command's
+-- class and priority only where the sampled texel is opaque. Transparent
+-- texels discard, so they never donate coverage over an earlier opaque
+-- contributor.
+---@param graphics table<string, unknown> host graphics namespace
+---@param metaShader table<string, unknown> private OBJ metadata shader behind the flush
+---@param cmd table<string, unknown> placed part command behind the flush
+local function paintPartMeta(graphics, metaShader, cmd)
+  withPartPlacement(graphics, cmd, function()
+    local handle = assert(cmd.handle, "part commands carry their prepared handle")
+    assert(handle.image ~= nil, "part commands carry their borrowed image")
+    handle.image:setFilter("nearest", "nearest")
+    if handle.kind == "r8" then
+      local palette = assert(handle.palette, "indexed part commands carry their palette")
+      palette:setFilter("nearest", "nearest")
+    end
+    local previous = nil
+    if type(graphics.getShader) == "function" then
+      previous = graphics.getShader()
+    end
+    assert(type(graphics.setShader) == "function", "metadata passes bind their shader")
+    graphics.setShader(metaShader)
+    if handle.kind == "r8" then
+      local palette = assert(handle.palette, "indexed part commands carry their palette")
+      metaShader:send("u_usePalette", true)
+      metaShader:send("u_paletteCount", palette:getWidth())
+      metaShader:send("u_palette", palette)
+      metaShader:send("u_paletteOffset", 0)
+    else
+      metaShader:send("u_usePalette", false)
+    end
+    metaShader:send("u_metaClass", cmd.blendClass)
+    metaShader:send("u_metaPriority", cmd.priority)
+    if cmd.hasExtra == true then
+      graphics.draw(handle.image, cmd.quad, cmd.x, cmd.y, cmd.r, cmd.sx, cmd.sy, cmd.ox, cmd.oy)
+    elseif cmd.quad ~= nil then
+      graphics.draw(handle.image, cmd.quad, cmd.x, cmd.y)
+    else
+      graphics.draw(handle.image, cmd.x, cmd.y)
+    end
+    graphics.setShader(previous)
+  end)
+end
+
+-- Runs one body clipped to the command's caller scissor, restoring the
+-- previous scissor even when the body fails.
+---@param graphics table<string, unknown> host graphics namespace
+---@param clip table<string, unknown>? caller clip rectangle behind the command
+---@param body fun() paint body behind the clip
+local function withCommandClip(graphics, clip, body)
+  if clip == nil then
+    body()
+    return
+  end
+  assert(type(graphics.getScissor) == "function", "clipped commands read their scissor")
+  assert(type(graphics.setScissor) == "function", "clipped commands write their scissor")
+  local saveX, saveY, saveW, saveH = graphics.getScissor()
+  graphics.setScissor(clip.x, clip.y, clip.width, clip.height)
+  local ok, err = pcall(body)
+  if saveX ~= nil then
+    graphics.setScissor(saveX, saveY, saveW, saveH)
+  else
+    graphics.setScissor()
+  end
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Flushes one pane's collected OBJ commands: sort draws the foremost
+-- contributor last so ordinary alpha blending resolves the single
+-- winning color, and the identical order with alpha-tested metadata
+-- sampling resolves the matching class and priority. Native panes sort
+-- back-to-front by (priority, collection order); compact panes keep
+-- their deliberate collection order. Text and bare fills paint color
+-- only; every other command paints both surfaces.
+---@param graphics table<string, unknown> host graphics namespace
+---@param metaShader table<string, unknown> private OBJ metadata shader behind the flush
+---@param commands table[] draw-local OBJ command buffer behind one pane
+---@param surfaces table[] six realized serial surfaces in compositor order
+---@param sorted boolean true for native back-to-front order, false for compact collection order
+local function flushObjCommands(graphics, metaShader, commands, surfaces, sorted)
+  assert(metaShader ~= nil, "the OBJ flush requires its metadata shader")
+  if sorted then
+    table.sort(commands, function(left, right)
+      if left.priority ~= right.priority then
+        return left.priority > right.priority
+      end
+      return left.order > right.order
+    end)
+  end
+  local color, meta = surfaces[5], surfaces[6]
+  assert(type(graphics.setCanvas) == "function", "OBJ flushes target their surfaces")
+  local outerCanvas = nil
+  if type(graphics.getCanvas) == "function" then
+    outerCanvas = graphics.getCanvas()
+  end
+  local previousMode = nil
+  if type(graphics.getBlendMode) == "function" then
+    previousMode = { graphics.getBlendMode() }
+  end
+  if type(graphics.setBlendMode) == "function" then
+    graphics.setBlendMode("alpha")
+  end
+  local ok, err = pcall(function()
+    graphics.setCanvas(color.canvas)
+    for _, cmd in ipairs(commands) do
+      withCommandClip(graphics, cmd.clip, function()
+        if cmd.kind == "fill" then
+          assert(type(graphics.setColor) == "function", "OBJ fills set their tint")
+          assert(type(graphics.rectangle) == "function", "OBJ fills fill their rectangles")
+          local tint = assert(cmd.color, "fill commands carry their tint")
+          graphics.setColor(tint.r / 255, tint.g / 255, tint.b / 255, 1)
+          graphics.rectangle("fill", cmd.x, cmd.y, cmd.width, cmd.height)
+          graphics.setColor(1, 1, 1, 1)
+        elseif cmd.kind == "part" then
+          paintPartColor(graphics, cmd)
+        elseif cmd.kind == "text" then
+          local font = assert(cmd.font, "text commands carry their font")
+          assert(type(font.drawTextWithPalette) == "function", "text commands draw through the palette path")
+          font:drawTextWithPalette(cmd.text, cmd.x, cmd.y, cmd.palette)
+        else
+          error("the OBJ flush carries no " .. tostring(cmd.kind) .. " command", 0)
+        end
+      end)
+    end
+    graphics.setCanvas(meta.canvas)
+    for _, cmd in ipairs(commands) do
+      if (cmd.kind == "fill" or cmd.kind == "part") and cmd.bare ~= true then
+        withCommandClip(graphics, cmd.clip, function()
+          if cmd.kind == "fill" then
+            assert(type(graphics.setColor) == "function", "metadata fills encode their classes")
+            assert(type(graphics.rectangle) == "function", "metadata fills fill their rectangles")
+            graphics.setColor(cmd.blendClass / 255, cmd.priority / 255, 0, 1)
+            graphics.rectangle("fill", cmd.x, cmd.y, cmd.width, cmd.height)
+            graphics.setColor(1, 1, 1, 1)
+          else
+            paintPartMeta(graphics, metaShader, cmd)
+          end
+        end)
+      end
+    end
+  end)
+  if type(graphics.setBlendMode) == "function" and previousMode ~= nil then
+    graphics.setBlendMode(previousMode[1], previousMode[2])
+  end
+  graphics.setCanvas(outerCanvas)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 -- Reads the published X scroll behind one background entry. List-family
@@ -856,15 +1059,36 @@ local function textByWindow(messages)
   return mapped
 end
 
+local function withClip(graphics, rect, fn)
+  local previous = nil
+  if type(graphics.getScissor) == "function" then
+    previous = { graphics.getScissor() }
+  end
+  if type(graphics.setScissor) == "function" then
+    graphics.setScissor(rect.x, rect.y, rect.width, rect.height)
+  end
+  fn()
+  if type(graphics.setScissor) == "function" then
+    if previous ~= nil and previous[1] ~= nil then
+      graphics.setScissor(previous[1], previous[2], previous[3], previous[4])
+    else
+      graphics.setScissor()
+    end
+  end
+end
+
 -- Paints one authored window and its prepared text into the window's
 -- assigned BG layer at source logical coordinates: an opaque window
--- background fills first, then up to one 16px line per 16px of window
--- height honors the authored alignment and palette triple. Draws the
--- prepared strings verbatim; no runtime bank lookup happens here.
+-- background fills first, then lines step by the compiled line advance
+-- from the compiled local print origin inside the real window clip. The
+-- native multiline block centers on its widest line and left-aligns
+-- every line; other alignments anchor each measured line at the print
+-- origin. Draws the prepared strings verbatim; no runtime bank lookup
+-- happens here.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with fonts and messages
 ---@param window table<string, unknown> authored window record
----@param key string authored window key behind the text
+---@param key string authored window key behind the attribution
 ---@param text string prepared string behind the window
 ---@param surfaces table[] six realized serial surfaces in compositor order
 ---@param dy integer? vertical row-scroll shift
@@ -874,55 +1098,70 @@ local function drawWindowText(graphics, assets, window, key, text, surfaces, dy,
   dx = dx or 0
   local x0, y0 = window.x + dx, window.y + dy
   local surface = assert(surfaces[window.layer + 1], "window layers address their serial surface")
-  graphics.setCanvas(surface.canvas)
-  local background = window.background
-  if type(background) == "table" and (background.a or 0) > 0 then
-    assert(type(graphics.setColor) == "function", "window passes paint their background")
-    assert(type(graphics.rectangle) == "function", "window passes paint their background")
-    graphics.setColor(background.r / 255, background.g / 255, background.b / 255, background.a / 255)
-    graphics.rectangle("fill", x0, y0, window.width, window.height)
-    graphics.setColor(1, 1, 1, 1)
-  end
-  local font = windowFont(assets, window, key)
-  assert(type(font.textWidth) == "function", "window fonts measure their advances")
-  assert(type(font.drawTextWithPalette) == "function", "window fonts draw through their palette path")
-  local palette = {
-    foreground = paletteColor(assert(window.foreground, "windows carry their foreground")),
-    shadow = paletteColor(assert(window.shadow, "windows carry their shadow")),
-    background = paletteColor(assert(window.background, "windows carry their background")),
-  }
-  local maxLines = math.max(1, math.floor(window.height / 16))
-  local lines = {}
-  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
-    if #lines >= maxLines then
-      break
+  local lineAdvance = assert(window.lineAdvance, "windows carry their source line advance: " .. tostring(key))
+  assert(
+    type(lineAdvance) == "number" and lineAdvance % 1 == 0 and lineAdvance > 0,
+    "windows carry a positive line advance: " .. tostring(key)
+  )
+  local printX = assert(window.printX, "windows carry their print origin x: " .. tostring(key))
+  assert(
+    type(printX) == "number" and printX % 1 == 0 and printX >= 0 and printX <= window.width,
+    "windows carry a print origin inside their clip: " .. tostring(key)
+  )
+  local printY = assert(window.printY, "windows carry their print origin y: " .. tostring(key))
+  assert(
+    type(printY) == "number" and printY % 1 == 0 and printY >= 0 and printY <= window.height,
+    "windows carry a print origin inside their clip: " .. tostring(key)
+  )
+  withClip(graphics, { x = x0, y = y0, width = window.width, height = window.height }, function()
+    graphics.setCanvas(surface.canvas)
+    local background = window.background
+    if type(background) == "table" and (background.a or 0) > 0 then
+      assert(type(graphics.setColor) == "function", "window passes paint their background")
+      assert(type(graphics.rectangle) == "function", "window passes paint their background")
+      graphics.setColor(background.r / 255, background.g / 255, background.b / 255, background.a / 255)
+      graphics.rectangle("fill", x0, y0, window.width, window.height)
+      graphics.setColor(1, 1, 1, 1)
     end
-    lines[#lines + 1] = line
-  end
-  -- The source's centered multiline print (flavor text) centers the
-  -- whole block on its widest line and left-aligns every line; a single
-  -- centered line keeps the ordinary per-line centering.
-  if window.align == "center" and #lines > 1 then
-    local widest = 0
-    for _, line in ipairs(lines) do
-      widest = math.max(widest, font:textWidth(line))
+    local font = windowFont(assets, window, key)
+    assert(type(font.textWidth) == "function", "window fonts measure their advances")
+    assert(type(font.drawTextWithPalette) == "function", "window fonts draw through their palette path")
+    local palette = {
+      foreground = paletteColor(assert(window.foreground, "windows carry their foreground")),
+      shadow = paletteColor(assert(window.shadow, "windows carry their shadow")),
+      background = paletteColor(assert(window.background, "windows carry their background")),
+    }
+    local maxLines = math.max(1, math.floor(window.height / lineAdvance))
+    local lines = {}
+    for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+      if #lines >= maxLines then
+        break
+      end
+      lines[#lines + 1] = line
     end
-    local x = x0 + math.floor((window.width - widest) / 2)
+    local baseY = y0 + printY
+    if window.align == "block-center" or (window.align == "center" and #lines > 1) then
+      local widest = 0
+      for _, line in ipairs(lines) do
+        widest = math.max(widest, font:textWidth(line))
+      end
+      local x = x0 + math.floor((window.width - widest) / 2)
+      for index, line in ipairs(lines) do
+        font:drawTextWithPalette(line, x, baseY + (index - 1) * lineAdvance, palette)
+      end
+      return
+    end
     for index, line in ipairs(lines) do
-      font:drawTextWithPalette(line, x, y0 + (index - 1) * 16, palette)
+      local width = font:textWidth(line)
+      local x = x0 + printX
+      if window.align == "center" then
+        x = x0 + printX - math.floor(width / 2)
+      elseif window.align == "right" then
+        x = x0 + printX - width
+      end
+      font:drawTextWithPalette(line, x, baseY + (index - 1) * lineAdvance, palette)
     end
-    return
-  end
-  for index, line in ipairs(lines) do
-    local width = font:textWidth(line)
-    local x = x0
-    if window.align == "center" then
-      x = x0 + math.floor((window.width - width) / 2)
-    elseif window.align == "right" then
-      x = x0 + window.width - width
-    end
-    font:drawTextWithPalette(line, x, y0 + (index - 1) * 16, palette)
-  end
+  end)
 end
 
 -- Paints the page-local window inventory of one pane plus every prepared
@@ -967,7 +1206,7 @@ local function drawPageWindowsAndText(graphics, assets, role, paneId, surfaces, 
     local window = assert(inventory[key], "the window inventory carries " .. tostring(key))
     assert(type(window) == "table", "window records stay records")
     if window.pane == contentPane then
-      local text = byWindow[key]
+      local text = byWindow[window.textRole or key]
       if text ~= nil then
         assert(type(text) == "string", "prepared window strings stay strings")
         local dy = 0
@@ -986,24 +1225,6 @@ local function drawPageWindowsAndText(graphics, assets, role, paneId, surfaces, 
         end
         drawWindowText(graphics, assets, window, key, text, surfaces, dy, dx)
       end
-    end
-  end
-end
-
-local function withClip(graphics, rect, fn)
-  local previous = nil
-  if type(graphics.getScissor) == "function" then
-    previous = { graphics.getScissor() }
-  end
-  if type(graphics.setScissor) == "function" then
-    graphics.setScissor(rect.x, rect.y, rect.width, rect.height)
-  end
-  fn()
-  if type(graphics.setScissor) == "function" then
-    if previous ~= nil and previous[1] ~= nil then
-      graphics.setScissor(previous[1], previous[2], previous[3], previous[4])
-    else
-      graphics.setScissor()
     end
   end
 end
@@ -1110,22 +1331,21 @@ local function drawListNumbers(graphics, assets, view, role, paneId, surfaces)
   drawNumbers(buffers[1], 0)
 end
 
--- Draws the page-local placed sprites into the OBJ pair: records
+-- Collects the page-local placed sprites as OBJ commands: records
 -- anchored off the unplaced origin sentinel paint their animation's
--- resting frame at the authored center through the shared exact sampler,
--- with per-part flips and one opaque metadata mark per painted part so
--- transparent art corners never confer coverage. Records without an
--- authored anchor stay undrawn: state-driven art (cursors, arrows,
+-- resting frame at the authored center with per-part flips. Static
+-- resting cells keep their authored placement; the flush resolves the
+-- winning contributor and its alpha-tested coverage. Records without an
+-- authored anchor stay uncollected: state-driven art (cursors, arrows,
 -- scrollbars, tab cursors, digits, type/footprint/mon-picture art,
 -- language icons) has no static placement and must never pile at the
 -- origin. Native panes only; the compact reflow keeps its own chrome
 -- scheme and draws no page sprites.
----@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with chrome and the manifest
 ---@param role string manifest page role behind the pane
 ---@param paneId string browser pane identity
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawPageSprites(graphics, assets, role, paneId, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawPageSprites(assets, role, paneId, commands)
   local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
   assert(type(manifest) == "table", "compiled manifests stay records")
   local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
@@ -1142,8 +1362,6 @@ local function drawPageSprites(graphics, assets, role, paneId, surfaces)
   local animations = assert(manifest.animations, "the compiled manifest carries its animations")
   local cells = assert(manifest.cells, "the compiled manifest carries its cells")
   local prepared = assert(assets.spriteParts, "prepared bundles carry their sprite parts")
-  local color, meta = surfaces[5], surfaces[6]
-  assert(type(graphics.setCanvas) == "function", "sprite passes target their surfaces")
   for _, key in ipairs(keys) do
     local sprite = assert(inventory[key], "the sprite inventory carries " .. tostring(key))
     assert(type(sprite) == "table", "sprite records stay records")
@@ -1165,8 +1383,15 @@ local function drawPageSprites(graphics, assets, role, paneId, surfaces)
         local entry = assert(restingParts[index], "prepared parts cover the resting cell: " .. tostring(key))
         local viewport = assert(entry.quad, "prepared parts carry their viewport: " .. tostring(key))
         local handle = assert(entry.handle, "prepared parts carry their chrome handle: " .. tostring(key))
-        local dx, dy = sprite.x + part.x, sprite.y + part.y
-        graphics.setCanvas(color.canvas)
+        local cmd = {
+          kind = "part",
+          handle = handle,
+          quad = viewport,
+          x = sprite.x + part.x,
+          y = sprite.y + part.y,
+          blendClass = 0,
+          priority = sprite.priority,
+        }
         if part.flipX == true or part.flipY == true then
           local sx, sy, ox, oy = 1, 1, 0, 0
           if part.flipX == true then
@@ -1175,17 +1400,10 @@ local function drawPageSprites(graphics, assets, role, paneId, surfaces)
           if part.flipY == true then
             sy, oy = -1, source.height
           end
-          drawSampled(graphics, handle, viewport, dx, dy, 0, sx, sy, ox, oy)
-        else
-          drawSampled(graphics, handle, viewport, dx, dy)
+          cmd.hasExtra = true
+          cmd.r, cmd.sx, cmd.sy, cmd.ox, cmd.oy = 0, sx, sy, ox, oy
         end
-        markObjRect(
-          graphics,
-          meta,
-          { x = dx, y = dy, width = source.width, height = source.height },
-          0,
-          sprite.priority
-        )
+        submitObjCommand(commands, cmd)
       end
     end
   end
@@ -1251,20 +1469,22 @@ local function frameAtOwner(animation, age)
   return #frames
 end
 
--- Draws the detached live sprite intents into the OBJ pair: each visible
+-- Collects the detached live sprite intents as OBJ commands: each visible
 -- intent resolves its page-local subject binding, selects the source
--- frame by its accepted age, and paints the prepared parts at the
--- native origin with per-part flips. Area markers keep their source
--- translucency class; every other subject paints opaque. Footprint
--- intents sample the prepared atlas rectangle. No constructor runs on
--- this path; a missing prepared frame is a preparation failure.
----@param graphics table<string, unknown> host graphics namespace
+-- frame by its accepted age, and stages the prepared parts at the
+-- native origin with per-part flips. The source frame pose applies in
+-- cell-local coordinates before the owner pose, identically on both
+-- passes. Area markers keep their source translucency class; every
+-- other subject stages opaque. Footprint intents sample the prepared
+-- atlas rectangle centered on the published specimen center through the
+-- prepared anchor offset. No constructor runs on this path; a missing
+-- prepared frame is a preparation failure.
 ---@param assets table<string, unknown> prepared bundle with the manifest and parts
 ---@param view table<string, unknown> detached projection carrying the intents
 ---@param role string manifest page role behind the pane
 ---@param paneId string browser pane identity
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawDynamicSprites(graphics, assets, view, role, paneId, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawDynamicSprites(assets, view, role, paneId, commands)
   local objects = view.objects
   if type(objects) ~= "table" then
     return
@@ -1288,24 +1508,26 @@ local function drawDynamicSprites(graphics, assets, view, role, paneId, surfaces
   local cells = assert(manifest.cells, "the compiled manifest carries its cells")
   local prepared = assert(assets.spriteParts, "prepared bundles carry their sprite parts")
   local footprintParts = assert(assets.footprintParts, "prepared bundles carry their footprint parts")
-  local color, meta = surfaces[5], surfaces[6]
-  assert(type(graphics.setCanvas) == "function", "dynamic sprite passes target their surfaces")
   for _, intent in ipairs(objects) do
     if type(intent) == "table" and intent.visible ~= false and intent.pane == contentPane then
       local subject = assert(intent.subject, "dynamic intents name their subject")
       if subject == "footprint" then
         local choice = assert(intent.choice, "footprint intents name their species")
         local part = assert(footprintParts[choice], "prepared bundles carry footprints for " .. tostring(choice))
-        graphics.setCanvas(color.canvas)
-        drawSampled(
-          graphics,
-          assert(part.handle, "footprint parts carry their handle"),
-          assert(part.quad, "footprint parts carry their quad"),
-          intent.x,
-          intent.y
-        )
+        local anchorX = assert(part.anchorX, "footprint parts carry their center anchor for " .. tostring(choice))
+        assert(type(anchorX) == "number", "footprint anchors stay numeric for " .. tostring(choice))
+        local anchorY = assert(part.anchorY, "footprint parts carry their center anchor for " .. tostring(choice))
+        assert(type(anchorY) == "number", "footprint anchors stay numeric for " .. tostring(choice))
         local footprintPriority = type(intent.priority) == "number" and intent.priority or 3
-        markObjRect(graphics, meta, { x = intent.x, y = intent.y, width = 16, height = 16 }, 0, footprintPriority)
+        submitObjCommand(commands, {
+          kind = "part",
+          handle = assert(part.handle, "footprint parts carry their handle"),
+          quad = assert(part.quad, "footprint parts carry their quad"),
+          x = intent.x + anchorX,
+          y = intent.y + anchorY,
+          blendClass = 0,
+          priority = footprintPriority,
+        })
       else
         local subjectMap = assert(subjects[subject], "the drawn page binds the subject " .. tostring(subject))
         local binding =
@@ -1317,42 +1539,50 @@ local function drawDynamicSprites(graphics, assets, view, role, paneId, surfaces
         local roleParts =
           assert(prepared[binding.sprite], "prepared bundles carry parts for " .. tostring(binding.sprite))
         local frameParts = assert(roleParts[frameIndex], "prepared parts cover the drawn frame")
-        local cell = assert(cells[animation.frames[frameIndex].cell], "drawn frames resolve their cell")
+        local frame = assert(animation.frames[frameIndex], "drawn subjects resolve their frame")
+        local cell = assert(cells[frame.cell], "drawn frames resolve their cell")
         assert(#frameParts == #cell.parts, "prepared parts match the drawn cell")
         local rotation = type(intent.rotation) == "number" and intent.rotation or nil
         local scale = type(intent.scale) == "number" and intent.scale or nil
-        local transformed = rotation ~= nil or scale ~= nil
-        local pivotX = type(intent.pivotX) == "number" and intent.pivotX or 0
-        local pivotY = type(intent.pivotY) == "number" and intent.pivotY or 0
-        if transformed then
-          assert(type(graphics.push) == "function", "transformed subjects preserve their graphics state")
-          assert(type(graphics.translate) == "function", "transformed subjects translate to their origin")
-          graphics.setCanvas(color.canvas)
-          graphics.push("all")
-          graphics.translate(intent.x, intent.y)
-          graphics.translate(pivotX, pivotY)
-          if rotation ~= nil then
-            assert(type(graphics.rotate) == "function", "rotated subjects declare rotation")
-            graphics.rotate(rotation)
-          end
-          if scale ~= nil then
-            assert(type(graphics.scale) == "function", "scaled subjects declare scale")
-            graphics.scale(scale, scale)
-          end
-          graphics.translate(-pivotX, -pivotY)
-        end
+        -- The owner pose always applies outside the cell-local frame
+        -- pose, even without an intent transform: a plain translate keeps
+        -- the authored placement while a frame rotation still turns the
+        -- part offset before the owner shift.
+        local owner = {
+          x = intent.x,
+          y = intent.y,
+          rotation = rotation,
+          scale = scale,
+          pivotX = type(intent.pivotX) == "number" and intent.pivotX or 0,
+          pivotY = type(intent.pivotY) == "number" and intent.pivotY or 0,
+        }
+        local cellFrame = {
+          offsetX = frame.offsetX or 0,
+          offsetY = frame.offsetY or 0,
+          rotation = frame.rotation or 0,
+          scaleX = frame.scaleX or 1,
+          scaleY = frame.scaleY or 1,
+        }
+        -- Area markers blink through their source translucency; every
+        -- other live subject covers opaquely like its static anchor.
+        local blendClass = subject == "marker" and 1 or 0
+        local objPriority = type(intent.priority) == "number" and intent.priority or binding.priority
         for index, part in ipairs(cell.parts) do
           local entry = assert(frameParts[index], "prepared parts cover the drawn cell")
           local viewport = assert(entry.quad, "prepared parts carry their viewport")
           local handle = assert(entry.handle, "prepared parts carry their chrome handle")
-          local dx = intent.x + part.x
-          local dy = intent.y + part.y
           local source = assert(part.source, "drawn parts carry their source viewport")
-          graphics.setCanvas(color.canvas)
-          local drawX, drawY = dx, dy
-          if transformed then
-            drawX, drawY = part.x, part.y
-          end
+          local cmd = {
+            kind = "part",
+            handle = handle,
+            quad = viewport,
+            x = part.x,
+            y = part.y,
+            owner = owner,
+            frame = cellFrame,
+            blendClass = blendClass,
+            priority = objPriority,
+          }
           if entry.flipX == true or entry.flipY == true then
             local sx, sy, ox, oy = 1, 1, 0, 0
             if entry.flipX == true then
@@ -1361,74 +1591,60 @@ local function drawDynamicSprites(graphics, assets, view, role, paneId, surfaces
             if entry.flipY == true then
               sy, oy = -1, source.height
             end
-            drawSampled(graphics, handle, viewport, drawX, drawY, 0, sx, sy, ox, oy)
-          else
-            drawSampled(graphics, handle, viewport, drawX, drawY)
+            cmd.hasExtra = true
+            cmd.r, cmd.sx, cmd.sy, cmd.ox, cmd.oy = 0, sx, sy, ox, oy
           end
-          -- Area markers blink through their source translucency; every
-          -- other live subject covers opaquely like its static anchor.
-          -- The coverage mark stays on the unrotated authored rectangle.
-          local blendClass = subject == "marker" and 1 or 0
-          local objPriority = type(intent.priority) == "number" and intent.priority or binding.priority
-          markObjRect(
-            graphics,
-            meta,
-            { x = dx, y = dy, width = source.width, height = source.height },
-            blendClass,
-            objPriority
-          )
-        end
-        if transformed and type(graphics.pop) == "function" then
-          graphics.pop()
+          submitObjCommand(commands, cmd)
         end
       end
     end
   end
 end
 
--- Draws one prepared icon at an explicit rectangle: the sampled art on
--- the OBJ color surface and its seen/caught blend class on metadata.
----@param graphics table<string, unknown> host graphics namespace
+-- Collects one prepared icon at an explicit rectangle: the sampled art
+-- with its seen/caught blend class, sharing one alpha-tested coverage on
+-- both passes.
 ---@param icons table<string, unknown> prepared icon provider
 ---@param key string prepared icon key
 ---@param rect { x: integer, y: integer, width: integer, height: integer } destination rectangle
 ---@param caught boolean true for opaque caught icons
----@param surfaces table[] six realized serial surfaces in compositor order
+---@param commands table[] draw-local OBJ command buffer behind one pane
 ---@param priority integer? source mon-icon OBJ priority
-local function drawIconAt(graphics, icons, key, rect, caught, surfaces, priority)
+---@param clip table<string, unknown>? caller clip rectangle behind the command
+local function drawIconAt(icons, key, rect, caught, commands, priority, clip)
   local handle = icons:handleFor(key)
   assert(type(handle) == "table", "prepared icon keys resolve their handle: " .. key)
   local quad = nil
   if type(icons.quadFor) == "function" then
     quad = icons:quadFor(key)
   end
-  local color, meta = surfaces[5], surfaces[6]
-  assert(type(graphics.setCanvas) == "function", "icon passes target their surfaces")
-  graphics.setCanvas(color.canvas)
-  if quad ~= nil then
-    drawSampled(graphics, handle, quad, rect.x, rect.y)
-  else
-    drawSampled(graphics, handle, nil, rect.x, rect.y)
-  end
   local objPriority = priority
   if objPriority == nil then
     objPriority = 3
   end
+  local blendClass = 1
   if caught == true then
-    markObjRect(graphics, meta, rect, 0, objPriority)
-  else
-    markObjRect(graphics, meta, rect, 1, objPriority)
+    blendClass = 0
   end
+  submitObjCommand(commands, {
+    kind = "part",
+    handle = handle,
+    quad = quad,
+    x = rect.x,
+    y = rect.y,
+    blendClass = blendClass,
+    priority = objPriority,
+    clip = clip,
+  })
 end
 
--- Draws the controls icon grid into the OBJ pair: caught icons opaque,
+-- Collects the controls icon grid as OBJ commands: caught icons opaque,
 -- seen-only icons marked for the locked seen blend, blanks untouched.
 -- Only the first fifteen staged slots are visible.
----@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with the lease-owned icons
 ---@param grid table<string, unknown>? staged grid or results buffer behind the page
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawControlIcons(graphics, assets, grid, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawControlIcons(assets, grid, commands)
   if type(grid) ~= "table" then
     return
   end
@@ -1439,6 +1655,11 @@ local function drawControlIcons(graphics, assets, grid, surfaces)
   local icons = assets.icons
   assert(type(icons) == "table", "icon drawing borrows the lease-owned provider")
   assert(type(icons.handleFor) == "function", "icon drawing resolves prepared handles")
+  local turnClip = nil
+  local turn = grid.turn
+  if type(turn) == "table" and type(buffers[2]) == "table" then
+    turnClip = { x = 8, y = 0, width = 240, height = 132 }
+  end
   local function drawBuffer(buffer, dx)
     if type(buffer) ~= "table" or type(buffer.entries) ~= "table" then
       return
@@ -1447,25 +1668,20 @@ local function drawControlIcons(graphics, assets, grid, surfaces)
       local entry = buffer.entries[slot + 1]
       if type(entry) == "table" and entry.seen == true and type(entry.species) == "string" then
         local rect = PokedexRenderer.iconSlotRect(slot)
-        drawIconAt(graphics, icons, entry.species .. "/f0", {
+        drawIconAt(icons, entry.species .. "/f0", {
           x = rect.x + dx,
           y = rect.y,
           width = rect.width,
           height = rect.height,
-        }, entry.caught == true, surfaces)
+        }, entry.caught == true, commands, nil, turnClip)
       end
     end
   end
-  local turn = grid.turn
-  if type(turn) == "table" and type(buffers[2]) == "table" then
+  if turnClip ~= nil then
     local direction = turn.direction == -1 and -1 or 1
     local shift = turn.offset
-    local currentDx = -shift * direction
-    local incomingDx = (120 - shift) * direction
-    withClip(graphics, { x = 8, y = 0, width = 240, height = 132 }, function()
-      drawBuffer(buffers[1], currentDx)
-      drawBuffer(buffers[2], incomingDx)
-    end)
+    drawBuffer(buffers[1], -shift * direction)
+    drawBuffer(buffers[2], (120 - shift) * direction)
     return
   end
   drawBuffer(buffers[1], 0)
@@ -1486,12 +1702,11 @@ local FORMS_ICON_STEP_Y = 24
 local COMPARE_ICON_LEFT = { x = 48, y = 64 }
 local COMPARE_ICON_RIGHT = { x = 176, y = 64 }
 
----@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with the lease-owned icons
 ---@param view table<string, unknown> detached projection carrying the forms list or comparison
 ---@param role string manifest page role behind the pane
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawFormsIcons(graphics, assets, view, role, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawFormsIcons(assets, view, role, commands)
   local forms = view.forms
   if type(forms) ~= "table" or type(forms.variants) ~= "table" then
     return
@@ -1519,12 +1734,11 @@ local function drawFormsIcons(graphics, assets, view, role, surfaces)
         local variant = variants[math.floor(compared) + 1]
         if type(variant) == "table" and type(variant.form) == "number" then
           drawIconAt(
-            graphics,
             icons,
             species .. "/f" .. math.floor(variant.form),
             { x = spots[side].x, y = spots[side].y, width = 32, height = 32 },
             caught,
-            surfaces
+            commands
           )
         end
       end
@@ -1546,12 +1760,12 @@ local function drawFormsIcons(graphics, assets, view, role, surfaces)
   for position = 1, 6 do
     local variant = variants[row + position - 1]
     if type(variant) == "table" and type(variant.form) == "number" then
-      drawIconAt(graphics, icons, species .. "/f" .. math.floor(variant.form), {
+      drawIconAt(icons, species .. "/f" .. math.floor(variant.form), {
         x = FORMS_ICON_X,
         y = FORMS_ICON_FIRST_Y + (position - 1) * FORMS_ICON_STEP_Y + iconOffset,
         width = 32,
         height = 32,
-      }, caught, surfaces)
+      }, caught, commands)
     end
   end
 end
@@ -1562,11 +1776,10 @@ end
 -- the existing trainer subject intent and the height portrait keeps its
 -- sourced scale and y offset from the height draw above. The icon key
 -- uses the first seen form, matching the source size icon pair.
----@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with the lease-owned icons
 ---@param view table<string, unknown> detached projection carrying the size simulation
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawSizeFigures(graphics, assets, view, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawSizeFigures(assets, view, commands)
   local size = view.size
   if type(size) ~= "table" then
     return
@@ -1596,12 +1809,11 @@ local function drawSizeFigures(graphics, assets, view, surfaces)
   assert(type(icons) == "table", "size figure drawing borrows the lease-owned provider")
   assert(type(icons.handleFor) == "function", "size figure drawing resolves prepared handles")
   drawIconAt(
-    graphics,
     icons,
     species .. "/f" .. form,
     { x = math.floor(pans[1].x), y = math.floor(figureY), width = 32, height = 32 },
     true,
-    surfaces,
+    commands,
     0
   )
 end
@@ -1644,32 +1856,35 @@ local function informationRectFor(role, slot, facing, backYOffset)
   return PokedexRenderer.SELECTED_PICTURE_RECT
 end
 
--- Draws one prepared picture record at an explicit rectangle: the
--- Spinda canvas, sampled portrait handle, or nothing for silhouettes.
----@param graphics table<string, unknown> host graphics namespace
+-- Collects one prepared picture record at an explicit rectangle as an
+-- OBJ command: the Spinda canvas, sampled portrait handle, or nothing
+-- for silhouettes.
 ---@param record table<string, unknown> prepared picture slot
 ---@param rect { x: integer, y: integer, width: integer, height: integer } destination rectangle
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawPictureRecordAt(graphics, record, rect, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+---@param owner table<string, unknown>? owner pose behind a scaled portrait
+local function drawPictureRecordAt(record, rect, commands, owner)
   if record.mode == "silhouette" then
     return
   end
-  local color, meta = surfaces[5], surfaces[6]
-  assert(type(graphics.setCanvas) == "function", "picture passes target their surfaces")
   local spinda = record.spinda
+  local handle, quad = nil, nil
   if type(spinda) == "table" and spinda.canvas ~= nil then
-    graphics.setCanvas(color.canvas)
-    assert(type(graphics.setColor) == "function", "picture passes reset their tint")
-    assert(type(graphics.draw) == "function", "picture passes blit their canvases")
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(spinda.canvas, rect.x, rect.y)
-    markObjRect(graphics, meta, rect, 0, 3)
+    handle = { kind = "rgba8", image = spinda.canvas }
   else
-    local handle = assert(record.handle, "prepared picture slots carry their handle")
-    graphics.setCanvas(color.canvas)
-    drawSampled(graphics, handle, record.quad, rect.x, rect.y)
-    markObjRect(graphics, meta, rect, 0, 3)
+    handle = assert(record.handle, "prepared picture slots carry their handle")
+    quad = record.quad
   end
+  submitObjCommand(commands, {
+    kind = "part",
+    handle = handle,
+    quad = quad,
+    x = rect.x,
+    y = rect.y,
+    owner = owner,
+    blendClass = 0,
+    priority = 3,
+  })
 end
 
 -- Draws the height-comparison mon portrait from sourced geometry: the
@@ -1679,11 +1894,10 @@ end
 -- catalog mon y offset (the native BG scroll is 0x10 - ypos). Absent or
 -- identity geometry draws the fixed authored rect exactly, so weight-only
 -- projections never change.
----@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with the entry pictures
 ---@param view table<string, unknown> detached projection carrying the size simulation
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawSizeHeightPortrait(graphics, assets, view, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawSizeHeightPortrait(assets, view, commands)
   local pictures = assets.pictures
   local record = type(pictures) == "table" and pictures[0] or nil
   if type(record) ~= "table" then
@@ -1707,38 +1921,31 @@ local function drawSizeHeightPortrait(graphics, assets, view, surfaces)
     width = PokedexRenderer.SELECTED_PICTURE_RECT.width,
     height = PokedexRenderer.SELECTED_PICTURE_RECT.height,
   }
-  if factor == 1 then
-    drawPictureRecordAt(graphics, record, rect, surfaces)
-    return
+  local owner = nil
+  if factor ~= 1 then
+    owner = {
+      x = 0,
+      y = 0,
+      rotation = nil,
+      scale = factor,
+      pivotX = rect.x + rect.width / 2,
+      pivotY = rect.y + rect.height,
+    }
   end
-  assert(type(graphics.push) == "function", "scaled portrait passes preserve their graphics state")
-  assert(type(graphics.translate) == "function", "scaled portrait passes anchor their geometry")
-  assert(type(graphics.scale) == "function", "scaled portrait passes scale their portraits")
-  assert(type(graphics.pop) == "function", "scaled portrait passes restore their graphics state")
-  local anchorX = rect.x + rect.width / 2
-  local anchorY = rect.y + rect.height
-  graphics.push("all")
-  graphics.translate(anchorX, anchorY)
-  graphics.scale(factor, factor)
-  graphics.translate(-anchorX, -anchorY)
-  drawPictureRecordAt(graphics, record, rect, surfaces)
-  graphics.pop()
+  drawPictureRecordAt(record, rect, commands, owner)
 end
 
--- Draws the information picture slots into the OBJ pair through their
+-- Collects the information picture slots as OBJ commands through their
 -- authored rectangles: prepared portrait quads, owned Spinda canvases, or
 -- the fixed unknown silhouette policy the projection already selected.
 -- Comparison slots iterate in slot order so the left record always
--- paints before the right one. Silhouette slots without prepared art
+-- collects before the right one. Silhouette slots without prepared art
 -- stay undrawn; a missing required portrait handle fails the draw
 -- instead of substituting another species.
----@param graphics table<string, unknown> host graphics namespace
----@param assets table<string, unknown> prepared bundle with pictures and the manifest
 ---@param pictures table<string, unknown> prepared picture records by slot
 ---@param role string manifest page role behind the pane
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawInformationPictures(graphics, assets, pictures, role, surfaces)
-  local _ = assets
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawInformationPictures(pictures, role, commands)
   local slots = {}
   for slot in pairs(pictures) do
     slots[#slots + 1] = slot
@@ -1762,7 +1969,7 @@ local function drawInformationPictures(graphics, assets, pictures, role, surface
       end
       local rect = informationRectFor(role, slot, facing, backYOffset)
       if rect ~= nil then
-        drawPictureRecordAt(graphics, record, rect, surfaces)
+        drawPictureRecordAt(record, rect, commands, nil)
       end
     end
   end
@@ -1773,21 +1980,23 @@ end
 local COMPACT_CHROME = { r = 88, g = 140, b = 196 }
 local COMPACT_LEFT_PICTURE = { x = 8, y = 48, width = 80, height = 80 }
 
--- Fills one opaque chrome rectangle on the OBJ color surface and marks
--- it opaque so the compact action stays visible over its background.
----@param graphics table<string, unknown> host graphics namespace
+-- Collects one opaque chrome rectangle as an OBJ command so the compact
+-- action stays visible over its background on both passes.
 ---@param rect { x: integer, y: integer, width: integer, height: integer } destination rectangle
----@param surfaces table[] six realized serial surfaces in compositor order
-local function fillChromeRect(graphics, rect, surfaces)
-  local color, meta = surfaces[5], surfaces[6]
-  assert(type(graphics.setCanvas) == "function", "chrome passes target their surfaces")
-  assert(type(graphics.setColor) == "function", "chrome passes set their tint")
-  assert(type(graphics.rectangle) == "function", "chrome passes fill their rectangles")
-  graphics.setCanvas(color.canvas)
-  graphics.setColor(COMPACT_CHROME.r / 255, COMPACT_CHROME.g / 255, COMPACT_CHROME.b / 255, 1)
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-  graphics.setColor(1, 1, 1, 1)
-  markObjRect(graphics, meta, rect, 0)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+---@param clip table<string, unknown>? caller clip rectangle behind the command
+local function fillChromeRect(rect, commands, clip)
+  submitObjCommand(commands, {
+    kind = "fill",
+    color = COMPACT_CHROME,
+    x = rect.x,
+    y = rect.y,
+    width = rect.width,
+    height = rect.height,
+    blendClass = 0,
+    priority = 0,
+    clip = clip,
+  })
 end
 
 -- Dark inspector/row panel bytes behind compact glyphs.
@@ -1838,9 +2047,9 @@ local function compactRoleText(assets, role, required, what)
   return text
 end
 
--- Paints one prepared line through the body font at its aligned offset
--- inside the caller-clipped region. The caller owns the canvas target,
--- the scissor, and the palette.
+-- Collects one prepared line through the body font at its aligned offset
+-- inside the caller clip as a color-only OBJ command: the glyphs ride
+-- the fill beneath them and never donate metadata of their own.
 ---@param font table<string, unknown> prepared body font renderer
 ---@param text string prepared line behind the glyphs
 ---@param x integer region left in pane-local coordinates
@@ -1848,7 +2057,9 @@ end
 ---@param maxWidth integer region width bounding the alignment
 ---@param align string left, center, or right alignment behind the offset
 ---@param palette table<string, table<string, number>> glyph palette triple
-local function drawCompactLine(font, text, x, y, maxWidth, align, palette)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+---@param clip table<string, unknown>? caller clip rectangle behind the command
+local function drawCompactLine(font, text, x, y, maxWidth, align, palette, commands, clip)
   assert(type(font.textWidth) == "function", "compact text measures its advances")
   assert(type(font.drawTextWithPalette) == "function", "compact text draws through its palette path")
   local width = font:textWidth(text)
@@ -1858,7 +2069,15 @@ local function drawCompactLine(font, text, x, y, maxWidth, align, palette)
   elseif align == "right" then
     dx = x + maxWidth - width
   end
-  font:drawTextWithPalette(text, dx, y, palette)
+  submitObjCommand(commands, {
+    kind = "text",
+    font = font,
+    text = text,
+    x = dx,
+    y = y,
+    palette = palette,
+    clip = clip,
+  })
 end
 
 -- Wraps one prepared paragraph to the fixed region width on space
@@ -1898,55 +2117,47 @@ local function wrapCompactText(font, text, maxWidth)
   return lines
 end
 
--- Runs one compact paint step clipped to its rectangle, restoring the
--- previous scissor even when the step fails.
----@param graphics table<string, unknown> host graphics namespace
----@param rect { x: integer, y: integer, width: integer, height: integer } clip rectangle
----@param body fun() paint step behind the clip
-local function withCompactClip(graphics, rect, body)
-  assert(type(graphics.getScissor) == "function", "compact clipping reads its scissor")
-  assert(type(graphics.setScissor) == "function", "compact clipping writes its scissor")
-  local saveX, saveY, saveWidth, saveHeight = graphics.getScissor()
-  graphics.setScissor(rect.x, rect.y, rect.width, rect.height)
-  local ok, err = pcall(body)
-  graphics.setScissor(saveX, saveY, saveWidth, saveHeight)
-  if not ok then
-    error(err, 0)
+-- Collects a 1px white inset border inside a selected rectangle so the
+-- focused row or tab reads distinctly without covering its glyphs. The
+-- strips paint color only, riding the fill metadata beneath them.
+---@param rect { x: integer, y: integer, width: integer, height: integer } selected rectangle
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function strokeCompactSelection(rect, commands)
+  local white = { r = 255, g = 255, b = 255 }
+  local strips = {
+    { x = rect.x, y = rect.y, width = rect.width, height = 1 },
+    { x = rect.x, y = rect.y + rect.height - 1, width = rect.width, height = 1 },
+    { x = rect.x, y = rect.y + 1, width = 1, height = rect.height - 2 },
+    { x = rect.x + rect.width - 1, y = rect.y + 1, width = 1, height = rect.height - 2 },
+  }
+  for _, strip in ipairs(strips) do
+    submitObjCommand(commands, {
+      kind = "fill",
+      bare = true,
+      color = white,
+      x = strip.x,
+      y = strip.y,
+      width = strip.width,
+      height = strip.height,
+      blendClass = 0,
+      priority = 0,
+    })
   end
 end
 
--- Strokes a 1px white inset border inside a selected rectangle so the
--- focused row or tab reads distinctly without covering its glyphs.
----@param graphics table<string, unknown> host graphics namespace
----@param rect { x: integer, y: integer, width: integer, height: integer } selected rectangle
----@param surfaces table[] six realized serial surfaces in compositor order
-local function strokeCompactSelection(graphics, rect, surfaces)
-  local color = surfaces[5]
-  assert(type(graphics.setCanvas) == "function", "compact selection targets its surface")
-  assert(type(graphics.setColor) == "function", "compact selection sets its tint")
-  assert(type(graphics.rectangle) == "function", "compact selection strokes its border")
-  graphics.setCanvas(color.canvas)
-  graphics.setColor(1, 1, 1, 1)
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, 1)
-  graphics.rectangle("fill", rect.x, rect.y + rect.height - 1, rect.width, 1)
-  graphics.rectangle("fill", rect.x, rect.y + 1, 1, rect.height - 2)
-  graphics.rectangle("fill", rect.x + rect.width - 1, rect.y + 1, 1, rect.height - 2)
-  graphics.setColor(1, 1, 1, 1)
-end
-
--- Draws one bound source subject at an explicit compact position: the
--- page-local sprite binding resolves its animation frame by the live
--- intent age when the view projects one, and the authored parts paint
--- centered on the destination.
----@param graphics table<string, unknown> host graphics namespace
+-- Collects one bound source subject at an explicit compact position as
+-- OBJ commands: the page-local sprite binding resolves its animation
+-- frame by the live intent age when the view projects one, and the
+-- authored parts stage centered on the destination.
 ---@param assets table<string, unknown> prepared bundle with the manifest and parts
 ---@param view table<string, unknown> detached projection carrying the live intents
 ---@param role string manifest page role behind the pane
 ---@param subject string semantic subject behind the pictogram
 ---@param choice string selected animation choice behind the pictogram
 ---@param rect { x: integer, y: integer, width: integer, height: integer } destination rectangle
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawSubjectAt(graphics, assets, view, role, subject, choice, rect, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+---@param clip table<string, unknown>? caller clip rectangle behind the command
+local function drawSubjectAt(assets, view, role, subject, choice, rect, commands, clip)
   local manifest = assert(assets.manifest, "compact pictograms borrow the compiled manifest")
   assert(type(manifest) == "table", "compiled manifests stay records")
   local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
@@ -1996,14 +2207,21 @@ local function drawSubjectAt(graphics, assets, view, role, subject, choice, rect
   local artWidth, artHeight = maxX - minX, maxY - minY
   local dx = rect.x + math.floor((rect.width - artWidth) / 2) - minX
   local dy = rect.y + math.floor((rect.height - artHeight) / 2) - minY
-  local color, meta = surfaces[5], surfaces[6]
-  assert(type(graphics.setCanvas) == "function", "compact pictograms target their surfaces")
   for index, part in ipairs(cell.parts) do
     local entry = assert(parts[index], "prepared parts cover the drawn cell")
     local quad = assert(entry.quad, "prepared parts carry their viewport")
     local handle = assert(entry.handle, "prepared parts carry their chrome handle")
     local source = assert(part.source, "drawn parts carry their source viewport")
-    graphics.setCanvas(color.canvas)
+    local cmd = {
+      kind = "part",
+      handle = handle,
+      quad = quad,
+      x = dx + part.x,
+      y = dy + part.y,
+      blendClass = 0,
+      priority = 0,
+      clip = clip,
+    }
     if entry.flipX == true or entry.flipY == true then
       local sx, sy, ox, oy = 1, 1, 0, 0
       if entry.flipX == true then
@@ -2012,25 +2230,23 @@ local function drawSubjectAt(graphics, assets, view, role, subject, choice, rect
       if entry.flipY == true then
         sy, oy = -1, source.height
       end
-      drawSampled(graphics, handle, quad, dx + part.x, dy + part.y, 0, sx, sy, ox, oy)
-    else
-      drawSampled(graphics, handle, quad, dx + part.x, dy + part.y)
+      cmd.hasExtra = true
+      cmd.r, cmd.sx, cmd.sy, cmd.ox, cmd.oy = 0, sx, sy, ox, oy
     end
-    markObjRect(graphics, meta, { x = dx + part.x, y = dy + part.y, width = source.width, height = source.height }, 0)
+    submitObjCommand(commands, cmd)
   end
 end
 
--- Draws the fifteen compact icons into the information region plus the
--- focus ring around the cursor cell as a border that never covers
+-- Collects the fifteen compact icons into the information region plus
+-- the focus ring around the cursor cell as a border that never covers
 -- neighboring cells.
----@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with the lease-owned icons
 ---@param grid table<string, unknown>? staged grid or results buffer behind the page
 ---@param cursor integer? zero-based cursor slot behind the focus ring
 ---@param iconRects { x: integer, y: integer, width: integer, height: integer }[] compact icon rectangles
 ---@param cursorRects { x: integer, y: integer, width: integer, height: integer }[] compact focus rectangles
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawCompactIcons(graphics, assets, grid, cursor, iconRects, cursorRects, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawCompactIcons(assets, grid, cursor, iconRects, cursorRects, commands)
   if type(grid) ~= "table" or type(grid.buffers) ~= "table" then
     return
   end
@@ -2045,7 +2261,7 @@ local function drawCompactIcons(graphics, assets, grid, cursor, iconRects, curso
     local entry = first.entries[slot + 1]
     if type(entry) == "table" and entry.seen == true and type(entry.species) == "string" then
       local rect = assert(iconRects[slot + 1], "the compact grid stages fifteen icon rectangles")
-      drawIconAt(graphics, icons, entry.species .. "/f0", rect, entry.caught == true, surfaces)
+      drawIconAt(icons, entry.species .. "/f0", rect, entry.caught == true, commands)
     end
   end
   if type(cursor) == "number" then
@@ -2058,21 +2274,21 @@ local function drawCompactIcons(graphics, assets, grid, cursor, iconRects, curso
         { x = ring.x + ring.width - 2, y = ring.y + 2, width = 2, height = ring.height - 4 },
       }
       for _, strip in ipairs(strips) do
-        fillChromeRect(graphics, strip, surfaces)
+        fillChromeRect(strip, commands, nil)
       end
     end
   end
 end
 
--- Draws the compact portrait: the prepared entry picture when the bundle
--- carries one (comparison sides reach their own halves), otherwise the
--- selected icon at double integer scale over the portrait region.
----@param graphics table<string, unknown> host graphics namespace
+-- Collects the compact portrait as OBJ commands: the prepared entry
+-- picture when the bundle carries one (comparison sides reach their own
+-- halves), otherwise the selected icon at double integer scale over the
+-- portrait region.
 ---@param assets table<string, unknown> prepared bundle with pictures and icons
 ---@param view table<string, unknown> detached projection selecting content
 ---@param compact table<string, unknown> shared compact geometry record
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawCompactPortrait(graphics, assets, view, compact, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawCompactPortrait(assets, view, compact, commands)
   local pictures = assets.pictures
   local comparison = nil
   if type(view.forms) == "table" then
@@ -2081,15 +2297,15 @@ local function drawCompactPortrait(graphics, assets, view, compact, surfaces)
   if type(pictures) == "table" and comparison ~= nil then
     local left, right = pictures[0], pictures[1]
     if type(left) == "table" then
-      drawPictureRecordAt(graphics, left, COMPACT_LEFT_PICTURE, surfaces)
+      drawPictureRecordAt(left, COMPACT_LEFT_PICTURE, commands, nil)
     end
     if type(right) == "table" then
-      drawPictureRecordAt(graphics, right, compact.portraitRect, surfaces)
+      drawPictureRecordAt(right, compact.portraitRect, commands, nil)
     end
     return
   end
   if type(pictures) == "table" and type(pictures[0]) == "table" then
-    drawPictureRecordAt(graphics, pictures[0], compact.portraitRect, surfaces)
+    drawPictureRecordAt(pictures[0], compact.portraitRect, commands, nil)
     return
   end
   local selection = view.selection
@@ -2112,23 +2328,22 @@ local function drawCompactPortrait(graphics, assets, view, compact, surfaces)
     quad = icons:quadFor(key)
   end
   local rect = assert(compact.portraitRect, "the compact record carries its portrait")
-  local color, meta = surfaces[5], surfaces[6]
-  assert(type(graphics.setCanvas) == "function", "compact portrait passes target their surfaces")
-  assert(type(graphics.push) == "function", "compact portrait passes preserve their graphics state")
-  assert(type(graphics.scale) == "function", "compact portrait passes double their icons")
-  graphics.setCanvas(color.canvas)
-  graphics.push("all")
-  graphics.scale(2, 2)
   local drawn = math.floor((rect.x + rect.width / 2 - 32) / 2)
   local top = math.floor((rect.y + rect.height / 2 - 32) / 2)
-  drawSampled(graphics, handle, quad, drawn, top)
-  graphics.pop()
-  local caught = selection.caught == true
-  if caught then
-    markObjRect(graphics, meta, { x = drawn * 2, y = top * 2, width = 64, height = 64 }, 0)
-  else
-    markObjRect(graphics, meta, { x = drawn * 2, y = top * 2, width = 64, height = 64 }, 1)
+  local blendClass = 1
+  if selection.caught == true then
+    blendClass = 0
   end
+  submitObjCommand(commands, {
+    kind = "part",
+    handle = handle,
+    quad = quad,
+    x = drawn,
+    y = top,
+    owner = { x = 0, y = 0, rotation = nil, scale = 2, pivotX = 0, pivotY = 0 },
+    blendClass = blendClass,
+    priority = 0,
+  })
 end
 
 -- Paints one footer button from the shared record: chrome, then the
@@ -2137,60 +2352,63 @@ end
 -- prepared message centered in the button. Disabled buttons dim their
 -- available mark and skip silently absent marks; enabled buttons fail
 -- with role attribution instead of staying blank.
----@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with messages, icons, and parts
 ---@param view table<string, unknown> detached projection carrying the live intents
 ---@param role string manifest page role behind the pane
 ---@param button table<string, unknown> drawn footer record with its visible mark
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawCompactButton(graphics, assets, view, role, button, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawCompactButton(assets, view, role, button, commands)
   local rect = { x = button.x, y = button.y, width = button.width, height = button.height }
-  fillChromeRect(graphics, rect, surfaces)
-  local color = surfaces[5]
-  assert(type(graphics.setCanvas) == "function", "compact buttons target their surface")
-  graphics.setCanvas(color.canvas)
+  fillChromeRect(rect, commands, nil)
   local disabled = button.enabled == false
-  withCompactClip(graphics, rect, function()
-    if button.iconRole == "arrow-up" or button.iconRole == "arrow-down" then
-      local choice = button.iconChoice
-      if choice ~= "enabled" and choice ~= "disabled" then
-        choice = "enabled"
-      end
-      drawSubjectAt(graphics, assets, view, role, button.iconRole, choice, rect, surfaces)
-    elseif button.iconRole == "species-icon" then
-      if not disabled and type(button.iconSpecies) == "string" then
-        local icons = assert(assets.icons, "compact buttons borrow the lease-owned provider")
-        assert(type(icons.handleFor) == "function", "compact buttons resolve prepared handles")
-        local key = button.iconSpecies .. "/f0"
-        local handle = icons:handleFor(key)
-        assert(type(handle) == "table", "prepared icon keys resolve their handle: " .. key)
-        local quad = nil
-        if type(icons.quadFor) == "function" then
-          quad = icons:quadFor(key)
-        end
-        graphics.setCanvas(color.canvas)
-        drawSampled(graphics, handle, quad, rect.x, rect.y - 4)
-        markObjRect(graphics, surfaces[6], rect, 0)
-      end
-    elseif button.labelRole ~= nil then
-      local message = compactRoleText(assets, button.labelRole, not disabled, "compact button " .. tostring(button.id))
-      if message ~= nil and message ~= "" then
-        local fonts = assert(assets.fonts, "compact buttons borrow the prepared fonts")
-        local font = assert(fonts.body, "compact buttons borrow the prepared body font")
-        drawCompactLine(
-          font,
-          message,
-          rect.x,
-          rect.y + 4,
-          rect.width,
-          "center",
-          compactPalette(COMPACT_CHROME, disabled)
-        )
-      end
+  if button.iconRole == "arrow-up" or button.iconRole == "arrow-down" then
+    local choice = button.iconChoice
+    if choice ~= "enabled" and choice ~= "disabled" then
+      choice = "enabled"
     end
-  end)
+    drawSubjectAt(assets, view, role, button.iconRole, choice, rect, commands, rect)
+  elseif button.iconRole == "species-icon" then
+    if not disabled and type(button.iconSpecies) == "string" then
+      local icons = assert(assets.icons, "compact buttons borrow the lease-owned provider")
+      assert(type(icons.handleFor) == "function", "compact buttons resolve prepared handles")
+      local key = button.iconSpecies .. "/f0"
+      local handle = icons:handleFor(key)
+      assert(type(handle) == "table", "prepared icon keys resolve their handle: " .. key)
+      local quad = nil
+      if type(icons.quadFor) == "function" then
+        quad = icons:quadFor(key)
+      end
+      submitObjCommand(commands, {
+        kind = "part",
+        handle = handle,
+        quad = quad,
+        x = rect.x,
+        y = rect.y - 4,
+        blendClass = 0,
+        priority = 0,
+        clip = rect,
+      })
+    end
+  elseif button.labelRole ~= nil then
+    local message = compactRoleText(assets, button.labelRole, not disabled, "compact button " .. tostring(button.id))
+    if message ~= nil and message ~= "" then
+      local fonts = assert(assets.fonts, "compact buttons borrow the prepared fonts")
+      local font = assert(fonts.body, "compact buttons borrow the prepared body font")
+      drawCompactLine(
+        font,
+        message,
+        rect.x,
+        rect.y + 4,
+        rect.width,
+        "center",
+        compactPalette(COMPACT_CHROME, disabled),
+        commands,
+        rect
+      )
+    end
+  end
   if button.selected == true then
-    strokeCompactSelection(graphics, rect, surfaces)
+    strokeCompactSelection(rect, commands)
   end
 end
 
@@ -2199,90 +2417,98 @@ end
 -- plus a white inset border while selected. Invisible option rows stay
 -- blank like their native windows; enabled rows fail with role
 -- attribution instead of staying blank.
----@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with the lease-owned messages
 ---@param row table<string, unknown> drawn row record with its visible roles
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawCompactRow(graphics, assets, row, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawCompactRow(assets, row, commands)
   local rect = assert(row.rect, "compact rows carry their rectangle")
-  local color = surfaces[5]
-  assert(type(graphics.setCanvas) == "function", "compact rows target their surface")
-  assert(type(graphics.setColor) == "function", "compact rows paint their panel")
-  assert(type(graphics.rectangle) == "function", "compact rows paint their panel")
-  graphics.setCanvas(color.canvas)
-  graphics.setColor(COMPACT_MATTE.r / 255, COMPACT_MATTE.g / 255, COMPACT_MATTE.b / 255, 1)
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-  graphics.setColor(1, 1, 1, 1)
-  markObjRect(graphics, surfaces[6], rect, 0)
+  submitObjCommand(commands, {
+    kind = "fill",
+    color = COMPACT_MATTE,
+    x = rect.x,
+    y = rect.y,
+    width = rect.width,
+    height = rect.height,
+    blendClass = 0,
+    priority = 0,
+  })
   local disabled = row.enabled == false
-  withCompactClip(graphics, rect, function()
-    local fonts = assert(assets.fonts, "compact rows borrow the prepared fonts")
-    local font = assert(fonts.body, "compact rows borrow the prepared body font")
-    local palette = compactPalette(COMPACT_MATTE, disabled)
-    if row.labelRole ~= nil then
-      local label = compactRoleText(assets, row.labelRole, not disabled, "compact row")
-      if label ~= nil and label ~= "" then
-        drawCompactLine(font, label, rect.x + 2, rect.y + 1, rect.width - 4, "left", palette)
+  local fonts = assert(assets.fonts, "compact rows borrow the prepared fonts")
+  local font = assert(fonts.body, "compact rows borrow the prepared body font")
+  local palette = compactPalette(COMPACT_MATTE, disabled)
+  if row.labelRole ~= nil then
+    local label = compactRoleText(assets, row.labelRole, not disabled, "compact row")
+    if label ~= nil and label ~= "" then
+      drawCompactLine(font, label, rect.x + 2, rect.y + 1, rect.width - 4, "left", palette, commands, rect)
+    end
+  end
+  local valueRole = row.valueRole
+  if valueRole ~= nil then
+    local values = {}
+    if type(valueRole) == "table" then
+      for _, nested in ipairs(valueRole) do
+        values[#values + 1] = nested
+      end
+    else
+      values[#values + 1] = valueRole
+    end
+    local staged = {}
+    for _, nested in ipairs(values) do
+      local value = compactRoleText(assets, nested, not disabled, "compact row value")
+      if value ~= nil and value ~= "" then
+        staged[#staged + 1] = value
       end
     end
-    local valueRole = row.valueRole
-    if valueRole ~= nil then
-      local values = {}
-      if type(valueRole) == "table" then
-        for _, nested in ipairs(valueRole) do
-          values[#values + 1] = nested
-        end
-      else
-        values[#values + 1] = valueRole
-      end
-      local staged = {}
-      for _, nested in ipairs(values) do
-        local value = compactRoleText(assets, nested, not disabled, "compact row value")
-        if value ~= nil and value ~= "" then
-          staged[#staged + 1] = value
-        end
-      end
-      if #staged > 0 then
-        drawCompactLine(font, table.concat(staged, " "), rect.x + 2, rect.y + 1, rect.width - 4, "right", palette)
-      end
+    if #staged > 0 then
+      drawCompactLine(
+        font,
+        table.concat(staged, " "),
+        rect.x + 2,
+        rect.y + 1,
+        rect.width - 4,
+        "right",
+        palette,
+        commands,
+        rect
+      )
     end
-  end)
+  end
   if row.selected == true then
-    strokeCompactSelection(graphics, rect, surfaces)
+    strokeCompactSelection(rect, commands)
   end
 end
 
--- Paints one compact slider track from the shared record: the staged
--- caption and current bound plus a white thumb at the staged position.
--- Bounds read the published criteria through the same view the mapper
--- gates, so the painted thumb and the captured drag agree.
----@param graphics table<string, unknown> host graphics namespace
+-- Collects one compact slider track from the shared record as OBJ
+-- commands: the staged caption and current bound plus a white thumb at
+-- the staged position. Bounds read the published criteria through the
+-- same view the mapper gates, so the painted thumb and the captured
+-- drag agree. The track carries metadata; the thumb paints color only.
 ---@param assets table<string, unknown> prepared bundle with the lease-owned messages
 ---@param view table<string, unknown> detached projection carrying the staged bounds
 ---@param slider table<string, unknown> drawn slider record with its visible roles
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawCompactSlider(graphics, assets, view, slider, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawCompactSlider(assets, view, slider, commands)
   local rect = assert(slider.rect, "compact sliders carry their rectangle")
-  local color = surfaces[5]
-  assert(type(graphics.setCanvas) == "function", "compact sliders target their surface")
-  assert(type(graphics.setColor) == "function", "compact sliders paint their track")
-  assert(type(graphics.rectangle) == "function", "compact sliders paint their track")
   local caption = compactRoleText(assets, slider.captionRole, true, "compact slider")
   assert(type(caption) == "string", "compact sliders paint their caption")
   local value = compactRoleText(assets, slider.valueRole, true, "compact slider bound")
   assert(type(value) == "string", "compact sliders paint their bound")
   local fonts = assert(assets.fonts, "compact sliders borrow the prepared fonts")
   local font = assert(fonts.body, "compact sliders borrow the prepared body font")
-  withCompactClip(graphics, { x = rect.x, y = rect.y - 18, width = rect.width, height = 18 }, function()
-    local palette = compactPalette(COMPACT_MATTE, false)
-    drawCompactLine(font, caption, rect.x, rect.y - 18, rect.width, "left", palette)
-    drawCompactLine(font, value, rect.x, rect.y - 18, rect.width, "right", palette)
-  end)
-  graphics.setCanvas(color.canvas)
-  graphics.setColor(COMPACT_MATTE.r / 255, COMPACT_MATTE.g / 255, COMPACT_MATTE.b / 255, 1)
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-  graphics.setColor(1, 1, 1, 1)
-  markObjRect(graphics, surfaces[6], rect, 0)
+  local captionClip = { x = rect.x, y = rect.y - 18, width = rect.width, height = 18 }
+  local palette = compactPalette(COMPACT_MATTE, false)
+  drawCompactLine(font, caption, rect.x, rect.y - 18, rect.width, "left", palette, commands, captionClip)
+  drawCompactLine(font, value, rect.x, rect.y - 18, rect.width, "right", palette, commands, captionClip)
+  submitObjCommand(commands, {
+    kind = "fill",
+    color = COMPACT_MATTE,
+    x = rect.x,
+    y = rect.y,
+    width = rect.width,
+    height = rect.height,
+    blendClass = 0,
+    priority = 0,
+  })
   local bound = nil
   if type(view.search) == "table" and type(view.search.criteria) == "table" then
     local criteria = view.search.criteria
@@ -2300,19 +2526,27 @@ local function drawCompactSlider(graphics, assets, view, slider, surfaces)
   local thumbWidth = 4
   local travel = math.max(rect.width - thumbWidth, 1)
   local thumbX = rect.x + math.floor(bound / 152 * travel + 0.5)
-  graphics.setCanvas(color.canvas)
-  graphics.setColor(1, 1, 1, 1)
-  graphics.rectangle("fill", thumbX, rect.y, thumbWidth, rect.height)
-  graphics.setColor(1, 1, 1, 1)
+  submitObjCommand(commands, {
+    kind = "fill",
+    bare = true,
+    color = { r = 255, g = 255, b = 255 },
+    x = thumbX,
+    y = rect.y,
+    width = thumbWidth,
+    height = rect.height,
+    blendClass = 0,
+    priority = 0,
+  })
 end
 
--- Paints the inspector close mark centered in its toggle rectangle.
----@param graphics table<string, unknown> host graphics namespace
+-- Collects the inspector close mark centered in its toggle rectangle as
+-- a color-only OBJ command.
 ---@param assets table<string, unknown> prepared bundle with the lease-owned messages
 ---@param closeRect { x: integer, y: integer, width: integer, height: integer } close toggle rectangle
 ---@param closeRole string? prepared message role behind the close mark
 ---@param background table<string, integer> painted surface color behind the glyphs
-local function drawInspectorClose(graphics, assets, closeRect, closeRole, background)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawInspectorClose(assets, closeRect, closeRole, background, commands)
   if closeRole == nil then
     return
   end
@@ -2322,17 +2556,17 @@ local function drawInspectorClose(graphics, assets, closeRect, closeRole, backgr
   end
   local fonts = assert(assets.fonts, "compact inspector borrows the prepared fonts")
   local font = assert(fonts.body, "compact inspector borrows the prepared body font")
-  withCompactClip(graphics, closeRect, function()
-    drawCompactLine(
-      font,
-      message,
-      closeRect.x,
-      closeRect.y + 2,
-      closeRect.width,
-      "center",
-      compactPalette(background, false)
-    )
-  end)
+  drawCompactLine(
+    font,
+    message,
+    closeRect.x,
+    closeRect.y + 2,
+    closeRect.width,
+    "center",
+    compactPalette(background, false),
+    commands,
+    closeRect
+  )
 end
 
 -- Collects the inspector body lines behind the published roles: number
@@ -2401,10 +2635,12 @@ local function inspectorBodyLines(assets, roles)
   return lines
 end
 
--- Runs the compact passes for one pane on the identity transform: the
--- same committed backgrounds, windows, and text as native, then the
+-- Collects the compact passes for one pane on the identity transform:
+-- the same committed backgrounds, windows, and text as native, then the
 -- reflowed icons, portrait, inspection toggle, footer actions, and the
 -- open inspection overlay drawn from the one shared geometry record.
+-- OBJ contributions collect as draw-local commands in deliberate
+-- collection order; the caller flushes them after the passes.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with icons, pictures, chrome, and text
 ---@param view table<string, unknown> detached projection carrying the shown page
@@ -2413,7 +2649,8 @@ end
 ---@param surfaces table[] six realized serial surfaces in compositor order
 ---@param compact table<string, unknown> shared compact geometry record
 ---@param inspectOn boolean true while the inspection overlay stays open
-local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, compact, inspectOn)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, compact, inspectOn, commands)
   assert(type(graphics.push) == "function", "compact passes preserve their graphics state")
   assert(type(graphics.origin) == "function", "compact passes draw on the identity transform")
   graphics.push("all")
@@ -2435,19 +2672,19 @@ local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, 
       if type(view.grid) == "table" then
         cursor = view.grid.cursor
       end
-      drawCompactIcons(graphics, assets, view.grid, cursor, geometry.iconRects, geometry.cursorRects, surfaces)
-      drawCompactPortrait(graphics, assets, view, compact, surfaces)
+      drawCompactIcons(assets, view.grid, cursor, geometry.iconRects, geometry.cursorRects, commands)
+      drawCompactPortrait(assets, view, compact, commands)
       if type(compact.rows) == "table" then
         for _, row in ipairs(compact.rows) do
           if type(row) == "table" and type(row.rect) == "table" then
-            drawCompactRow(graphics, assets, row, surfaces)
+            drawCompactRow(assets, row, commands)
           end
         end
       end
       if type(compact.sliders) == "table" then
         for _, slider in ipairs(compact.sliders) do
           if type(slider) == "table" then
-            drawCompactSlider(graphics, assets, view, slider, surfaces)
+            drawCompactSlider(assets, view, slider, commands)
           end
         end
       end
@@ -2456,20 +2693,19 @@ local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, 
       if type(inspection) ~= "table" then
         inspection = {}
       end
-      local color = surfaces[5]
-      local meta = surfaces[6]
-      assert(type(graphics.setCanvas) == "function", "compact overlays target their surface")
-      fillChromeRect(graphics, toggle, surfaces)
-      graphics.setCanvas(color.canvas)
-      drawInspectorClose(graphics, assets, toggle, inspection.closeRole, COMPACT_CHROME)
+      fillChromeRect(toggle, commands, nil)
+      drawInspectorClose(assets, toggle, inspection.closeRole, COMPACT_CHROME, commands)
       if inspectOn then
-        assert(type(graphics.setColor) == "function", "compact overlays paint their panel")
-        assert(type(graphics.rectangle) == "function", "compact overlays paint their panel")
-        graphics.setCanvas(color.canvas)
-        graphics.setColor(COMPACT_MATTE.r / 255, COMPACT_MATTE.g / 255, COMPACT_MATTE.b / 255, 1)
-        graphics.rectangle("fill", 0, 0, 256, 168)
-        graphics.setColor(1, 1, 1, 1)
-        markObjRect(graphics, meta, { x = 0, y = 0, width = 256, height = 168 }, 0)
+        submitObjCommand(commands, {
+          kind = "fill",
+          color = COMPACT_MATTE,
+          x = 0,
+          y = 0,
+          width = 256,
+          height = 168,
+          blendClass = 0,
+          priority = 0,
+        })
         local roles = inspection.roles
         if type(roles) ~= "table" then
           roles = {}
@@ -2478,27 +2714,25 @@ local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, 
         local font = assert(fonts.body, "compact inspector borrows the prepared body font")
         local palette = compactPalette(COMPACT_MATTE, false)
         local lines = inspectorBodyLines(assets, roles)
-        withCompactClip(graphics, { x = 0, y = 0, width = 256, height = 168 }, function()
-          local y = 8
-          for _, line in ipairs(lines) do
-            if y + 16 > 128 or line == nil then
-              break
-            end
-            if line ~= "" then
-              drawCompactLine(font, line, 8, y, 240, "left", palette)
-            end
-            y = y + 16
+        local panelClip = { x = 0, y = 0, width = 256, height = 168 }
+        local y = 8
+        for _, line in ipairs(lines) do
+          if y + 16 > 128 or line == nil then
+            break
           end
-        end)
-        graphics.setCanvas(color.canvas)
-        drawInspectorClose(graphics, assets, toggle, inspection.closeRole, COMPACT_MATTE)
+          if line ~= "" then
+            drawCompactLine(font, line, 8, y, 240, "left", palette, commands, panelClip)
+          end
+          y = y + 16
+        end
+        drawInspectorClose(assets, toggle, inspection.closeRole, COMPACT_MATTE, commands)
       end
     elseif paneId == "controls" then
       local footer = assert(compact.footer, "the compact record carries its footer")
       assert(type(footer.buttons) == "table", "compact footers carry their buttons")
       for _, button in ipairs(footer.buttons) do
         assert(type(button) == "table", "compact footers carry their button records")
-        drawCompactButton(graphics, assets, view, role, button, surfaces)
+        drawCompactButton(assets, view, role, button, commands)
       end
     end
     graphics.setCanvas(previous)
@@ -2602,37 +2836,43 @@ local function fadeForView(view, paneId)
   return noFade, noFade
 end
 
--- Paints one pressed-control flash as an opaque white rect over the
--- pressed button, marked opaque so it composites above its background.
----@param graphics table<string, unknown> host graphics namespace
+-- Collects one pressed-control flash as an opaque white OBJ command over
+-- the pressed button, marked opaque so it composites above its
+-- background.
 ---@param rect { x: integer, y: integer, width: integer, height: integer } painted flash rectangle
----@param surfaces table[] six realized serial surfaces in compositor order
-local function drawFlashRect(graphics, rect, surfaces)
-  local color = surfaces[5]
-  assert(type(graphics.setCanvas) == "function", "flash passes target their surface")
-  assert(type(graphics.setColor) == "function", "flash passes set their tint")
-  assert(type(graphics.rectangle) == "function", "flash passes fill their rectangle")
-  graphics.setCanvas(color.canvas)
-  graphics.setColor(1, 1, 1, 1)
-  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-  graphics.setColor(1, 1, 1, 1)
-  markObjRect(graphics, surfaces[6], rect, 0)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+local function drawFlashRect(rect, commands)
+  submitObjCommand(commands, {
+    kind = "fill",
+    color = { r = 255, g = 255, b = 255 },
+    x = rect.x,
+    y = rect.y,
+    width = rect.width,
+    height = rect.height,
+    blendClass = 0,
+    priority = 0,
+  })
 end
 
--- Runs the serial passes for one pane on the identity transform: every
--- previous target returns before the composite reads them. Backgrounds,
--- windows/text, and placed page sprites paint first so OBJ art composites
--- above them; the registration card reads its staged information content
--- the same way.
+-- Collects the serial passes for one pane on the identity transform:
+-- backgrounds, windows, and text paint immediately onto their BG planes
+-- while every OBJ contribution collects as a draw-local command for the
+-- caller to flush before compositing. The registration card reads its
+-- staged information content the same way. A hidden popup retires every
+-- sprite intent and placed sprite, including the anchored emblem, while
+-- windows, chrome, and the captured picture stay.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with icons, pictures, chrome, and text
 ---@param view table<string, unknown> detached projection selecting content
 ---@param role string manifest page role behind the pane
 ---@param paneId string browser pane identity
 ---@param surfaces table[] six realized serial surfaces in compositor order
-local function runSerialPasses(graphics, assets, view, role, paneId, surfaces)
+---@param commands table[] draw-local OBJ command buffer behind one pane
+---@param opts table<string, unknown>? pass options; hideSprites retires popup OBJ
+local function runSerialPasses(graphics, assets, view, role, paneId, surfaces, commands, opts)
   assert(type(graphics.push) == "function", "serial passes preserve their graphics state")
   assert(type(graphics.origin) == "function", "serial passes draw on the identity transform")
+  local hideSprites = type(opts) == "table" and opts.hideSprites == true
   graphics.push("all")
   graphics.origin()
   local ok, err = pcall(function()
@@ -2647,26 +2887,32 @@ local function runSerialPasses(graphics, assets, view, role, paneId, surfaces)
     drawDexModeLabel(graphics, assets, view, role, paneId, surfaces)
     drawPageWindowsAndText(graphics, assets, role, paneId, surfaces, view)
     drawListNumbers(graphics, assets, view, role, paneId, surfaces)
-    drawPageSprites(graphics, assets, role, paneId, surfaces)
-    drawDynamicSprites(graphics, assets, view, role, paneId, surfaces)
+    if not hideSprites then
+      drawPageSprites(assets, role, paneId, commands)
+      drawDynamicSprites(assets, view, role, paneId, commands)
+    end
     if paneId == "controls" then
-      drawControlIcons(graphics, assets, view.grid, surfaces)
-      drawFormsIcons(graphics, assets, view, role, surfaces)
+      if not hideSprites then
+        drawControlIcons(assets, view.grid, commands)
+        drawFormsIcons(assets, view, role, commands)
+      end
       local visual = view.visual
       if type(visual) == "table" then
         local rect = flashRectFor(visual.flash)
         if rect ~= nil then
-          drawFlashRect(graphics, rect, surfaces)
+          drawFlashRect(rect, commands)
         end
       end
     elseif paneId == "information" then
       if role == "entry.size" then
-        drawSizeHeightPortrait(graphics, assets, view, surfaces)
-        drawSizeFigures(graphics, assets, view, surfaces)
+        if not hideSprites then
+          drawSizeHeightPortrait(assets, view, commands)
+          drawSizeFigures(assets, view, commands)
+        end
       else
         local pictures = assets.pictures
-        if type(pictures) == "table" then
-          drawInformationPictures(graphics, assets, pictures, role, surfaces)
+        if type(pictures) == "table" and not hideSprites then
+          drawInformationPictures(pictures, role, commands)
         end
       end
     end
@@ -2690,10 +2936,15 @@ end
 ---@param bgFade { target: { r: integer, g: integer, b: integer }, coeff: integer } BG fade
 ---@param objFade { target: { r: integer, g: integer, b: integer }, coeff: integer } OBJ fade
 ---@param windowActive boolean true while the footer window excludes OBJ
+---@param bg0Fade { target: { r: integer, g: integer, b: integer }, coeff: integer }? BG0-only fade, defaults to the BG fade
 ---@return table<string, unknown> composite uniform record
-local function compositeUniforms(manifest, role, paneId, blend, bgFade, objFade, windowActive)
+local function compositeUniforms(manifest, role, paneId, blend, bgFade, objFade, windowActive, bg0Fade)
   local backdrop = PokedexRenderer.backdropOf(manifest, role, paneId)
   local priorities = PokedexRenderer.layerPrioritiesOf(manifest, role, paneId)
+  local plane0 = bg0Fade
+  if plane0 == nil then
+    plane0 = bgFade
+  end
   local uniforms = {
     u_backdrop = { backdrop.r / 255, backdrop.g / 255, backdrop.b / 255 },
     u_bgPriority = { priorities[1], priorities[2], priorities[3], priorities[4] },
@@ -2702,6 +2953,8 @@ local function compositeUniforms(manifest, role, paneId, blend, bgFade, objFade,
     u_blend = { blend.eva, blend.evb },
     u_bgFadeTarget = { bgFade.target.r / 255, bgFade.target.g / 255, bgFade.target.b / 255 },
     u_bgFadeCoeff = bgFade.coeff,
+    u_bg0FadeTarget = { plane0.target.r / 255, plane0.target.g / 255, plane0.target.b / 255 },
+    u_bg0FadeCoeff = plane0.coeff,
     u_objFadeTarget = { objFade.target.r / 255, objFade.target.g / 255, objFade.target.b / 255 },
     u_objFadeCoeff = objFade.coeff,
     u_winActive = 0,
@@ -2741,6 +2994,8 @@ local function compositePane(renderer, graphics, manifest, placement, uniforms, 
   shader:send("u_blend", uniforms.u_blend)
   shader:send("u_bgFadeTarget", uniforms.u_bgFadeTarget)
   shader:send("u_bgFadeCoeff", uniforms.u_bgFadeCoeff)
+  shader:send("u_bg0FadeTarget", uniforms.u_bg0FadeTarget)
+  shader:send("u_bg0FadeCoeff", uniforms.u_bg0FadeCoeff)
   shader:send("u_objFadeTarget", uniforms.u_objFadeTarget)
   shader:send("u_objFadeCoeff", uniforms.u_objFadeCoeff)
   shader:send("u_winRect", uniforms.u_winRect)
@@ -2762,15 +3017,17 @@ local function compositePane(renderer, graphics, manifest, placement, uniforms, 
 end
 
 -- The browser raster pass: per-pane serial passes through the six lease
--- surfaces, then one final composite per pane. Draws only already
--- prepared values and restores the borrowed graphics state even when a
--- pane raises.
+-- surfaces, one OBJ flush, then one final composite per pane. Draws only
+-- already prepared values and restores the borrowed graphics state even
+-- when a pane raises. The footer window rule applies only while the
+-- view explicitly arms the retract mask.
 ---@param prepared { view: table<string, unknown>, assets: table<string, unknown>, compact: table<string, unknown>? }
 ---@param plan table<string, unknown> the resolved application plan
 function PokedexRenderer:drawBrowser(prepared, plan)
   assert(not self._released, "a released pokedex renderer draws nothing")
   checkBrowserPrepared(prepared, plan)
   local graphics = assert(self._graphics, "browser drawing requires its host graphics namespace")
+  local metaShader = assert(self._metaShader, tostring(self._metaShaderFailed))
   local assets = prepared.assets --[[@as table<string, unknown>]]
   local view = prepared.view --[[@as table<string, unknown>]]
   local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
@@ -2791,14 +3048,19 @@ function PokedexRenderer:drawBrowser(prepared, plan)
         local placement = assert(pane.placement, "browser panes carry their placement")
         local paneId = pane.id --[[@as string]]
         local role = PokedexRenderer.resolvePageRole(view, paneId)
+        local commands = {}
         if compact ~= nil then
-          runCompactPasses(graphics, assets, view, role, paneId, surfaces, compact, inspectOn)
+          runCompactPasses(graphics, assets, view, role, paneId, surfaces, compact, inspectOn, commands)
+          flushObjCommands(graphics, metaShader, commands, surfaces, false)
         else
-          runSerialPasses(graphics, assets, view, role, paneId, surfaces)
+          runSerialPasses(graphics, assets, view, role, paneId, surfaces, commands, nil)
+          flushObjCommands(graphics, metaShader, commands, surfaces, true)
         end
         local blend = PokedexRenderer.paneBlendOf(view, paneId)
         local bgFade, objFade = fadeForView(view, paneId)
-        local uniforms = compositeUniforms(manifest, role, paneId, blend, bgFade, objFade, paneId == "information")
+        local visual = view.visual
+        local windowActive = paneId == "information" and type(visual) == "table" and visual.informationClip == true
+        local uniforms = compositeUniforms(manifest, role, paneId, blend, bgFade, objFade, windowActive)
         compositePane(self, graphics, manifest, placement, uniforms, surfaces)
       end
     end
@@ -2812,13 +3074,13 @@ function PokedexRenderer:drawBrowser(prepared, plan)
 end
 
 -- The registration raster pass: the staged card backgrounds, windows,
--- and announcement plus the 80x80 captured picture at its published
--- source center, all unfaded except through the independently published
--- palette and picture coefficients. The picture center starts at 48
--- (top-left 8,32) and slides to 128 (top-left 88,32); once the departure
--- hides the sprites the picture leaves while the card layers remain.
--- Draws only already prepared values and restores the borrowed graphics
--- state.
+-- and announcement paint through the serial passes while the 80x80
+-- captured picture rides the BG0 plane at its published source center,
+-- all unfaded except through the independently published palette and
+-- picture coefficients. The picture center starts at 48 (top-left 8,32)
+-- and slides to 128 (top-left 88,32); once the departure hides the
+-- sprites the picture stays while the card layers remain. Draws only
+-- already prepared values and restores the borrowed graphics state.
 ---@param prepared { view: table<string, unknown>, assets: table<string, unknown> }
 ---@param plan table<string, unknown> the resolved application plan
 function PokedexRenderer:drawRegistration(prepared, plan)
@@ -2828,6 +3090,7 @@ function PokedexRenderer:drawRegistration(prepared, plan)
   assert(type(prepared.assets) == "table", "registration drawing requires its prepared bundle")
   assert(type(plan) == "table" and type(plan.panes) == "table", "registration drawing requires its resolved plan")
   local graphics = assert(self._graphics, "registration drawing requires its host graphics namespace")
+  local metaShader = assert(self._metaShader, tostring(self._metaShaderFailed))
   local assets = prepared.assets --[[@as table<string, unknown>]]
   local view = prepared.view --[[@as table<string, unknown>]]
   local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
@@ -2850,11 +3113,18 @@ function PokedexRenderer:drawRegistration(prepared, plan)
     for _, pane in ipairs(plan.panes) do
       if type(pane) == "table" and pane.id == "registration" then
         local placement = assert(pane.placement, "registration panes carry their placement")
-        runSerialPasses(graphics, assets, view, "registration", "registration", surfaces)
+        local commands = {}
+        runSerialPasses(graphics, assets, view, "registration", "registration", surfaces, commands, {
+          hideSprites = view.spritesHidden == true,
+        })
         local outerCanvas = nil
         if type(graphics.getCanvas) == "function" then
           outerCanvas = graphics.getCanvas()
         end
+        assert(type(graphics.push) == "function", "registration passes preserve their graphics state")
+        assert(type(graphics.origin) == "function", "registration passes draw on the identity transform")
+        graphics.push("all")
+        graphics.origin()
         if view.banner == 7 then
           local page = assert(manifest.pages.registration, "the manifest carries the registration page")
           local flash = assert(page.bannerFlash, "the registration page carries its banner strip")
@@ -2862,63 +3132,66 @@ function PokedexRenderer:drawRegistration(prepared, plan)
           local handle = assert(chrome[flash.chrome], "prepared bundles carry the banner strip")
           local surface = assert(surfaces[flash.layer + 1], "the banner strip names a serial surface")
           graphics.setCanvas(surface.canvas)
+          local previousMode = nil
+          if type(graphics.getBlendMode) == "function" then
+            previousMode = { graphics.getBlendMode() }
+          end
+          if type(graphics.setBlendMode) == "function" then
+            graphics.setBlendMode("replace")
+          end
           drawSampled(graphics, handle, nil, flash.x, flash.y)
-          graphics.setCanvas(outerCanvas)
+          if type(graphics.setBlendMode) == "function" and previousMode ~= nil then
+            graphics.setBlendMode(previousMode[1], previousMode[2])
+          end
         end
-        -- The captured specimen stays visible from publication through
-        -- departure and the frozen exit: only the popup OBJ sprites
-        -- hide at departure, never the centered picture. Gating the
-        -- picture on spritesHidden would blink the specimen out just
-        -- as it centers. Popup sprite passes above already honor
-        -- spritesHidden; this picture pass intentionally does not.
+        -- The captured specimen rides BG0 at its source center, never
+        -- the OBJ pair: hiding the popup sprites at departure retires
+        -- the anchored emblem while the centered picture stays. The
+        -- picture fades only on its own coefficient.
         do
           local pictures = assets.pictures
           assert(type(pictures) == "table", "prepared card bundles carry their pictures")
           local card = assert(pictures.registration, "prepared card bundles carry their captured picture")
           assert(type(card) == "table", "prepared card slots stay records")
-          local color = surfaces[5]
-          local meta = surfaces[6]
-          local rect = {
-            x = pictureX - PokedexRenderer.REGISTRATION_PICTURE_SIZE / 2,
-            y = PokedexRenderer.REGISTRATION_PICTURE_Y,
-            width = PokedexRenderer.REGISTRATION_PICTURE_SIZE,
-            height = PokedexRenderer.REGISTRATION_PICTURE_SIZE,
-          }
-          local previous = nil
-          if type(graphics.getCanvas) == "function" then
-            previous = graphics.getCanvas()
-          end
+          local bg0 = assert(surfaces[1], "the registration picture rides BG0")
+          graphics.setCanvas(bg0.canvas)
+          local rectX = pictureX - PokedexRenderer.REGISTRATION_PICTURE_SIZE / 2
+          local rectY = PokedexRenderer.REGISTRATION_PICTURE_Y
           local spinda = card.spinda
           if type(spinda) == "table" and spinda.canvas ~= nil then
-            graphics.setCanvas(color.canvas)
             assert(type(graphics.setColor) == "function", "registration draws reset their tint")
             assert(type(graphics.draw) == "function", "registration draws its captured picture")
             graphics.setColor(1, 1, 1, 1)
-            graphics.draw(spinda.canvas, rect.x, rect.y)
+            graphics.draw(spinda.canvas, rectX, rectY)
           else
             local handle = assert(card.handle, "prepared card slots carry their handle")
-            graphics.setCanvas(color.canvas)
-            drawSampled(graphics, handle, card.quad, rect.x, rect.y)
+            drawSampled(graphics, handle, card.quad, rectX, rectY)
           end
-          markObjRect(graphics, meta, rect, 0, 0)
-          graphics.setCanvas(previous)
+        end
+        graphics.setCanvas(outerCanvas)
+        if type(graphics.pop) == "function" then
+          graphics.pop()
         end
         -- The serial banner and picture passes above leave the caller
         -- target bound: sampling a surface while it is bound for writing
         -- is invalid and drops the card on alternating banner phases.
+        flushObjCommands(graphics, metaShader, commands, surfaces, true)
         graphics.setCanvas(outerCanvas)
         local blend = { first = {}, second = {}, eva = 0, evb = 0 }
         local black = { r = 0, g = 0, b = 0 }
         -- The card inherits the battle Main/top placement but keeps the
-        -- compiled information backdrop as its opaque cover color.
+        -- compiled information backdrop as its opaque cover color. The
+        -- palette fade covers BG1-3, the backdrop, and popup OBJ while
+        -- the picture fade covers BG0 alone.
         local uniforms = compositeUniforms(
           manifest,
           "registration",
           "information",
           blend,
           { target = black, coeff = paletteFade },
-          { target = black, coeff = pictureFade },
-          false
+          { target = black, coeff = paletteFade },
+          false,
+          { target = black, coeff = pictureFade }
         )
         compositePane(self, graphics, manifest, placement, uniforms, surfaces)
       end
@@ -3040,6 +3313,12 @@ function PokedexRenderer:release()
   self._shaderFailed = nil
   if shader ~= nil and type(shader.release) == "function" then
     shader:release()
+  end
+  local metaShader = self._metaShader
+  self._metaShader = nil
+  self._metaShaderFailed = nil
+  if metaShader ~= nil and type(metaShader.release) == "function" then
+    metaShader:release()
   end
 end
 

@@ -3608,4 +3608,42 @@ function T.entry_open_fades_in_then_settles()
   Assert.equal(controller:view().visual.transition.phase, "rest", "the entry fade settles")
 end
 
+-- The successful search move phase projects the information-window mask
+-- while the retract runs, and the settled result grid clears it again.
+function T.successful_search_move_projects_the_information_clip()
+  local PokedexController = requirePresent("search move clip projection")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
+  press(controller, { { type = "start" } })
+  local moved = false
+  for _ = 1, 400 do
+    tick(controller, {})
+    local view = controller:view()
+    if view.page == "search" and view.search ~= nil and view.search.feedback ~= nil then
+      if view.search.feedback.phase == "move" then
+        moved = true
+        Assert.isTrue(view.visual.informationClip == true, "the successful move phase projects an active clip")
+        break
+      end
+    end
+    if view.page == "results" then
+      break
+    end
+  end
+  Assert.isTrue(moved, "the successful search passes through its move phase")
+  idle(controller, 200)
+  local landed = controller:view()
+  Assert.equal(landed.page, "results", "the completed search lands on the result grid")
+  Assert.isTrue(
+    landed.visual == nil or landed.visual.informationClip ~= true,
+    "the settled result grid clears the clip"
+  )
+  controller:dispose()
+end
+
 return { tests = T }

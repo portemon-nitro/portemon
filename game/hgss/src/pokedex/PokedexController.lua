@@ -4359,6 +4359,8 @@ end
 function PokedexController:view()
   local seen = tryDex(self._dex, "countSeen", self._mode)
   local caught = tryDex(self._dex, "countCaught", self._mode)
+  local feedback = self._feedback
+  local informationClip = type(feedback) == "table" and feedback.phase == "move" or false
   local snapshot = {
     key = self._key,
     mode = self._mode,
@@ -4374,6 +4376,7 @@ function PokedexController:view()
       coverOffset = self._coverOffset,
       barOffset = 0,
       paletteFades = self:_paletteFades(),
+      informationClip = informationClip,
       blend = self:_blendView(),
       flash = self:_flashView(),
       transition = { phase = self._transition.phase, tick = self._transition.tick },

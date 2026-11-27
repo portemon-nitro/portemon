@@ -1647,8 +1647,35 @@ local function checkWindows(manifest)
         return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "window carries invalid colors", { role = role })
       end
     end
-    if record.align ~= "left" and record.align ~= "center" and record.align ~= "right" then
+    if
+      record.align ~= "left"
+      and record.align ~= "center"
+      and record.align ~= "right"
+      and record.align ~= "block-center"
+    then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "window names an unknown alignment", { role = role })
+    end
+    -- The native print origin sits inside the window clip: centered and
+    -- right anchors may address the right boundary, never outside it.
+    if not isInteger(record.printX) or record.printX < 0 or record.printX > record.width then
+      return fail(
+        PokedexAssetSchema.ERROR.SHAPE_INVALID,
+        "window carries a print origin outside its clip",
+        { role = role }
+      )
+    end
+    if not isInteger(record.printY) or record.printY < 0 or record.printY > record.height then
+      return fail(
+        PokedexAssetSchema.ERROR.SHAPE_INVALID,
+        "window carries a print origin outside its clip",
+        { role = role }
+      )
+    end
+    if not isInteger(record.lineAdvance) or record.lineAdvance <= 0 then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "window carries no line advance", { role = role })
+    end
+    if type(record.textRole) ~= "string" or record.textRole == "" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "window names no message role", { role = role })
     end
     if type(record.paletteGroup) ~= "string" or record.paletteGroup == "" then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "window carries no palette group", { role = role })
@@ -1709,6 +1736,32 @@ local function checkPages(manifest)
     end
     if not checkRgba(page.backdrop.controls) then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page misses its controls backdrop", { role = role })
+    end
+    -- Every page carries its own explicit per-pane native priority
+    -- vector: a page that borrows another page's priorities, covers fewer
+    -- than four layers, or leaves the native 0..3 range cannot validate.
+    local layerPriorities = page.layerPriorities
+    if type(layerPriorities) ~= "table" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page carries no explicit layer priorities", { role = role })
+    end
+    for _, pane in ipairs({ "information", "controls" }) do
+      local vector = layerPriorities[pane]
+      if type(vector) ~= "table" or #vector ~= 4 then
+        return fail(
+          PokedexAssetSchema.ERROR.SHAPE_INVALID,
+          "page carries no dense " .. pane .. " priorities",
+          { role = role }
+        )
+      end
+      for layer = 1, 4 do
+        if not isInteger(vector[layer]) or vector[layer] < 0 or vector[layer] > 3 then
+          return fail(
+            PokedexAssetSchema.ERROR.SHAPE_INVALID,
+            "page carries a " .. pane .. " priority outside the native range",
+            { role = role }
+          )
+        end
+      end
     end
     for _, pane in ipairs({ "information", "controls" }) do
       local backgrounds = page.backgrounds and page.backgrounds[pane]
@@ -1983,6 +2036,9 @@ local function checkFootprints(manifest)
     end
     if record.source.width ~= 16 or record.source.height ~= 16 then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "footprint source is not a 16x16 assembly", { key = key })
+    end
+    if not isInteger(record.anchorX) or not isInteger(record.anchorY) then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "footprint carries no native center anchor", { key = key })
     end
   end
   return nil

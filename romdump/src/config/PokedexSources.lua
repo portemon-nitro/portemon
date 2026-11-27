@@ -7,7 +7,7 @@
 local PokedexSources = {}
 
 PokedexSources.provenance = {
-  decompRevision = "ctrl-cheeb-del/pokeheartgold@98ebf77a3f4cebd6de953824550d962c971301b7",
+  decompRevision = "ctrl-cheeb-del/pokeheartgold@6d2947303134256e90144b6aaedc5c3cf6e92a568",
   symbols = {
     "filesystem.mk",
     "include/constants/filesystem_files_def.h",
@@ -40,18 +40,87 @@ PokedexSources.bgPriority = {
   information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
 }
 
--- Per-screen native priority overrides. SetupScreen installs one
--- Set*BgPriorities assignment per screen alongside its graphics loader;
--- the area screen (case 1) uses SetAreaBgPriorities, which keeps the SUB
--- BG0 area map behind the SUB BG1 entry windows (BG0 pri 3 back vs BG1
--- pri 0 front). The SUB BG0 scroll plane is 512 wide and area setup pans
--- it to the settled region offsets (-72 Johto, +104 Kanto), so the bound
--- layer-0 composition stays the full pannable map shifted by the published
--- pan offset, never an X=0-state foreground over the windows.
+-- Per-screen native priority vectors: one dense BG0..BG3 assignment per
+-- pane for every native page (MAIN feeds the controls pane, SUB the
+-- information pane). SetupScreen installs one Set*BgPriorities assignment
+-- per screen alongside its graphics loader: the list/cover/results family
+-- keeps 2/0/1/3 + 0/1/2/3, the search editors install 1/0/2/3 + 0/1/2/3,
+-- area installs 1/0/2/3 + 3/0/1/2 (the SUB BG0 area map stays behind the
+-- SUB BG1 entry windows), size and return install 1/0/2/3 + 0/1/3/2,
+-- forms and compare install 1/0/2/3 + 0/1/2/3, and the registration
+-- popup runs the battle Main engine at 0/1/2/3. The SUB BG0 scroll plane
+-- is 512 wide and area setup pans it to the settled region offsets
+-- (-72 Johto, +104 Kanto), so the bound layer-0 composition stays the
+-- full pannable map shifted by the published pan offset, never an
+-- X=0-state foreground over the windows.
 PokedexSources.pagePriorities = {
+  cover = {
+    controls = { [0] = 2, [1] = 0, [2] = 1, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  grid = {
+    controls = { [0] = 2, [1] = 0, [2] = 1, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  results = {
+    controls = { [0] = 2, [1] = 0, [2] = 1, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["search.criteria"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["search.order"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["search.name"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["search.type"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["search.height"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["search.weight"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["search.area"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["search.shape"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
   ["entry.area"] = {
     controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
     information = { [0] = 3, [1] = 0, [2] = 1, [3] = 2 },
+  },
+  ["entry.size"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 3, [3] = 2 },
+  },
+  ["entry.forms"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["entry.compare"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+  },
+  ["entry.return"] = {
+    controls = { [0] = 1, [1] = 0, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 3, [3] = 2 },
+  },
+  registration = {
+    controls = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
+    information = { [0] = 0, [1] = 1, [2] = 2, [3] = 3 },
   },
 }
 
@@ -1027,6 +1096,19 @@ end
 -- entry view or the first native page that draws them. The popup is a
 -- Main-engine card staged on the information surface, so its windows
 -- project to the information pane at their native Main layer.
+-- Every window carries its source-resolved ink triple: the NCLR palette
+-- member behind its native engine (member 2 for MAIN-engine prints,
+-- member 18 for SUB-engine prints and the popup Main card, which loads
+-- member 18 into its Main palette), the template palette bank, and the
+-- MAKE_TEXT_COLOR foreground/shadow indices from the print call that
+-- paints it (pokedex_windows.c, pokedex_entry_popup.c). The member follows
+-- the native engine, not the projected pane: the size weight caption
+-- prints on MAIN but projects to the information pane. The compiler
+-- resolves each triple through its decoded NCLR palette; no window
+-- carries a default color. The compact inspector entries are
+-- host-adapted (no native window paints them) and carry an explicit
+-- deliberate white/black triple instead.
+
 ---@param pane string
 ---@param layer integer
 ---@param x integer
@@ -1036,8 +1118,55 @@ end
 ---@param font integer
 ---@param align string
 ---@param paletteSlot integer
----@return { pane: string, layer: integer, x: integer, y: integer, width: integer, height: integer, font: integer, foreground: { r: integer, g: integer, b: integer, a: integer }, shadow: { r: integer, g: integer, b: integer, a: integer }, background: { r: integer, g: integer, b: integer, a: integer }, align: string, paletteGroup: string }
-local function dexWindow(pane, layer, x, y, width, height, font, align, paletteSlot)
+---@param printX integer? native local print origin x (defaults to the alignment anchor)
+---@param printY integer? native local print origin y (defaults to 0)
+---@param lineAdvance integer? native line step (defaults to 16)
+---@param textRole string? prepared message role behind the window (defaults to the window key)
+---@param ink { member: integer, bank: integer, fg: integer, sh: integer } source-resolved NCLR bank and print color indices (required, no default)
+---@return { pane: string, layer: integer, x: integer, y: integer, width: integer, height: integer, font: integer, ink: { member: integer, bank: integer, fg: integer, sh: integer }, background: { r: integer, g: integer, b: integer, a: integer }, align: string, paletteGroup: string, printX: integer, printY: integer, lineAdvance: integer, textRole: string? }
+local function dexWindow(
+  pane,
+  layer,
+  x,
+  y,
+  width,
+  height,
+  font,
+  align,
+  paletteSlot,
+  printX,
+  printY,
+  lineAdvance,
+  textRole,
+  ink
+)
+  assert(type(ink) == "table", "pokedex windows carry their source ink triple")
+  assert(
+    type(ink.member) == "number" and ink.member % 1 == 0 and (ink.member == 2 or ink.member == 18),
+    "pokedex ink names its engine NCLR member"
+  )
+  assert(
+    type(ink.bank) == "number" and ink.bank % 1 == 0 and ink.bank >= 0 and ink.bank <= 15,
+    "pokedex ink names its template palette bank"
+  )
+  assert(
+    type(ink.fg) == "number" and ink.fg % 1 == 0 and ink.fg >= 0 and ink.fg <= 15,
+    "pokedex ink names its print foreground index"
+  )
+  assert(
+    type(ink.sh) == "number" and ink.sh % 1 == 0 and ink.sh >= 0 and ink.sh <= 15,
+    "pokedex ink names its print shadow index"
+  )
+  local originX = printX
+  if originX == nil then
+    if align == "right" then
+      originX = width
+    elseif align == "center" then
+      originX = math.floor(width / 2)
+    else
+      originX = 0
+    end
+  end
   return {
     pane = pane,
     layer = layer,
@@ -1046,57 +1175,202 @@ local function dexWindow(pane, layer, x, y, width, height, font, align, paletteS
     width = width,
     height = height,
     font = font,
-    foreground = { r = 255, g = 255, b = 255, a = 255 },
-    shadow = { r = 0, g = 0, b = 0, a = 255 },
+    ink = { member = ink.member, bank = ink.bank, fg = ink.fg, sh = ink.sh },
     background = { r = 0, g = 0, b = 0, a = 0 },
     align = align,
     paletteGroup = "window-" .. paletteSlot,
+    printX = originX,
+    printY = printY or 0,
+    lineAdvance = lineAdvance or 16,
+    textRole = textRole,
   }
 end
 
 PokedexSources.windows = {
-  ["grid.seen-caption"] = dexWindow("controls", 0, 16, 72, 96, 16, 0, "right", 0),
-  ["grid.caught-caption"] = dexWindow("controls", 0, 144, 72, 96, 16, 0, "right", 0),
-  ["grid.seen-count"] = dexWindow("controls", 0, 88, 92, 24, 16, 0, "left", 9),
-  ["grid.caught-count"] = dexWindow("controls", 0, 216, 92, 24, 16, 0, "left", 9),
-  ["grid.selected-number"] = dexWindow("information", 1, 121, 24, 31, 16, 4, "left", 0),
-  ["grid.selected-name"] = dexWindow("information", 1, 152, 24, 72, 16, 4, "left", 0),
-  ["grid.info-label"] = dexWindow("information", 1, 16, 0, 64, 16, 4, "left", 2),
-  ["grid.category"] = dexWindow("information", 1, 104, 40, 140, 16, 4, "right", 0),
-  ["grid.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "center", 1),
-  ["grid.height-mark"] = dexWindow("information", 1, 144, 88, 40, 16, 0, "center", 2),
-  ["grid.height"] = dexWindow("information", 1, 188, 88, 64, 16, 0, "left", 2),
-  ["grid.weight-mark"] = dexWindow("information", 1, 144, 104, 40, 16, 0, "center", 2),
-  ["grid.weight"] = dexWindow("information", 1, 188, 104, 64, 16, 0, "left", 2),
-  ["grid.name-bar"] = dexWindow("controls", 1, 80, 128, 88, 16, 0, "center", 0),
-  ["entry.species-name"] = dexWindow("information", 1, 0, 128, 72, 16, 0, "center", 1),
-  ["entry.dex-number"] = dexWindow("information", 1, 121, 24, 31, 16, 4, "left", 0),
-  ["entry.category"] = dexWindow("information", 1, 104, 40, 140, 16, 4, "right", 0),
-  ["entry.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "center", 1),
-  ["entry.height"] = dexWindow("information", 1, 56, 168, 64, 16, 0, "center", 2),
+  ["grid.seen-caption"] = dexWindow("controls", 0, 16, 72, 96, 16, 0, "right", 0, nil, nil, nil, nil, { member = 2, bank = 9, fg = 15, sh = 8 }),
+  ["grid.caught-caption"] = dexWindow("controls", 0, 144, 72, 96, 16, 0, "right", 0, nil, nil, nil, nil, { member = 2, bank = 9, fg = 15, sh = 8 }),
+  ["grid.seen-count"] = dexWindow("controls", 0, 88, 92, 24, 16, 0, "left", 9, nil, nil, nil, nil, { member = 2, bank = 9, fg = 15, sh = 8 }),
+  ["grid.caught-count"] = dexWindow("controls", 0, 216, 92, 24, 16, 0, "left", 9, nil, nil, nil, nil, { member = 2, bank = 9, fg = 15, sh = 8 }),
+  ["grid.selected-number"] = dexWindow("information", 1, 121, 24, 31, 16, 4, "left", 0, nil, nil, nil, nil, { member = 18, bank = 0, fg = 2, sh = 1 }),
+  ["grid.selected-name"] = dexWindow("information", 1, 152, 24, 72, 16, 4, "left", 0, nil, nil, nil, nil, { member = 18, bank = 0, fg = 2, sh = 1 }),
+  ["grid.info-label"] = dexWindow("information", 1, 16, 0, 64, 16, 4, "left", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 }),
+  ["grid.category"] = dexWindow("information", 1, 104, 40, 140, 16, 4, "right", 0, nil, nil, nil, nil, { member = 18, bank = 0, fg = 2, sh = 1 }),
+  ["grid.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["grid.height-mark"] = dexWindow("information", 1, 144, 88, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["grid.height"] = dexWindow("information", 1, 188, 88, 64, 16, 0, "left", 2, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["grid.weight-mark"] = dexWindow("information", 1, 144, 104, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["grid.weight"] = dexWindow("information", 1, 188, 104, 64, 16, 0, "left", 2, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["grid.name-bar"] = dexWindow("controls", 1, 80, 128, 88, 16, 0, "center", 0, nil, nil, nil, nil, { member = 2, bank = 0, fg = 2, sh = 1 }),
+  ["entry.species-name"] = dexWindow("information", 1, 0, 128, 72, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["entry.dex-number"] = dexWindow("information", 1, 121, 24, 31, 16, 4, "left", 0, nil, nil, nil, nil, { member = 18, bank = 0, fg = 2, sh = 1 }),
+  ["entry.category"] = dexWindow("information", 1, 104, 40, 140, 16, 4, "right", 0, nil, nil, nil, nil, { member = 18, bank = 0, fg = 2, sh = 1 }),
+  ["entry.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["entry.height"] = dexWindow("information", 1, 56, 168, 64, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 }),
   -- Compact-inspector-only weight slot (host-adapted; no native list
-  -- window uses this rect, and no native page list paints it).
-  ["entry.weight"] = dexWindow("controls", 1, 56, 184, 64, 16, 0, "center", 1),
-  ["search.criteria"] = dexWindow("controls", 0, 128, 8, 88, 16, 4, "center", 2),
-  ["search.feedback"] = dexWindow("information", 1, 16, 158, 224, 16, 0, "center", 2),
-  ["search.feedback-detail"] = dexWindow("information", 1, 16, 174, 224, 16, 0, "center", 2),
-  ["search.results"] = dexWindow("information", 1, 16, 0, 64, 16, 4, "left", 2),
-  ["area.time"] = dexWindow("information", 1, 8, 24, 56, 16, 0, "center", 1),
-  ["area.location"] = dexWindow("controls", 2, 80, 40, 144, 16, 4, "center", 1),
-  ["size.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2),
-  ["forms.selected"] = dexWindow("information", 1, 104, 40, 120, 16, 0, "center", 1),
-  ["forms.compare-left"] = dexWindow("controls", 1, 0, 96, 128, 16, 0, "center", 1),
-  ["forms.compare-right"] = dexWindow("controls", 1, 128, 96, 128, 16, 0, "center", 1),
-  ["return.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2),
-  ["registration.header"] = dexWindow("information", 1, 16, 0, 224, 16, 4, "center", 2),
-  ["registration.dex-number"] = dexWindow("information", 1, 121, 24, 31, 16, 4, "left", 0),
-  ["registration.species-name"] = dexWindow("information", 1, 152, 24, 72, 16, 4, "left", 0),
-  ["registration.category"] = dexWindow("information", 1, 104, 40, 140, 16, 4, "right", 0),
-  ["registration.flavor"] = dexWindow("information", 1, 16, 136, 224, 48, 0, "center", 1),
-  ["registration.mark-height"] = dexWindow("information", 1, 144, 88, 40, 16, 0, "center", 1),
-  ["registration.height"] = dexWindow("information", 1, 188, 88, 64, 16, 0, "left", 1),
-  ["registration.mark-weight"] = dexWindow("information", 1, 144, 104, 40, 16, 0, "center", 1),
-  ["registration.weight"] = dexWindow("information", 1, 188, 104, 64, 16, 0, "left", 1),
+  -- window uses this rect, and no native page list paints it). The ink
+  -- is deliberate host-adapted white over black, not a native print.
+  ["entry.weight"] = dexWindow("controls", 1, 56, 184, 64, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 2 }),
+  ["search.criteria"] = dexWindow("controls", 0, 128, 8, 88, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 }),
+  ["search.feedback"] = dexWindow("information", 1, 16, 158, 224, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 }),
+  ["search.feedback-detail"] = dexWindow("information", 1, 16, 174, 224, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 }),
+  ["search.results"] = dexWindow("information", 1, 16, 0, 64, 16, 4, "left", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 }),
+  ["area.time"] = dexWindow("information", 1, 8, 24, 56, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["area.location"] = dexWindow("controls", 2, 80, 40, 144, 16, 4, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 }),
+  ["size.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 }),
+  ["forms.selected"] = dexWindow("information", 1, 104, 40, 120, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 }),
+  ["forms.compare-left"] = dexWindow("controls", 1, 0, 96, 128, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 5, sh = 9 }),
+  ["forms.compare-right"] = dexWindow("controls", 1, 128, 96, 128, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 5, sh = 9 }),
+  ["return.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 }),
+  -- Registration popup windows transcribed from the native popup window
+  -- templates and print calls (sEntryPopupWindowTemplates,
+  -- pokedex_entry_popup.c): the header centers on local x 112 in bank 2,
+  -- number/name/category print from bank 0, the flavor block centers on
+  -- its widest line in bank 1, marks center on local x 20 and values print
+  -- at local x 4 in bank 1.
+  ["registration.header"] = dexWindow(
+    "information",
+    1,
+    16,
+    0,
+    224,
+    16,
+    4,
+    "center",
+    2,
+    112,
+    0,
+    16,
+    "registration.header",
+    { member = 18, bank = 2, fg = 2, sh = 1 }
+  ),
+  ["registration.dex-number"] = dexWindow(
+    "information",
+    1,
+    120,
+    24,
+    32,
+    16,
+    4,
+    "left",
+    0,
+    1,
+    0,
+    16,
+    "registration.dex-number",
+    { member = 18, bank = 0, fg = 2, sh = 1 }
+  ),
+  ["registration.species-name"] = dexWindow(
+    "information",
+    1,
+    152,
+    24,
+    72,
+    16,
+    4,
+    "left",
+    0,
+    0,
+    0,
+    16,
+    "registration.species-name",
+    { member = 18, bank = 0, fg = 2, sh = 1 }
+  ),
+  ["registration.category"] = dexWindow(
+    "information",
+    1,
+    104,
+    40,
+    144,
+    16,
+    4,
+    "right",
+    0,
+    140,
+    0,
+    16,
+    "registration.category",
+    { member = 18, bank = 0, fg = 2, sh = 1 }
+  ),
+  ["registration.flavor"] = dexWindow(
+    "information",
+    1,
+    16,
+    136,
+    224,
+    48,
+    0,
+    "block-center",
+    1,
+    0,
+    0,
+    16,
+    "registration.flavor",
+    { member = 18, bank = 1, fg = 2, sh = 1 }
+  ),
+  ["registration.mark-height"] = dexWindow(
+    "information",
+    1,
+    144,
+    88,
+    40,
+    16,
+    0,
+    "center",
+    1,
+    20,
+    0,
+    16,
+    "registration.mark-height",
+    { member = 18, bank = 1, fg = 2, sh = 1 }
+  ),
+  ["registration.height"] = dexWindow(
+    "information",
+    1,
+    184,
+    88,
+    64,
+    16,
+    0,
+    "left",
+    1,
+    4,
+    0,
+    16,
+    "registration.height",
+    { member = 18, bank = 1, fg = 2, sh = 1 }
+  ),
+  ["registration.mark-weight"] = dexWindow(
+    "information",
+    1,
+    144,
+    104,
+    40,
+    16,
+    0,
+    "center",
+    1,
+    20,
+    0,
+    16,
+    "registration.mark-weight",
+    { member = 18, bank = 1, fg = 2, sh = 1 }
+  ),
+  ["registration.weight"] = dexWindow(
+    "information",
+    1,
+    184,
+    104,
+    64,
+    16,
+    0,
+    "left",
+    1,
+    4,
+    0,
+    16,
+    "registration.weight",
+    { member = 18, bank = 1, fg = 2, sh = 1 }
+  ),
 }
 
 -- Source-transcribed text-run windows for the search/entry bindings above.
@@ -1111,66 +1385,67 @@ PokedexSources.windows = {
 -- 0-100, area 0-13, size-check 0-12, forms 0-15, entry-menu 0-1.
 -- bgId 0/1/2 are MAIN BG0/BG1/BG2 (controls pane layers 0/1/2) and bgId 5
 -- is SUB BG1 (information pane layer 1). Native print colors name window
--- palette slots (`MAKE_TEXT_COLOR` fg/sh/bg); the runtime keeps the
--- established white/black/transparent triple, recorded per family here.
--- Menu labels/values and the return-slot summary share tile geometry on
+-- palette slots (`MAKE_TEXT_COLOR` fg/sh/bg); every record below carries
+-- its source-resolved (bank, fg, sh) triple, and the compiler resolves
+-- each triple through the decoded NCLR palette. Menu labels/values and
+-- the return-slot summary share tile geometry on
 -- different panes (MAIN vs SUB), so captions/values exist twice: once
 -- for the menu rects, once for the summary rects.
 do
   -- Menu labels (search templates 20-26, MAIN BG0; prints font 0,
   -- color (2,1,0), centered on the print x).
-  PokedexSources.windows["search.caption-order"] = dexWindow("controls", 0, 32, 8, 72, 16, 0, "center", 2)
-  PokedexSources.windows["search.caption-letter"] = dexWindow("controls", 0, 8, 32, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.caption-type"] = dexWindow("controls", 0, 8, 56, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.caption-height"] = dexWindow("controls", 0, 8, 80, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.caption-weight"] = dexWindow("controls", 0, 8, 104, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.caption-area"] = dexWindow("controls", 0, 8, 128, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.caption-shape"] = dexWindow("controls", 0, 200, 32, 48, 16, 0, "center", 2)
+  PokedexSources.windows["search.caption-order"] = dexWindow("controls", 0, 32, 8, 72, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.caption-letter"] = dexWindow("controls", 0, 8, 32, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.caption-type"] = dexWindow("controls", 0, 8, 56, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.caption-height"] = dexWindow("controls", 0, 8, 80, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.caption-weight"] = dexWindow("controls", 0, 8, 104, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.caption-area"] = dexWindow("controls", 0, 8, 128, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.caption-shape"] = dexWindow("controls", 0, 200, 32, 48, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   -- Menu values (templates 27-35; order/letter/height/weight/area print
   -- centered in font 4, types print at x=29 in font 4).
-  PokedexSources.windows["search.value-order"] = dexWindow("controls", 0, 128, 8, 88, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-letter"] = dexWindow("controls", 0, 56, 32, 72, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-type-1"] = dexWindow("controls", 0, 56, 56, 58, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-type-2"] = dexWindow("controls", 0, 120, 56, 58, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-height-min"] = dexWindow("controls", 0, 56, 80, 48, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-height-max"] = dexWindow("controls", 0, 120, 80, 48, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-weight-min"] = dexWindow("controls", 0, 56, 104, 72, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-weight-max"] = dexWindow("controls", 0, 144, 104, 72, 16, 4, "center", 2)
-  PokedexSources.windows["search.value-area"] = dexWindow("controls", 0, 56, 128, 56, 16, 4, "center", 2)
+  PokedexSources.windows["search.value-order"] = dexWindow("controls", 0, 128, 8, 88, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.value-letter"] = dexWindow("controls", 0, 56, 32, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.value-type-1"] = dexWindow("controls", 0, 56, 56, 58, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.value-type-2"] = dexWindow("controls", 0, 120, 56, 58, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.value-height-min"] = dexWindow("controls", 0, 56, 80, 48, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.value-height-max"] = dexWindow("controls", 0, 120, 80, 48, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.value-weight-min"] = dexWindow("controls", 0, 56, 104, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.value-weight-max"] = dexWindow("controls", 0, 144, 104, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.value-area"] = dexWindow("controls", 0, 56, 128, 56, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   -- Menu and editor commit buttons (templates 17-19, MAIN BG1, palette
   -- slot 4; labels centered in font 4 over the 8-tile button frame).
-  PokedexSources.windows["search.button-run"] = dexWindow("controls", 1, 8, 8, 64, 16, 4, "center", 4)
-  PokedexSources.windows["search.button-reset"] = dexWindow("controls", 1, 96, 8, 64, 16, 4, "center", 4)
-  PokedexSources.windows["search.button-back"] = dexWindow("controls", 1, 184, 8, 64, 16, 4, "center", 4)
-  PokedexSources.windows["search.button-ok"] = dexWindow("controls", 1, 8, 8, 64, 16, 4, "center", 4)
-  PokedexSources.windows["search.button-cancel"] = dexWindow("controls", 1, 184, 8, 64, 16, 4, "center", 4)
+  PokedexSources.windows["search.button-run"] = dexWindow("controls", 1, 8, 8, 64, 16, 4, "center", 4, nil, nil, nil, nil, { member = 2, bank = 4, fg = 2, sh = 1 })
+  PokedexSources.windows["search.button-reset"] = dexWindow("controls", 1, 96, 8, 64, 16, 4, "center", 4, nil, nil, nil, nil, { member = 2, bank = 4, fg = 2, sh = 1 })
+  PokedexSources.windows["search.button-back"] = dexWindow("controls", 1, 184, 8, 64, 16, 4, "center", 4, nil, nil, nil, nil, { member = 2, bank = 4, fg = 2, sh = 1 })
+  PokedexSources.windows["search.button-ok"] = dexWindow("controls", 1, 8, 8, 64, 16, 4, "center", 4, nil, nil, nil, nil, { member = 2, bank = 4, fg = 2, sh = 1 })
+  PokedexSources.windows["search.button-cancel"] = dexWindow("controls", 1, 184, 8, 64, 16, 4, "center", 4, nil, nil, nil, nil, { member = 2, bank = 4, fg = 2, sh = 1 })
   -- Return-slot summary captions (templates 1-7, SUB BG1; same tiles as
   -- the menu labels, same font 0 centered prints).
-  PokedexSources.windows["search.summary-caption-order"] = dexWindow("information", 1, 32, 8, 72, 16, 0, "center", 2)
-  PokedexSources.windows["search.summary-caption-letter"] = dexWindow("information", 1, 8, 32, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.summary-caption-type"] = dexWindow("information", 1, 8, 56, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.summary-caption-height"] = dexWindow("information", 1, 8, 80, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.summary-caption-weight"] = dexWindow("information", 1, 8, 104, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.summary-caption-area"] = dexWindow("information", 1, 8, 128, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.summary-caption-shape"] = dexWindow("information", 1, 200, 32, 48, 16, 0, "center", 2)
+  PokedexSources.windows["search.summary-caption-order"] = dexWindow("information", 1, 32, 8, 72, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-caption-letter"] = dexWindow("information", 1, 8, 32, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-caption-type"] = dexWindow("information", 1, 8, 56, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-caption-height"] = dexWindow("information", 1, 8, 80, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-caption-weight"] = dexWindow("information", 1, 8, 104, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-caption-area"] = dexWindow("information", 1, 8, 128, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-caption-shape"] = dexWindow("information", 1, 200, 32, 48, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
   -- Return-slot summary values (templates 8-16; same content as the
   -- menu values, SUB BG1 rects).
-  PokedexSources.windows["search.summary-value-order"] = dexWindow("information", 1, 128, 8, 88, 16, 4, "center", 2)
-  PokedexSources.windows["search.summary-value-letter"] = dexWindow("information", 1, 56, 32, 72, 16, 4, "center", 2)
-  PokedexSources.windows["search.summary-value-type-1"] = dexWindow("information", 1, 56, 56, 58, 16, 4, "center", 2)
-  PokedexSources.windows["search.summary-value-type-2"] = dexWindow("information", 1, 120, 56, 58, 16, 4, "center", 2)
+  PokedexSources.windows["search.summary-value-order"] = dexWindow("information", 1, 128, 8, 88, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-value-letter"] = dexWindow("information", 1, 56, 32, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-value-type-1"] = dexWindow("information", 1, 56, 56, 58, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-value-type-2"] = dexWindow("information", 1, 120, 56, 58, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
   PokedexSources.windows["search.summary-value-height-min"] =
-    dexWindow("information", 1, 56, 80, 48, 16, 4, "center", 2)
+    dexWindow("information", 1, 56, 80, 48, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
   PokedexSources.windows["search.summary-value-height-max"] =
-    dexWindow("information", 1, 120, 80, 48, 16, 4, "center", 2)
+    dexWindow("information", 1, 120, 80, 48, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
   PokedexSources.windows["search.summary-value-weight-min"] =
-    dexWindow("information", 1, 56, 104, 72, 16, 4, "center", 2)
+    dexWindow("information", 1, 56, 104, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
   PokedexSources.windows["search.summary-value-weight-max"] =
-    dexWindow("information", 1, 144, 104, 72, 16, 4, "center", 2)
-  PokedexSources.windows["search.summary-value-area"] = dexWindow("information", 1, 56, 128, 56, 16, 4, "center", 2)
+    dexWindow("information", 1, 144, 104, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.summary-value-area"] = dexWindow("information", 1, 56, 128, 56, 16, 4, "center", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
   -- Order editor: title 36, current value 37, six options 38-43.
-  PokedexSources.windows["search.title-order"] = dexWindow("controls", 0, 24, 8, 88, 16, 0, "center", 2)
-  PokedexSources.windows["search.current-order"] = dexWindow("controls", 0, 144, 8, 88, 16, 4, "center", 2)
+  PokedexSources.windows["search.title-order"] = dexWindow("controls", 0, 24, 8, 88, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-order"] = dexWindow("controls", 0, 144, 8, 88, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   local orderNames = { "numerical", "alphabetical", "heaviest", "lightest", "tallest", "shortest" }
   local orderRects = {
     { 24, 48 },
@@ -1183,7 +1458,7 @@ do
   for index, name in ipairs(orderNames) do
     local rect = orderRects[index]
     PokedexSources.windows["search.option-order-" .. name] =
-      dexWindow("controls", 0, rect[1], rect[2], 88, 16, 4, "center", 2)
+      dexWindow("controls", 0, rect[1], rect[2], 88, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   end
   -- Letter editor: title 65, current value 66, and the 27 marks sharing
   -- window 67 (origin (8,40)). Each mark prints at column*32+24,
@@ -1191,113 +1466,133 @@ do
   -- sLetterGridCells (identity except the empty mark at cell 27); the
   -- logical cell (24+column*32, 40+row*32, 16, 16) matches both the
   -- print center and the 2x2-tile highlight rect.
-  PokedexSources.windows["search.title-letter"] = dexWindow("controls", 0, 56, 8, 48, 16, 0, "center", 2)
-  PokedexSources.windows["search.current-letter"] = dexWindow("controls", 0, 120, 8, 72, 16, 4, "center", 2)
+  PokedexSources.windows["search.title-letter"] = dexWindow("controls", 0, 56, 8, 48, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-letter"] = dexWindow("controls", 0, 120, 8, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   for position = 0, 26 do
     local label = position < 26 and string.char(string.byte("A") + position) or "unrestricted"
     local cell = position < 26 and position or 27
     local column, row = cell % 7, math.floor(cell / 7)
     PokedexSources.windows["search.option-letter-" .. label] =
-      dexWindow("controls", 0, 24 + column * 32, 40 + row * 32, 16, 16, 4, "center", 2)
+      dexWindow("controls", 0, 24 + column * 32, 40 + row * 32, 16, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   end
   -- Type editor: title 44, current values 45-46, and the 18 marks in a
   -- 4-column grid (windows 47-64 in `typeOrder` sequence with the empty
   -- mark last, per `sSearchTypeMsgIds`).
-  PokedexSources.windows["search.title-type"] = dexWindow("controls", 0, 24, 8, 56, 16, 0, "center", 2)
-  PokedexSources.windows["search.current-type-1"] = dexWindow("controls", 0, 104, 8, 58, 16, 4, "center", 2)
-  PokedexSources.windows["search.current-type-2"] = dexWindow("controls", 0, 168, 8, 70, 16, 4, "center", 2)
+  PokedexSources.windows["search.title-type"] = dexWindow("controls", 0, 24, 8, 56, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-type-1"] = dexWindow("controls", 0, 104, 8, 58, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-type-2"] = dexWindow("controls", 0, 168, 8, 70, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   for index, name in ipairs(PokedexSources.typeOrder) do
     local column, row = (index - 1) % 4, math.floor((index - 1) / 4)
     PokedexSources.windows["search.option-type-" .. name] =
-      dexWindow("controls", 0, column * 64, 40 + row * 24, 64, 16, 4, "center", 2)
+      dexWindow("controls", 0, column * 64, 40 + row * 24, 64, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   end
-  PokedexSources.windows["search.option-type-unrestricted"] = dexWindow("controls", 0, 64, 136, 64, 16, 4, "center", 2)
+  PokedexSources.windows["search.option-type-unrestricted"] = dexWindow("controls", 0, 64, 136, 64, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   -- Height/weight editors: titles 68/71 plus the staged min/max bounds
   -- (69-70, 72-73; the native integer slider values).
-  PokedexSources.windows["search.title-height"] = dexWindow("controls", 0, 24, 8, 40, 16, 0, "center", 2)
-  PokedexSources.windows["search.current-height-min"] = dexWindow("controls", 0, 80, 8, 56, 16, 4, "center", 2)
-  PokedexSources.windows["search.current-height-max"] = dexWindow("controls", 0, 152, 8, 56, 16, 4, "center", 2)
-  PokedexSources.windows["search.title-weight"] = dexWindow("controls", 0, 8, 8, 48, 16, 0, "center", 2)
-  PokedexSources.windows["search.current-weight-min"] = dexWindow("controls", 0, 64, 8, 72, 16, 4, "center", 2)
-  PokedexSources.windows["search.current-weight-max"] = dexWindow("controls", 0, 152, 8, 72, 16, 4, "center", 2)
+  PokedexSources.windows["search.title-height"] = dexWindow("controls", 0, 24, 8, 40, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-height-min"] = dexWindow("controls", 0, 80, 8, 56, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-height-max"] = dexWindow("controls", 0, 152, 8, 56, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.title-weight"] = dexWindow("controls", 0, 8, 8, 48, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-weight-min"] = dexWindow("controls", 0, 64, 8, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-weight-max"] = dexWindow("controls", 0, 152, 8, 72, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   -- Area editor: title 74, staged value 75, four scopes 76-79.
-  PokedexSources.windows["search.title-area"] = dexWindow("controls", 0, 56, 8, 48, 16, 0, "center", 2)
-  PokedexSources.windows["search.current-area"] = dexWindow("controls", 0, 128, 8, 56, 16, 4, "center", 2)
+  PokedexSources.windows["search.title-area"] = dexWindow("controls", 0, 56, 8, 48, 16, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["search.current-area"] = dexWindow("controls", 0, 128, 8, 56, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   local areaEditorNames = { "johto", "kanto", "unknown", "unrestricted" }
   local areaEditorRects = { { 48, 64 }, { 152, 64 }, { 48, 120 }, { 152, 120 } }
   for index, name in ipairs(areaEditorNames) do
     local rect = areaEditorRects[index]
     PokedexSources.windows["search.option-area-" .. name] =
-      dexWindow("controls", 0, rect[1], rect[2], 56, 16, 4, "center", 2)
+      dexWindow("controls", 0, rect[1], rect[2], 56, 16, 4, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   end
   -- Shape editor: the title window 80 only; the 14 silhouettes are OBJ
   -- art (see `spriteAnchors`) and the source prints no option labels.
-  PokedexSources.windows["search.title-shape"] = dexWindow("controls", 0, 64, 8, 48, 24, 0, "center", 2)
+  PokedexSources.windows["search.title-shape"] = dexWindow("controls", 0, 64, 8, 48, 24, 0, "center", 2, nil, nil, nil, nil, { member = 2, bank = 2, fg = 2, sh = 1 })
   -- Area screen: title 0 (msg 142), daypart 1, unknown banner 3
   -- (msg 128, shown when the list holds only the region entry), caption
   -- 4 (msg 132), region tabs (5/7 national, 6 solo), rows 8-13.
   -- `area.time` and `area.location` keep their oracle records above;
   -- `area.location` is the first visible row window.
-  PokedexSources.windows["area.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2)
-  PokedexSources.windows["area.unknown"] = dexWindow("information", 1, 104, 96, 112, 16, 0, "center", 2)
-  PokedexSources.windows["area.caption"] = dexWindow("controls", 1, 8, 40, 48, 16, 0, "center", 1)
-  PokedexSources.windows["area.tab-johto"] = dexWindow("controls", 1, 72, 8, 56, 16, 4, "center", 1)
-  PokedexSources.windows["area.tab-kanto"] = dexWindow("controls", 1, 192, 8, 56, 16, 4, "center", 1)
-  PokedexSources.windows["area.tab-johto-solo"] = dexWindow("controls", 1, 144, 8, 56, 16, 0, "center", 1)
+  PokedexSources.windows["area.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["area.unknown"] = dexWindow("information", 1, 104, 96, 112, 16, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 })
+  PokedexSources.windows["area.caption"] = dexWindow("controls", 1, 8, 40, 48, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 5, sh = 9 })
+  PokedexSources.windows["area.tab-johto"] = dexWindow("controls", 1, 72, 8, 56, 16, 4, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 })
+  PokedexSources.windows["area.tab-kanto"] = dexWindow("controls", 1, 192, 8, 56, 16, 4, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 })
+  PokedexSources.windows["area.tab-johto-solo"] = dexWindow("controls", 1, 144, 8, 56, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 5, sh = 9 })
   for row = 2, 6 do
     PokedexSources.windows["area.row-" .. row] =
-      dexWindow("controls", 2, 80, 40 + (row - 1) * 24, 144, 16, 4, "center", 1)
+      dexWindow("controls", 2, 80, 40 + (row - 1) * 24, 144, 16, 4, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 })
   end
   -- Size screen: title 0 (143), species name 1, player name 2, height
   -- caption 3 (136), height marks 4/6 (10), gender height 7 (138/139),
   -- weight caption 8 (137), weight marks 9/11 (11), gender weight 12
   -- (140/141). `entry.height` is the species height window 5;
   -- `entry.weight` keeps its oracle record.
-  PokedexSources.windows["size.species-name"] = dexWindow("information", 1, 32, 24, 64, 16, 0, "center", 1)
-  PokedexSources.windows["size.player-name"] = dexWindow("information", 1, 160, 24, 64, 16, 0, "center", 1)
-  PokedexSources.windows["size.caption-height"] = dexWindow("information", 1, 80, 48, 96, 16, 0, "center", 1)
-  PokedexSources.windows["size.mark-height-left"] = dexWindow("information", 1, 16, 168, 32, 16, 0, "center", 1)
-  PokedexSources.windows["size.mark-height-right"] = dexWindow("information", 1, 136, 168, 32, 16, 0, "center", 1)
-  PokedexSources.windows["size.gender-height"] = dexWindow("information", 1, 176, 168, 64, 16, 0, "center", 1)
-  PokedexSources.windows["size.caption-weight"] = dexWindow("information", 1, 80, 8, 96, 16, 0, "center", 1)
-  PokedexSources.windows["size.mark-weight-left"] = dexWindow("controls", 1, 16, 136, 32, 16, 0, "center", 1)
-  PokedexSources.windows["size.mark-weight-right"] = dexWindow("controls", 1, 136, 136, 32, 16, 0, "center", 1)
+  PokedexSources.windows["size.species-name"] = dexWindow("information", 1, 32, 24, 64, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 })
+  PokedexSources.windows["size.player-name"] = dexWindow("information", 1, 160, 24, 64, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 })
+  PokedexSources.windows["size.caption-height"] = dexWindow("information", 1, 80, 48, 96, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 })
+  PokedexSources.windows["size.mark-height-left"] = dexWindow("information", 1, 16, 168, 32, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["size.mark-height-right"] = dexWindow("information", 1, 136, 168, 32, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["size.gender-height"] = dexWindow("information", 1, 176, 168, 64, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  -- The weight caption prints on the MAIN engine (template 8, bank 1)
+  -- even though it projects to the information pane.
+  PokedexSources.windows["size.caption-weight"] = dexWindow("information", 1, 80, 8, 96, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 5, sh = 9 })
+  PokedexSources.windows["size.mark-weight-left"] = dexWindow("controls", 1, 16, 136, 32, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 5 })
+  PokedexSources.windows["size.mark-weight-right"] = dexWindow("controls", 1, 136, 136, 32, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 5 })
   -- Species weight on the size page is its own lower-pane window 10;
   -- the entry-page `entry.weight` rect would overflow the lower screen.
-  PokedexSources.windows["size.species-weight"] = dexWindow("controls", 1, 56, 136, 64, 16, 0, "center", 1)
-  PokedexSources.windows["size.gender-weight"] = dexWindow("controls", 1, 176, 136, 64, 16, 0, "center", 1)
+  PokedexSources.windows["size.species-weight"] = dexWindow("controls", 1, 56, 136, 64, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 5 })
+  PokedexSources.windows["size.gender-weight"] = dexWindow("controls", 1, 176, 136, 64, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 5 })
   -- Forms screen: title 0 (170), species header 1 (167 + species name),
   -- selected form 2, caption 4 (168, only above one form), six list
   -- rows 10-15. `forms.selected` keeps its oracle record above.
-  PokedexSources.windows["forms.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2)
-  PokedexSources.windows["forms.header"] = dexWindow("information", 1, 32, 40, 72, 16, 0, "right", 1)
-  PokedexSources.windows["forms.caption"] = dexWindow("controls", 1, 168, 136, 80, 16, 4, "left", 1)
+  PokedexSources.windows["forms.title"] = dexWindow("information", 1, 16, 0, 72, 16, 4, "left", 2, nil, nil, nil, nil, { member = 18, bank = 2, fg = 2, sh = 1 })
+  PokedexSources.windows["forms.header"] = dexWindow("information", 1, 32, 40, 72, 16, 0, "right", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 })
+  PokedexSources.windows["forms.caption"] = dexWindow("controls", 1, 168, 136, 80, 16, 4, "left", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 })
   for row = 1, 6 do
     PokedexSources.windows["forms.row-" .. row] =
-      dexWindow("controls", 2, 64, 8 + (row - 1) * 24, 144, 16, 4, "left", 1)
+      dexWindow("controls", 2, 64, 8 + (row - 1) * 24, 144, 16, 4, "left", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 })
   end
   -- Compare screen: title 0 (170, shared with `forms.title`), species
   -- header 3 (169 + species name), caption 5 (170), side labels 8-9
   -- (171/172). `forms.compare-left/right` keep their oracle records.
-  PokedexSources.windows["forms.compare-header"] = dexWindow("information", 1, 56, 40, 144, 16, 0, "center", 1)
-  PokedexSources.windows["forms.compare-caption"] = dexWindow("controls", 1, 104, 16, 48, 16, 0, "center", 1)
-  PokedexSources.windows["forms.compare-label-left"] = dexWindow("controls", 1, 24, 164, 96, 16, 4, "center", 1)
-  PokedexSources.windows["forms.compare-label-right"] = dexWindow("controls", 1, 144, 164, 96, 16, 4, "center", 1)
+  PokedexSources.windows["forms.compare-header"] = dexWindow("information", 1, 56, 40, 144, 16, 0, "center", 1, nil, nil, nil, nil, { member = 18, bank = 1, fg = 2, sh = 1 })
+  PokedexSources.windows["forms.compare-caption"] = dexWindow("controls", 1, 104, 16, 48, 16, 0, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 5, sh = 9 })
+  PokedexSources.windows["forms.compare-label-left"] = dexWindow("controls", 1, 24, 164, 96, 16, 4, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 })
+  PokedexSources.windows["forms.compare-label-right"] = dexWindow("controls", 1, 144, 164, 96, 16, 4, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 })
   -- Back tab: title 0 (173); the message 1 (174) replaces the invented
   -- cancel/action split with the single authored return-to-list line.
-  PokedexSources.windows["return.action"] = dexWindow("controls", 1, 80, 80, 120, 16, 4, "center", 1)
+  PokedexSources.windows["return.action"] = dexWindow("controls", 1, 80, 80, 120, 16, 4, "center", 1, nil, nil, nil, nil, { member = 2, bank = 1, fg = 15, sh = 12 })
+  -- Compact inspector detail slots (host-adapted; no native window
+  -- paints them). The ink is deliberate host-adapted white over black,
+  -- not a native print.
   local detailWindows = {
-    ["compact.detail-number"] = dexWindow("information", 1, 120, 80, 32, 14, 4, "left", 0),
-    ["compact.detail-name"] = dexWindow("information", 1, 152, 80, 72, 14, 4, "left", 0),
-    ["compact.detail-category"] = dexWindow("information", 1, 104, 96, 120, 14, 4, "right", 0),
-    ["compact.detail-flavor"] = dexWindow("information", 1, 16, 130, 224, 48, 0, "left", 1),
-    ["compact.detail-height"] = dexWindow("information", 1, 56, 112, 64, 14, 0, "center", 2),
-    ["compact.detail-weight"] = dexWindow("information", 1, 136, 112, 64, 14, 0, "center", 2),
+    ["compact.detail-number"] = dexWindow("information", 1, 120, 80, 32, 14, 4, "left", 0, nil, nil, nil, nil, { member = 18, bank = 6, fg = 14, sh = 15 }),
+    ["compact.detail-name"] = dexWindow("information", 1, 152, 80, 72, 14, 4, "left", 0, nil, nil, nil, nil, { member = 18, bank = 6, fg = 14, sh = 15 }),
+    ["compact.detail-category"] = dexWindow("information", 1, 104, 96, 120, 14, 4, "right", 0, nil, nil, nil, nil, { member = 18, bank = 6, fg = 14, sh = 15 }),
+    ["compact.detail-flavor"] = dexWindow("information", 1, 16, 130, 224, 48, 0, "left", 1, nil, nil, nil, nil, { member = 18, bank = 6, fg = 14, sh = 15 }),
+    ["compact.detail-height"] = dexWindow("information", 1, 56, 112, 64, 14, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 6, fg = 14, sh = 15 }),
+    ["compact.detail-weight"] = dexWindow("information", 1, 136, 112, 64, 14, 0, "center", 2, nil, nil, nil, nil, { member = 18, bank = 6, fg = 14, sh = 15 }),
   }
   for role, record in pairs(detailWindows) do
     PokedexSources.windows[role] = record
   end
 end
+
+-- Every window resolves its prepared message through its own key unless
+-- the record names a shared role: the registration popup keys are already
+-- page-qualified, so their role is their key.
+for key, record in pairs(PokedexSources.windows) do
+  if record.textRole == nil then
+    record.textRole = key
+  end
+end
+
+-- The footprint assembly anchors on the native NCER part origin: the
+-- 16x16 assembly stages with its top-left eight pixels left and above the
+-- published specimen center, so the prepared offset is (-8,-8) for every
+-- staged species.
+PokedexSources.footprintAnchor = { x = -8, y = -8 }
 
 -- Page-local window inventories over the contracted slots. Menu labels
 -- and values keep the menu rects; each editor carries its own title and

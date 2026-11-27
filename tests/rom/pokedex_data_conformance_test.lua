@@ -1151,6 +1151,271 @@ function T.compiled_catalog_carries_source_editor_orders_templates_and_dungeon_m
   end
 end
 
+-- Independent popup palette oracle: the compiled card windows resolve
+-- their foreground and shadow bytes from the decoded popup palette
+-- banks, never from a placeholder white/black triple, and the staged
+-- window records keep the native template rects and print geometry.
+local POPUP_WINDOW_ORACLE = {
+  ["registration.header"] = {
+    x = 16,
+    y = 0,
+    width = 224,
+    height = 16,
+    printX = 112,
+    printY = 0,
+    align = "center",
+    font = 4,
+    fg = { 255, 255, 255 },
+    shadow = { 90, 90, 90 },
+  },
+  ["registration.dex-number"] = {
+    x = 120,
+    y = 24,
+    width = 32,
+    height = 16,
+    printX = 1,
+    printY = 0,
+    align = "left",
+    font = 4,
+    fg = { 214, 222, 222 },
+    shadow = { 90, 90, 90 },
+  },
+  ["registration.species-name"] = {
+    x = 152,
+    y = 24,
+    width = 72,
+    height = 16,
+    printX = 0,
+    printY = 0,
+    align = "left",
+    font = 4,
+    fg = { 214, 222, 222 },
+    shadow = { 90, 90, 90 },
+  },
+  ["registration.category"] = {
+    x = 104,
+    y = 40,
+    width = 144,
+    height = 16,
+    printX = 140,
+    printY = 0,
+    align = "right",
+    font = 4,
+    fg = { 214, 222, 222 },
+    shadow = { 90, 90, 90 },
+  },
+  ["registration.flavor"] = {
+    x = 16,
+    y = 136,
+    width = 224,
+    height = 48,
+    align = "block-center",
+    font = 0,
+    fg = { 90, 90, 90 },
+    shadow = { 181, 181, 181 },
+  },
+  ["registration.mark-height"] = {
+    x = 144,
+    y = 88,
+    width = 40,
+    height = 16,
+    printX = 20,
+    printY = 0,
+    align = "center",
+    font = 0,
+    fg = { 90, 90, 90 },
+    shadow = { 181, 181, 181 },
+  },
+  ["registration.height"] = {
+    x = 184,
+    y = 88,
+    width = 64,
+    height = 16,
+    printX = 4,
+    printY = 0,
+    align = "left",
+    font = 0,
+    fg = { 90, 90, 90 },
+    shadow = { 181, 181, 181 },
+  },
+  ["registration.mark-weight"] = {
+    x = 144,
+    y = 104,
+    width = 40,
+    height = 16,
+    printX = 20,
+    printY = 0,
+    align = "center",
+    font = 0,
+    fg = { 90, 90, 90 },
+    shadow = { 181, 181, 181 },
+  },
+  ["registration.weight"] = {
+    x = 184,
+    y = 104,
+    width = 64,
+    height = 16,
+    printX = 4,
+    printY = 0,
+    align = "left",
+    font = 0,
+    fg = { 90, 90, 90 },
+    shadow = { 181, 181, 181 },
+  },
+}
+
+function T.presentation_popup_windows_reproduce_source_palette_and_template(romFs, versionId)
+  local PokedexCatalogCompiler, PokedexAssetCompiler, PokedexAssetSchema = requireProducer()
+  void(PokedexAssetCompiler)
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local manifest, sink = compiledChrome(romFs, versionId)
+  Assert.notNil(sink.assets, versionId .. " stages its card images")
+  Assert.notNil(
+    PokedexAssetSchema.validateManifest(manifest, catalog),
+    versionId .. " validates its compiled presentation manifest"
+  )
+  local archive = openGraphicsArchive(romFs, versionId)
+  local decoded = assert(
+    G2dDecoder.decodePalette(unpackMember(archive, 18, versionId), { label = "oracle-popup-palette" }),
+    versionId .. " decodes its popup palette member"
+  )
+  local colors = assert(decoded.colors, versionId .. " exposes its popup palette banks")
+  Assert.isTrue(#colors >= 48, versionId .. " exposes the three popup palette banks")
+  local function bankByte(bank, index)
+    local color =
+      assert(colors[bank * 16 + index + 1], versionId .. " exposes popup bank " .. bank .. " index " .. index)
+    return color.r, color.g, color.b
+  end
+  -- The oracle pins the independent source bytes through RGB555
+  -- expansion, never through manifest values.
+  do
+    local r, g, b = bankByte(0, 2)
+    Assert.equal(r, 214, versionId .. " popup bank 0 foreground red")
+    Assert.equal(g, 222, versionId .. " popup bank 0 foreground green")
+    Assert.equal(b, 222, versionId .. " popup bank 0 foreground blue")
+  end
+  do
+    local r, g, b = bankByte(0, 1)
+    Assert.equal(r, 90, versionId .. " popup bank 0 shadow red")
+    Assert.equal(g, 90, versionId .. " popup bank 0 shadow green")
+    Assert.equal(b, 90, versionId .. " popup bank 0 shadow blue")
+  end
+  local function scanBank(bank, wantR, wantG, wantB, label)
+    for index = 0, 15 do
+      local r, g, b = bankByte(bank, index)
+      if r == wantR and g == wantG and b == wantB then
+        return index
+      end
+    end
+    error(versionId .. " popup bank " .. bank .. " carries no " .. label, 0)
+  end
+  scanBank(1, 90, 90, 90, "flavor foreground")
+  scanBank(1, 181, 181, 181, "flavor shadow")
+  scanBank(2, 255, 255, 255, "header foreground")
+  scanBank(2, 90, 90, 90, "header shadow")
+  -- The compiled windows reproduce those exact bytes and template
+  -- geometry instead of the placeholder triple.
+  for key, expected in pairs(POPUP_WINDOW_ORACLE) do
+    local record = assert(manifest.windows[key], versionId .. " inventories " .. key)
+    for _, field in ipairs({ "x", "y", "width", "height", "font" }) do
+      Assert.equal(record[field], expected[field], versionId .. " " .. key .. " keeps its native " .. field)
+    end
+    Assert.equal(record.align, expected.align, versionId .. " " .. key .. " keeps its native alignment")
+    Assert.equal(record.foreground.r, expected.fg[1], versionId .. " " .. key .. " foreground red")
+    Assert.equal(record.foreground.g, expected.fg[2], versionId .. " " .. key .. " foreground green")
+    Assert.equal(record.foreground.b, expected.fg[3], versionId .. " " .. key .. " foreground blue")
+    Assert.equal(record.shadow.r, expected.shadow[1], versionId .. " " .. key .. " shadow red")
+    Assert.equal(record.shadow.g, expected.shadow[2], versionId .. " " .. key .. " shadow green")
+    Assert.equal(record.shadow.b, expected.shadow[3], versionId .. " " .. key .. " shadow blue")
+    Assert.equal(record.background.a, 0, versionId .. " " .. key .. " keeps the transparent background")
+    if expected.printX ~= nil then
+      Assert.equal(record.printX, expected.printX, versionId .. " " .. key .. " print origin x")
+      Assert.equal(record.printY, expected.printY, versionId .. " " .. key .. " print origin y")
+    end
+    Assert.isTrue(
+      type(record.lineAdvance) == "number" and record.lineAdvance > 0,
+      versionId .. " " .. key .. " carries its line advance"
+    )
+    Assert.isTrue(
+      type(record.textRole) == "string" and record.textRole ~= "",
+      versionId .. " " .. key .. " names its message role"
+    )
+  end
+end
+
+-- Explicit per-page native priorities: every page carries a dense
+-- four-priority vector per pane instead of borrowing priorities from
+-- unrelated pages that happen to stage the same layer.
+local NATIVE_PAGE_PRIORITIES = {
+  cover = { information = { 0, 1, 2, 3 }, controls = { 2, 0, 1, 3 } },
+  grid = { information = { 0, 1, 2, 3 }, controls = { 2, 0, 1, 3 } },
+  ["search.criteria"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["search.order"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["search.name"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["search.type"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["search.height"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["search.weight"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["search.area"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["search.shape"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["entry.area"] = { information = { 3, 0, 1, 2 }, controls = { 1, 0, 2, 3 } },
+  ["entry.size"] = { information = { 0, 1, 3, 2 }, controls = { 1, 0, 2, 3 } },
+  ["entry.forms"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["entry.compare"] = { information = { 0, 1, 2, 3 }, controls = { 1, 0, 2, 3 } },
+  ["entry.return"] = { information = { 0, 1, 3, 2 }, controls = { 1, 0, 2, 3 } },
+  registration = { controls = { 0, 1, 2, 3 } },
+}
+
+function T.presentation_pages_carry_explicit_native_priorities(romFs, versionId)
+  local PokedexCatalogCompiler = requireProducer()
+  void(PokedexCatalogCompiler)
+  local manifest = compiledChrome(romFs, versionId)
+  for role, panes in pairs(NATIVE_PAGE_PRIORITIES) do
+    local page = assert(manifest.pages[role], versionId .. " closes the " .. role .. " page")
+    local priorities = assert(page.layerPriorities, versionId .. " " .. role .. " carries its explicit page priorities")
+    for pane, expected in pairs(panes) do
+      local vector =
+        assert(priorities[pane], versionId .. " " .. role .. " carries its explicit " .. pane .. " priorities")
+      Assert.deepEqual(vector, expected, versionId .. " " .. role .. " " .. pane .. " keeps native order")
+    end
+  end
+  -- Pages without a pinned transition table still carry an explicit
+  -- dense vector per pane: presence and range, never a borrowed value.
+  for _, role in ipairs({ "results", "registration" }) do
+    local page = assert(manifest.pages[role], versionId .. " closes the " .. role .. " page")
+    local priorities = assert(page.layerPriorities, versionId .. " " .. role .. " carries its explicit page priorities")
+    for _, pane in ipairs({ "information", "controls" }) do
+      local vector = priorities[pane]
+      local pinned = NATIVE_PAGE_PRIORITIES[role]
+      if pinned == nil or pinned[pane] == nil then
+        Assert.isTrue(type(vector) == "table", versionId .. " " .. role .. " carries " .. pane)
+        Assert.equal(#vector, 4, versionId .. " " .. role .. " " .. pane .. " covers four layers")
+        for _, priority in ipairs(vector) do
+          Assert.isTrue(
+            priority % 1 == 0 and priority >= 0 and priority <= 3,
+            versionId .. " " .. role .. " " .. pane .. " stays in native range"
+          )
+        end
+      end
+    end
+  end
+end
+
+-- Native footprint geometry: every staged footprint carries the
+-- cell-derived anchor that centers the 16x16 assembly on the published
+-- specimen center instead of pinning its top-left there.
+function T.presentation_footprints_anchor_the_native_center(romFs, versionId)
+  local PokedexCatalogCompiler = requireProducer()
+  void(PokedexCatalogCompiler)
+  local manifest = compiledChrome(romFs, versionId)
+  local count = 0
+  for key, record in pairs(assert(manifest.footprints, versionId .. " stages its footprints")) do
+    count = count + 1
+    Assert.equal(record.anchorX, -8, versionId .. " footprint " .. key .. " anchors its native center x")
+    Assert.equal(record.anchorY, -8, versionId .. " footprint " .. key .. " anchors its native center y")
+  end
+  Assert.isTrue(count > 0, versionId .. " stages its footprint atlas")
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.tags = { "pokedex" }

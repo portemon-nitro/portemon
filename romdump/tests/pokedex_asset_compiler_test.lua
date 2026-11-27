@@ -101,6 +101,7 @@ local function fixtureManifest(catalog)
         information = { { chrome = "panel", layer = 0, x = 0, y = 0, priority = 0, paletteGroup = "panel" } },
         controls = {},
       },
+      layerPriorities = { information = { 0, 1, 2, 3 }, controls = { 2, 0, 1, 3 } },
       cells = { "panel-cell" },
       sprites = { "panel-sprite" },
       windows = { "body-window" },
@@ -115,7 +116,7 @@ local function fixtureManifest(catalog)
   local pictures = { backYOffset = {} }
   pictures.backYOffset[MonCache.portraitSelector("custom.alpha", 0, "male", false, "back")] = 4
   return {
-    schema = "g4-pokedex-assets-v3",
+    schema = "g4-pokedex-assets-v4",
     versionId = "heartgold",
     fonts = { body = 0, header = 4 },
     pages = pages,
@@ -170,6 +171,10 @@ local function fixtureManifest(catalog)
         background = rgba(0, 0, 0, 0),
         align = "left",
         paletteGroup = "panel",
+        printX = 0,
+        printY = 0,
+        lineAdvance = 16,
+        textRole = "body-window",
       },
       ["header-window"] = {
         pane = "information",
@@ -184,6 +189,10 @@ local function fixtureManifest(catalog)
         background = rgba(0, 0, 0, 0),
         align = "center",
         paletteGroup = "panel",
+        printX = 64,
+        printY = 0,
+        lineAdvance = 16,
+        textRole = "header-window",
       },
     },
     sprites = {
@@ -207,7 +216,14 @@ local function fixtureManifest(catalog)
       },
     },
     pictures = pictures,
-    footprints = { ["custom.alpha"] = { chrome = "panel", source = { x = 0, y = 0, width = 16, height = 16 } } },
+    footprints = {
+      ["custom.alpha"] = {
+        chrome = "panel",
+        source = { x = 0, y = 0, width = 16, height = 16 },
+        anchorX = -8,
+        anchorY = -8,
+      },
+    },
     areaMaps = {
       johto = {
         role = "map",
@@ -1110,9 +1126,9 @@ local NATIVE_WINDOWS = {
   ["registration.dex-number"] = {
     pane = "information",
     layer = 1,
-    x = 121,
+    x = 120,
     y = 24,
-    width = 31,
+    width = 32,
     height = 16,
     font = 4,
     align = "left",
@@ -1134,7 +1150,7 @@ local NATIVE_WINDOWS = {
     layer = 1,
     x = 104,
     y = 40,
-    width = 140,
+    width = 144,
     height = 16,
     font = 4,
     align = "right",
@@ -1148,7 +1164,7 @@ local NATIVE_WINDOWS = {
     width = 224,
     height = 48,
     font = 0,
-    align = "center",
+    align = "block-center",
     paletteGroup = "window-1",
   },
   ["registration.mark-height"] = {
@@ -1165,7 +1181,7 @@ local NATIVE_WINDOWS = {
   ["registration.height"] = {
     pane = "information",
     layer = 1,
-    x = 188,
+    x = 184,
     y = 88,
     width = 64,
     height = 16,
@@ -1187,7 +1203,7 @@ local NATIVE_WINDOWS = {
   ["registration.weight"] = {
     pane = "information",
     layer = 1,
-    x = 188,
+    x = 184,
     y = 104,
     width = 64,
     height = 16,
@@ -1349,6 +1365,179 @@ function T.producer_static_sprites_carry_authored_screen_anchors()
     end
   end
   Assert.equal(anchored, wanted, "the anchor map binds exactly the verified static subset")
+end
+
+-- Native popup print slots: every registration window carries the exact
+-- template rect, the local print origin inside that rect, the source line
+-- advance, the message role the lookup resolves, and the source ink
+-- triple behind its native print (NCLR member 18, template palette bank,
+-- MAKE_TEXT_COLOR foreground/shadow indices from the popup print calls,
+-- all (2,1,0)). The bank RGB triples resolve to the pinned NCLR bytes
+-- end to end (bank 0 fg index 2 = (214,222,222), shadow index 1 =
+-- (90,90,90); bank 1 fg (90,90,90), shadow (181,181,181); bank 2 fg
+-- (255,255,255), shadow (90,90,90)); the ROM conformance suite pins the
+-- resolved bytes against its independent NCLR decode.
+local POPUP_PRINT_ORACLE = {
+  ["registration.header"] = {
+    x = 16,
+    y = 0,
+    width = 224,
+    height = 16,
+    printX = 112,
+    printY = 0,
+    align = "center",
+    font = 4,
+    ink = { member = 18, bank = 2, fg = 2, sh = 1 },
+  },
+  ["registration.dex-number"] = {
+    x = 120,
+    y = 24,
+    width = 32,
+    height = 16,
+    printX = 1,
+    printY = 0,
+    align = "left",
+    font = 4,
+    ink = { member = 18, bank = 0, fg = 2, sh = 1 },
+  },
+  ["registration.species-name"] = {
+    x = 152,
+    y = 24,
+    width = 72,
+    height = 16,
+    printX = 0,
+    printY = 0,
+    align = "left",
+    font = 4,
+    ink = { member = 18, bank = 0, fg = 2, sh = 1 },
+  },
+  ["registration.category"] = {
+    x = 104,
+    y = 40,
+    width = 144,
+    height = 16,
+    printX = 140,
+    printY = 0,
+    align = "right",
+    font = 4,
+    ink = { member = 18, bank = 0, fg = 2, sh = 1 },
+  },
+  ["registration.flavor"] = {
+    x = 16,
+    y = 136,
+    width = 224,
+    height = 48,
+    align = "block-center",
+    font = 0,
+    ink = { member = 18, bank = 1, fg = 2, sh = 1 },
+  },
+  ["registration.mark-height"] = {
+    x = 144,
+    y = 88,
+    width = 40,
+    height = 16,
+    printX = 20,
+    printY = 0,
+    align = "center",
+    font = 0,
+    ink = { member = 18, bank = 1, fg = 2, sh = 1 },
+  },
+  ["registration.height"] = {
+    x = 184,
+    y = 88,
+    width = 64,
+    height = 16,
+    printX = 4,
+    printY = 0,
+    align = "left",
+    font = 0,
+    ink = { member = 18, bank = 1, fg = 2, sh = 1 },
+  },
+  ["registration.mark-weight"] = {
+    x = 144,
+    y = 104,
+    width = 40,
+    height = 16,
+    printX = 20,
+    printY = 0,
+    align = "center",
+    font = 0,
+    ink = { member = 18, bank = 1, fg = 2, sh = 1 },
+  },
+  ["registration.weight"] = {
+    x = 184,
+    y = 104,
+    width = 64,
+    height = 16,
+    printX = 4,
+    printY = 0,
+    align = "left",
+    font = 0,
+    ink = { member = 18, bank = 1, fg = 2, sh = 1 },
+  },
+}
+
+function T.producer_windows_carry_source_resolved_print_geometry()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  for key, expected in pairs(POPUP_PRINT_ORACLE) do
+    local record = assert(PokedexSources.windows[key], "the window inventory must declare " .. key)
+    for _, field in ipairs({ "x", "y", "width", "height", "font" }) do
+      Assert.equal(record[field], expected[field], key .. " carries its native template " .. field)
+    end
+    Assert.equal(record.align, expected.align, key .. " carries its native alignment")
+    local ink = assert(record.ink, key .. " names its source ink triple")
+    Assert.equal(ink.member, expected.ink.member, key .. " resolves through its engine palette member")
+    Assert.equal(ink.bank, expected.ink.bank, key .. " resolves through its template palette bank")
+    Assert.equal(ink.fg, expected.ink.fg, key .. " resolves its print foreground index")
+    Assert.equal(ink.sh, expected.ink.sh, key .. " resolves its print shadow index")
+    Assert.equal(record.background.a, 0, key .. " keeps the transparent cleared background")
+    if expected.printX ~= nil then
+      Assert.equal(record.printX, expected.printX, key .. " carries its native print origin x")
+      Assert.equal(record.printY, expected.printY, key .. " carries its native print origin y")
+    else
+      Assert.isTrue(
+        type(record.printX) == "number" and record.printX % 1 == 0,
+        key .. " carries an integer print origin x"
+      )
+      Assert.isTrue(
+        type(record.printY) == "number" and record.printY % 1 == 0,
+        key .. " carries an integer print origin y"
+      )
+    end
+    Assert.isTrue(
+      type(record.lineAdvance) == "number" and record.lineAdvance % 1 == 0 and record.lineAdvance > 0,
+      key .. " carries its source line advance"
+    )
+    Assert.isTrue(
+      type(record.textRole) == "string" and record.textRole ~= "",
+      key .. " names the message role its text resolves"
+    )
+  end
+end
+
+function T.manifest_windows_require_resolved_print_geometry()
+  local PokedexAssetSchema = requireProduction()
+  local catalog = fixtureCatalog()
+  for _, field in ipairs({ "printX", "printY", "lineAdvance", "textRole" }) do
+    local bad = fixtureManifest(catalog)
+    bad.windows["body-window"][field] = nil
+    Assert.isNil(
+      PokedexAssetSchema.validateManifest(bad, catalog),
+      "a window without " .. field .. " must not validate"
+    )
+  end
+  -- The native multiline flavor block centers on its widest line, so the
+  -- staged contract accepts the block-center alignment mode.
+  local blockCenter = fixtureManifest(catalog)
+  blockCenter.windows["body-window"].printX = 0
+  blockCenter.windows["body-window"].printY = 0
+  blockCenter.windows["body-window"].lineAdvance = 16
+  blockCenter.windows["body-window"].textRole = "body-window"
+  blockCenter.windows["body-window"].align = "block-center"
+  Assert.notNil(
+    PokedexAssetSchema.validateManifest(blockCenter, catalog),
+    "a window with resolved print geometry and block-center alignment validates"
+  )
 end
 
 return { tests = T }

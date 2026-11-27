@@ -840,9 +840,27 @@ local function _compile(romFs, versionId, catalog, sink)
   end
 
   -- Authored window inventory: the contracted text slots owned by the
-  -- producer table, copied verbatim into the generated manifest.
+  -- producer table, resolved through the decoded NCLR palettes. Each
+  -- record carries its source ink triple (engine palette member,
+  -- template bank, print foreground/shadow indices); the manifest keeps
+  -- the resolved RGBA bytes.
   local windows = {}
   for key, record in pairs(PokedexSources.windows) do
+    if record.textRole == nil or record.textRole == "" then
+      error("pokedex window names no message role: " .. key, 0)
+    end
+    local ink = assert(record.ink, "pokedex window names its source ink: " .. key)
+    local paletteRecord = palettes[ink.member]
+    if paletteRecord == nil then
+      error("pokedex window names an unknown palette member: " .. key, 0)
+    end
+    local function resolveInk(index, role)
+      local color = paletteRecord[ink.bank * 16 + index + 1]
+      if color == nil then
+        error("pokedex window names an unresolvable color: " .. key .. " " .. role, 0)
+      end
+      return rgba(color.r, color.g, color.b, 255)
+    end
     windows[key] = {
       pane = record.pane,
       layer = record.layer,
@@ -851,11 +869,15 @@ local function _compile(romFs, versionId, catalog, sink)
       width = record.width,
       height = record.height,
       font = record.font,
-      foreground = rgba(record.foreground.r, record.foreground.g, record.foreground.b, record.foreground.a),
-      shadow = rgba(record.shadow.r, record.shadow.g, record.shadow.b, record.shadow.a),
+      foreground = resolveInk(ink.fg, "foreground"),
+      shadow = resolveInk(ink.sh, "shadow"),
       background = rgba(record.background.r, record.background.g, record.background.b, record.background.a),
       align = record.align,
       paletteGroup = record.paletteGroup,
+      printX = record.printX,
+      printY = record.printY,
+      lineAdvance = record.lineAdvance,
+      textRole = record.textRole,
     }
   end
 
@@ -1023,9 +1045,32 @@ local function _compile(romFs, versionId, catalog, sink)
     for _, key in ipairs(windowKeys) do
       pageWindows[#pageWindows + 1] = key
     end
+    local pagePriorities = PokedexSources.pagePriorities[role]
+    if pagePriorities == nil then
+      error("pokedex source map misses the " .. role .. " priorities", 0)
+    end
+    local function densePriorities(pane)
+      local panePriorities = pagePriorities[pane]
+      if type(panePriorities) ~= "table" then
+        error("pokedex source map misses the " .. role .. " " .. pane .. " priorities", 0)
+      end
+      local dense = {}
+      for layer = 0, 3 do
+        local priority = panePriorities[layer]
+        if type(priority) ~= "number" or priority % 1 ~= 0 or priority < 0 or priority > 3 then
+          error("pokedex source map carries an invalid " .. role .. " " .. pane .. " priority", 0)
+        end
+        dense[layer + 1] = priority
+      end
+      return dense
+    end
     pages[role] = {
       backdrop = { information = rgba(0, 0, 0, 255), controls = rgba(16, 16, 16, 255) },
       backgrounds = backgrounds,
+      layerPriorities = {
+        information = densePriorities("information"),
+        controls = densePriorities("controls"),
+      },
       cells = pageCells,
       sprites = pageSprites,
       windows = pageWindows,
@@ -1448,6 +1493,10 @@ local function _compile(romFs, versionId, catalog, sink)
         pixels[#pixels + 1] = table.concat(parts)
       end
     end
+    local anchor = PokedexSources.footprintAnchor
+    if type(anchor) ~= "table" or type(anchor.x) ~= "number" or type(anchor.y) ~= "number" then
+      error("pokedex source map misses the footprint center anchor", 0)
+    end
     for index, key in ipairs(order) do
       footRects[key] = {
         chrome = "footprints",
@@ -1457,6 +1506,8 @@ local function _compile(romFs, versionId, catalog, sink)
           width = 16,
           height = 16,
         },
+        anchorX = anchor.x,
+        anchorY = anchor.y,
       }
     end
     footRows.width, footRows.height, footRows.pixels = cols * 16, rows * 16, table.concat(pixels)

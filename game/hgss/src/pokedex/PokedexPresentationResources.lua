@@ -1415,7 +1415,21 @@ local function prepareFootprintParts(owner, lease, manifest, footprintSpecies, r
     local item = needed[key]
     local quad = lease._spritePartQuads[key]
     assert(quad ~= nil, "admitted viewports resolve their quad")
-    footprintParts[item.species] = { handle = item.handle, quad = quad }
+    local sourceRecord = assert(footprints[item.species], "prepared footprints keep their manifest record")
+    assert(
+      type(sourceRecord.anchorX) == "number" and sourceRecord.anchorX % 1 == 0,
+      "prepared footprints keep an integer center anchor for " .. tostring(item.species)
+    )
+    assert(
+      type(sourceRecord.anchorY) == "number" and sourceRecord.anchorY % 1 == 0,
+      "prepared footprints keep an integer center anchor for " .. tostring(item.species)
+    )
+    footprintParts[item.species] = {
+      handle = item.handle,
+      quad = quad,
+      anchorX = sourceRecord.anchorX,
+      anchorY = sourceRecord.anchorY,
+    }
   end
   local footprintKeys = {}
   for _, key in ipairs(keyOrder) do
