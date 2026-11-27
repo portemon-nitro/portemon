@@ -2819,13 +2819,8 @@ end
 -- carrying the source palette flash draws through the shared blend.
 ---@param graphics table<string, unknown> borrowed host graphics
 ---@param assets table<string, unknown> borrowed battle asset holder
----@param view table<string, unknown> internal semantic snapshot
-local function drawThrownBall(graphics, assets, view)
-  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
-  local ball = opening ~= nil and opening.ballThrow or nil
-  if ball == nil then
-    return
-  end
+---@param ball table<string, unknown> one ball actor record under drawing
+local function drawOneBall(graphics, assets, ball)
   assert(type(ball) == "table", "ball throw cues arrive as records")
   local selector = assert(ball.selector, "ball throw cues name their semantic ball") --[[@as string]]
   local ballKey = selector:match("^ball:([%w_]+)$")
@@ -2864,6 +2859,27 @@ local function drawThrownBall(graphics, assets, view)
         math.floor(height / 2)
       )
     end
+  end
+end
+
+---@param graphics table<string, unknown> borrowed host graphics
+---@param assets table<string, unknown> borrowed battle asset holder
+---@param view table<string, unknown> internal semantic snapshot
+local function drawThrownBall(graphics, assets, view)
+  local opening = view.openingPresentation --[[@as table<string, unknown>?]]
+  if opening == nil then
+    return
+  end
+  -- The breakout overlap runs two independent ball actors for two
+  -- frames: the resting cleanup and the fresh send-out. Both ride the
+  -- same OBJ pass in submission order; invisible actors submit nothing.
+  local oldBall = opening.ballThrowOld
+  if type(oldBall) == "table" then
+    drawOneBall(graphics, assets, oldBall)
+  end
+  local ball = opening.ballThrow
+  if type(ball) == "table" then
+    drawOneBall(graphics, assets, ball)
   end
 end
 

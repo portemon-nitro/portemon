@@ -799,4 +799,93 @@ function T.absorb_shrinks_affine_before_hiding()
   Assert.isTrue(hidden.shadowAffine == nil, "the retired absorb clears shadow affine")
 end
 
+function T.breakout_runs_concurrent_old_and_new_ball_actors()
+  -- Native BREAK_OUT keeps the old capture ball two frames while the
+  -- fresh send-out actor already ticks at its own spot; the seal and
+  -- the zero-affine tinted growth join at the same opened+seal-ready
+  -- edge while the new ball advances to its own completion.
+  local timeline = BattleTimeline.new({
+    ballFadeColor = function(_)
+      return 21
+    end,
+    faintAppearance = function(_)
+      return { height = 32, shadowHeight = 0 }
+    end,
+  })
+  stageBallArt(timeline)
+  timeline:reset(openingView())
+  local driver = driveParticles(timeline)
+  local packet = {
+    launchId = "capture-breakout-probe",
+    packetId = 1,
+    events = {
+      throwEvent(1),
+      shakeEvent(2, 1),
+      {
+        sequence = 3,
+        kind = "broke_free",
+        cause = { key = "CAPTURE" },
+        audience = "public",
+        actors = { { combatant = 1 } },
+        targets = { { combatant = 3 } },
+        payload = { shakes = 1 },
+        after = { hp = { [1] = 52, [3] = 20 } },
+      },
+    },
+    before = openingView(),
+    after = openingView(),
+    request = nil,
+    result = nil,
+  }
+  Assert.isTrue(
+    timeline:present(packet, { [3] = "Oh no! It broke free!" }),
+    "the breakout retry carrying its selected source text is accepted"
+  )
+  -- Drive until the breakout-open cue publishes the resting-ball
+  -- cleanup actor alongside the fresh send-out actor.
+  local sawOverlap = false
+  local sawOldRetired = false
+  local sawSealWithGrowth = false
+  for _ = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+    local presentation = timeline:openingPresentation()
+    if type(presentation) == "table" then
+      local fresh = presentation.ballThrow
+      local old = presentation.ballThrowOld
+      if type(fresh) == "table" and fresh.visible == true and type(old) == "table" and old.visible == true then
+        sawOverlap = true
+        Assert.isTrue(fresh.selector ~= nil, "the fresh actor names its attempted ball")
+        Assert.isTrue(old.x ~= nil and fresh.x ~= nil, "both actors carry positions during overlap")
+      end
+      if sawOverlap and type(old) == "table" and old.visible ~= true then
+        sawOldRetired = true
+      end
+      if sawOldRetired and type(fresh) == "table" and fresh.visible == true then
+        for _, entry in ipairs(timeline:battlers()) do
+          if entry.combatant == 3 and entry.visible == true and entry.affineMode == true then
+            if entry.affineWidth == 0 and entry.paletteFade ~= nil then
+              sawSealWithGrowth = true
+            end
+          end
+        end
+      end
+    end
+    if sawOverlap and sawOldRetired and sawSealWithGrowth then
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(sawOverlap, "the old ball stays up while the fresh send-out actor ticks")
+  Assert.isTrue(sawOldRetired, "the old actor retires after two frames while the fresh actor continues")
+  Assert.isTrue(sawSealWithGrowth, "the seal edge joins the zero-affine tinted growth")
+  drive(timeline, driver, 3000)
+  Assert.isTrue(timeline:settled(), "the breakout sequence drains")
+  Assert.isTrue(battler(timeline:battlers(), 3).visible, "the breakout reveals its target")
+end
+
 return { tests = T }

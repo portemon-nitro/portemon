@@ -62,6 +62,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _speciesName (fun(species: string): string?)? borrowed species display-name resolver for tagged narration
 ---@field _itemName (fun(item: string): string?)? borrowed item display-name resolver for use narration
 ---@field _battleItemUse (fun(item: string): table<string, unknown>?)? borrowed generated battle-use facts
+---@field _breakoutGrowth table<integer, { tick: integer, rowHeight: integer? }>? breakout-open growth progress by combatant for the queued reveal
 ---@field _ballFadeColor (fun(ballKey: string): integer)? Pokepic palette-fade target of a ball (sBallColors)
 ---@field _ballOpening (fun(ballKey: string): { frames: { drawableKey: string, durationTicks: integer }[] }?)? staged opening animation of a ball
 ---@field _ballThrow (fun(ballKey: string): { frames: { drawableKey: string, durationTicks: integer }[] }?)? staged throw animation of a ball
@@ -6502,23 +6503,55 @@ end
 function CaptureActor.tickBallBreakoutOpenCue(self, cue)
   local elapsed = cue.elapsed --[[@as integer]]
   local ballKey = cue.ballKey --[[@as string]]
-  local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  local stage = self._openingPresentation
+  local ball = stage ~= nil and stage.ballThrow or nil
   if ball == nil then
     return elapsed >= 2 + CaptureActor.BREAKOUT_ARC_TICKS + CaptureActor.BREAKOUT_OPEN_TICKS
   end
+  -- Native BREAK_OUT runs two independent actors for two frames: the
+  -- old capture ball stays at its resting spot while the fresh
+  -- ThrowArcAndOpen actor already holds at its own send-out spot.
+  -- A single record cannot show both, so the resting cleanup rides
+  -- ballThrowOld until its two-frame retirement while ballThrow ticks
+  -- the fresh actor independently from the same edge.
+  assert(stage ~= nil, "breakout opens follow an installed opening")
+  local oldBall = stage.ballThrowOld
+  if type(oldBall) ~= "table" then
+    oldBall = {}
+    stage.ballThrowOld = oldBall
+  end
   if elapsed <= 2 then
-    -- BREAK_OUT_CLEANUP keeps the old capture ball two frames before
-    -- deleting it: the old ball stays at its resting coordinates,
-    -- not teleported to the fresh in-place spot.
-    ball.x = cue.oldX ~= nil and cue.oldX or cue.x
-    ball.y = cue.oldY ~= nil and cue.oldY or cue.y
+    oldBall.selector = "ball:" .. cue.oldBallKey --[[@as string]]
+    oldBall.x = cue.oldX ~= nil and cue.oldX or cue.x
+    oldBall.y = cue.oldY ~= nil and cue.oldY or cue.y
+    oldBall.visible = true
+    oldBall.rotation = 0
+    oldBall.paletteFlash = nil
+    oldBall.paletteFlashColor = nil
+    oldBall.drawableKey = ballCellKey(cue.oldBallKey --[[@as string]], 0)
+    -- The fresh actor holds in place from the same edge (mode-1 setup
+    -- + stationary arc), it does not appear only after the cleanup.
+    ball.selector = cue.selector
+    ball.x = cue.x
+    ball.y = cue.y
     ball.visible = true
     ball.rotation = 0
     ball.paletteFlash = nil
     ball.paletteFlashColor = nil
-    ball.drawableKey = ballCellKey(cue.oldBallKey --[[@as string]], 0)
+    local freshOpening = cue.opening
+    if
+      type(freshOpening) == "table"
+      and type(freshOpening.frames) == "table"
+      and type(freshOpening.frames[1]) == "table"
+      and type(freshOpening.frames[1].drawableKey) == "string"
+    then
+      ball.drawableKey = freshOpening.frames[1].drawableKey --[[@as string]]
+    else
+      ball.drawableKey = ballCellKey(ballKey, 0)
+    end
     return false
   end
+  oldBall.visible = false
   local openElapsed = elapsed - 2
   ball.selector = cue.selector
   ball.x = cue.x

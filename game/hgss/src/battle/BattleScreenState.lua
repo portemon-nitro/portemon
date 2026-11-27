@@ -2774,6 +2774,45 @@ function BattleScreenState:_snapshot(borrowStatic)
   end
   self._scene:observe(battlers)
   enrichScene(self, battlers)
+  -- The native nickname scene centers the caught specimen at (128,72)
+  -- over black after the Dex popup retires (ALREADY_CAUGHT constructs
+  -- it there; first catches slide it to center then delete the popup).
+  -- Both new and repeat catches enter this scene from the hidden foe:
+  -- clone its staged portrait and center it behind the parent's planned
+  -- dock instead of leaving black battlefield + question with no mon.
+  -- Contest/tutorial keep their own paths and never enter here.
+  if self._kind == "wild" and self:_completionQuestionActive() then
+    local donor = nil
+    for _, candidate in ipairs(battlers) do
+      if type(candidate) == "table" and candidate.side ~= 1 and type(candidate.portraitSelector) == "string" then
+        donor = candidate
+        break
+      end
+    end
+    if donor ~= nil then
+      local specimen = copyValue(donor)
+      specimen.visible = true
+      specimen.vanished = nil
+      specimen.dontDraw = nil
+      specimen.hudVisible = false
+      specimen.affineMode = nil
+      specimen.affineWidth = nil
+      specimen.affineHeight = nil
+      specimen.paletteFade = nil
+      specimen.motionBlend = nil
+      specimen.pictureVisible = nil
+      local sourceHeight = type(specimen.sourceHeight) == "number" and specimen.sourceHeight or 0
+      specimen.sourceHeight = sourceHeight
+      local row = BattleScene.slotRow(specimen, nil, self._manifest.battlefield.slots)
+      specimen.sideType = row.sideType
+      specimen.entryDx = 128 - row.settledX
+      specimen.entryDy = 72 - (row.settledY + sourceHeight)
+      specimen.shakeDx = 0
+      specimen.motionDx = 0
+      specimen.motionDy = 0
+      battlers[#battlers + 1] = specimen
+    end
+  end
   local roster, foes, names = snapshotRoster(self, battlers)
   local message, levelUpStats = snapshotMessage(self, names)
   local acting = snapshotActing(self, names, battlers)
