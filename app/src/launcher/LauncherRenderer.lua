@@ -3,8 +3,7 @@
 local LauncherAssets = require("app.src.launcher.LauncherAssets")
 local LauncherLayout = require("app.src.launcher.LauncherLayout")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
-
-local utf8 = rawget(_G, "utf8") --[[@as { len: fun(text: string): number|nil }?]]
+local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class LauncherRenderer
 ---@field fonts table<string, love.Font>
@@ -20,7 +19,6 @@ local utf8 = rawget(_G, "utf8") --[[@as { len: fun(text: string): number|nil }?]
 local LauncherRenderer = {}
 LauncherRenderer.__index = LauncherRenderer
 
-local WORDMARK_PATH = "assets/fonts/mplus1p/MPLUS1p-Bold.ttf"
 local BOOT_LOGO_PATH = "assets/logo.png"
 -- Measured from the native-resolution captured wordmark ink.
 local BOOT_LOGO_LOGICAL_WIDTH = 301
@@ -106,7 +104,6 @@ function LauncherRenderer.new()
     self.fonts.body = loadFont("assets/fonts/galmuri/Galmuri11.ttf", 12, "mono", 1, "nearest")
     self.fonts.bold = loadFont("assets/fonts/galmuri/Galmuri11-Bold.ttf", 12, "mono", 1, "nearest")
     self.fonts.prompt = loadFont("assets/fonts/galmuri/Galmuri9.ttf", 10, "mono", 1, "nearest")
-    self.fonts.wordmark = loadFont(WORDMARK_PATH, 32, "normal", 3, "linear")
     local image = loadImage(BOOT_LOGO_PATH)
     self.bootLogo = image
     self.bootLogoWidth, self.bootLogoHeight = image:getDimensions()
@@ -196,25 +193,29 @@ function LauncherRenderer:_focusCorners(graphics, x, y, w, h)
 end
 
 local function fitText(font, text, width)
-  text = tostring(text)
+  text = Utf8Glyphs.sanitize(tostring(text))
   if font:getWidth(text) <= width then
     return text
   end
   local ellipsis = "…"
-  local low, high = 0, #text
+  local glyphs = {}
+  for glyph in Utf8Glyphs.iter(text) do
+    glyphs[#glyphs + 1] = glyph
+  end
+  -- Binary-search the glyph prefix so every measured candidate stays on a
+  -- codepoint boundary; byte midpoints can split a multibyte sequence and
+  -- make LÖVE font metrics raise on valid input.
+  local low, high = 0, #glyphs
   while low < high do
     local middle = math.ceil((low + high) / 2)
-    if font:getWidth(text:sub(1, middle) .. ellipsis) <= width then
+    local candidate = table.concat(glyphs, "", 1, middle) .. ellipsis
+    if font:getWidth(candidate) <= width then
       low = middle
     else
       high = middle - 1
     end
   end
-  local cut = text:sub(1, low)
-  while #cut > 0 and utf8 ~= nil and not utf8.len(cut) do
-    cut = cut:sub(1, -2)
-  end
-  return cut .. ellipsis
+  return table.concat(glyphs, "", 1, low) .. ellipsis
 end
 
 function LauncherRenderer:drawButton(rect, label, _, visualState)
@@ -455,6 +456,20 @@ function LauncherRenderer:_operation(view, layout)
   self:_background(layout.viewport.width, layout.viewport.height)
   self:_header(view, layout)
   if layout.unavailable then
+    -- Even when the content does not fit, the footer cancel/back targets
+    -- stay painted so the operation remains escapable; no receipt is
+    -- acknowledged for a paint that did not occur.
+    for targetId, target in pairs(layout.graph.targets) do
+      local label = targetId == "choose-rom" and "Choose ROM"
+        or targetId == "retry" and "Retry"
+        or targetId == "cancel" and "Cancel"
+        or "Back"
+      if targetId == "back" then
+        self:_backButton(target.rect, label, { focused = view.action == targetId })
+      else
+        self:drawButton(target.rect, label, nil, { focused = view.action == targetId })
+      end
+    end
     return
   end
   graphics.setFont(self.fonts.bold)
@@ -501,19 +516,20 @@ function LauncherRenderer:_operation(view, layout)
         layout.statusRect.y + 4
       )
       if operation.progress ~= nil then
-        local track = layout.statusRect
+        local track = layout.progressTrackRect or layout.statusRect
         color(graphics, COLORS.headerLower)
-        graphics.rectangle("fill", track.x, track.y + 22, track.width, 4)
+        graphics.rectangle("fill", track.x, track.y, track.width, 4)
         color(graphics, COLORS.header)
         graphics.rectangle(
           "fill",
           track.x,
-          track.y + 22,
+          track.y,
           math.floor(track.width * math.max(0, math.min(1, operation.progress))),
           4
         )
       else
-        self:drawLoadingSquares(layout.statusRect.x, layout.statusRect.y + 20, operation.elapsed or 0)
+        local indicator = layout.indicatorRect or layout.statusRect
+        self:drawLoadingSquares(indicator.x, indicator.y, operation.elapsed or 0)
       end
     end
   elseif layout.errorRect ~= nil then
@@ -615,6 +631,9 @@ function LauncherRenderer:drawLoading(view, layout)
   local graphics = love.graphics
   self:_background(layout.viewport.width, layout.viewport.height)
   if layout.unavailable then
+    if layout.cancelRect ~= nil then
+      self:drawButton(layout.cancelRect, "Cancel", nil, { focused = view.action == "cancel" })
+    end
     return
   end
   graphics.setFont(self.fonts.bold)
@@ -649,7 +668,7 @@ function LauncherRenderer:drawLoading(view, layout)
         layout.statusRect.x,
         layout.statusRect.y + 4
       )
-      self:drawLoadingSquares(layout.statusRect.x, layout.statusRect.y + 22, view.elapsed)
+      self:drawLoadingSquares(layout.statusRect.x, (layout.indicatorRect or layout.statusRect).y, view.elapsed)
     else
       drawDiagnostic(graphics, view, layout)
     end

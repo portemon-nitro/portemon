@@ -1798,7 +1798,7 @@ function T.worker_failure_after_admission_never_interrupts_startup(context)
     Assert.isTrue(RomImporter.isReady(versionId), "the previous raw dump is untouched")
   end)
 end
-function T.quit_after_cancelled_preparation_abandons_owned_workers_without_joining(context)
+function T.quit_after_cancelled_preparation_joins_owned_workers_before_releasing(context)
   withLiveApp(context, function(App, harness, versionId)
     local provisioner = selectVersion(App, versionId)
     attachWorker(harness)
@@ -1855,7 +1855,7 @@ function T.quit_after_cancelled_preparation_abandons_owned_workers_without_joini
     end
     local waitsBeforeQuit = totalWaits()
     App.quit()
-    Assert.equal(totalWaits(), waitsBeforeQuit, "quit returns without joining owned threads")
+    Assert.isTrue(totalWaits() > waitsBeforeQuit, "quit joins owned threads before releasing owners")
     local shutdownSeen = false
     for _, channel in ipairs(harness.threadHost.channels) do
       for _, message in ipairs(channel.log) do
@@ -1870,7 +1870,7 @@ function T.quit_after_cancelled_preparation_abandons_owned_workers_without_joini
     pumpApp(App, harness, 4)
     local waitsBeforeSecondQuit = totalWaits()
     App.quit()
-    Assert.equal(totalWaits(), waitsBeforeSecondQuit, "a repeated quit never joins owned threads")
+    Assert.equal(totalWaits(), waitsBeforeSecondQuit, "a repeated quit joins nothing again")
     pumpApp(App, harness, 2)
   end)
 end

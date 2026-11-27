@@ -100,29 +100,6 @@ function Job:poll()
   return "ready", packet.romSha1, packet.png
 end
 
--- Abandon a still-running recovery without blocking: process exit kills
--- the worker with it. The outbox is still drained so a finished PNG is not
--- leaked when abandon races completion.
-function Job:abandon()
-  if self._disposed then
-    return
-  end
-  self._disposed = true
-  local outbox = assert(self._outbox, "managed icon recovery job is disposed")
-  while true do
-    local packet = outbox:pop()
-    if packet == nil then
-      break
-    end
-    if type(packet) == "table" and type(packet.png) == "userdata" then
-      local png = packet.png --[[@as love.FileData]]
-      pcall(png.release, png)
-    end
-  end
-  self._thread = nil
-  self._outbox = nil
-end
-
 function Job:dispose()
   if self._disposed then
     return

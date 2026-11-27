@@ -29,6 +29,7 @@ local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
+local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 -- Idle retention for the selected epoch's decoded CPU owner: charged, shared
 -- decoded results, never the resident base bytes themselves.
@@ -58,7 +59,6 @@ local BOOT_MAX_DURATION = 5
 ---@field _bootIntro BootIntroState? foreground-only presentation over the selected epoch
 ---@field _bootCandidate AppBootCandidate?
 ---@field selectedVersionId string? currently selected game version
----@field _libraryMetadata AppSaveMetadata[]? detached published-save metadata for the current library decision
 ---@field _selectedEntryLocation { mapId: integer, fieldX: integer, fieldZ: integer }? transient copied save hint
 ---@field _saveLocationWarmup { epoch: integer, versionId: string, preparation: table<string, function> }?|nil
 ---@field _startupWarmup { epoch: integer, versionId: string, preparation: table<string, function> }?|nil
@@ -297,25 +297,6 @@ function App._releaseIconRecovery()
   end
 end
 
--- Quit-time icon teardown: signal a still-running recovery without joining
--- it. Process exit kills the worker; a finished PNG is still released.
-function App._abandonIconRecovery()
-  local job = App._iconRecovery
-  App._iconRecovery = nil
-  if job ~= nil then
-    if type(job.abandon) == "function" then
-      job:abandon()
-    else
-      job:dispose()
-    end
-  end
-  local pending = App._pendingIconData
-  App._pendingIconData = nil
-  if pending ~= nil then
-    pending.png:release()
-  end
-end
-
 -- Cancellation is an App effect, never a leaf status guess. A committed
 -- worker remains owned until its terminal result; an outstanding source
 -- barrier likewise survives the canceled view.
@@ -377,37 +358,6 @@ function App._retireSelection()
     provisioner:dispose()
   end
   App._selectedEntryLocation = nil
-  App._libraryMetadata = nil
-end
-
--- Quit-time selection teardown: same ownership handoff as retirement, but
--- preparation workers are only signalled, never joined. Process exit kills
--- any in-flight decode with the process.
-function App._abandonSelection()
-  App.setState(nil)
-  App._cacheLoading = false
-  App._swallowedPointers = {}
-  App.pairIndex = nil
-  App.splRandomState = nil
-  App._releaseStartupAudio()
-  local locationWarmup = App._saveLocationWarmup
-  App._saveLocationWarmup = nil
-  if locationWarmup ~= nil then
-    locationWarmup.preparation:dispose()
-  end
-  local warmup = App._startupWarmup
-  App._startupWarmup = nil
-  if warmup ~= nil then
-    warmup.preparation:dispose()
-  end
-  App._abandonAssetRuntime()
-  local provisioner = App.provisioner
-  App.provisioner = nil
-  if provisioner then
-    provisioner:dispose()
-  end
-  App._selectedEntryLocation = nil
-  App._libraryMetadata = nil
 end
 
 -- The selected epoch's one decoded CPU runtime. It exists only while the
@@ -427,30 +377,6 @@ function App._releaseAssetRuntime()
   record.preparationQueue:release()
   record.decoded:clear()
   record.packages:close()
-  App._assetRuntime = nil
-end
-
--- Quit-time runtime teardown: ask preparation workers to stop without
--- joining an in-flight decode. Process exit reclaims the rest.
-function App._abandonAssetRuntime()
-  local record = App._assetRuntime
-  if record == nil then
-    return
-  end
-  local queue = record.preparationQueue
-  if queue ~= nil then
-    if type(queue.abandon) == "function" then
-      queue:abandon()
-    else
-      queue:release()
-    end
-  end
-  if record.decoded ~= nil and type(record.decoded.clear) == "function" then
-    record.decoded:clear()
-  end
-  if record.packages ~= nil and type(record.packages.close) == "function" then
-    record.packages:close()
-  end
   App._assetRuntime = nil
 end
 
@@ -1230,7 +1156,11 @@ function App._newGameSelectState(focusGameId)
         love.event.quit(0)
       elseif targetId == "heartgold" or targetId == "soulsilver" then
         if managedInstalled(targetId) then
-          local candidate = newestSave(App._libraryMetadata, targetId)
+          -- Read fresh save metadata at activation: the selector holds no
+          -- process-level mirror (it is cleared on retirement), and a stale
+          -- timestamp must not skip the warmup. Failure stays non-fatal.
+          local metadata = readSaveMetadata()
+          local candidate = newestSave(metadata, targetId)
           App._selectVersion(targetId, { entryLocation = candidate and candidate.entryLocation or nil })
         else
           App._openImportChoose(targetId)
@@ -1563,7 +1493,6 @@ function App._prepareBootCandidate()
   end
   App._bootPending = false
   local metadata = readSaveMetadata()
-  App._libraryMetadata = metadata
   local candidate = newestSave(metadata)
   if candidate ~= nil then
     candidate.ready = managedInstalled(candidate.versionId)
@@ -1654,7 +1583,6 @@ function App.load(opts)
   App._startupWarmup = nil
   App._saveLocationWarmup = nil
   App._selectedEntryLocation = nil
-  App._libraryMetadata = nil
   App._bootCandidate = nil
   App._bootPending = true
   App._bootIntro = nil
@@ -1883,7 +1811,18 @@ function App._beginImportAttempt(kind, value, receiptName, requestId)
   attempt = attempt or App._newImportAttempt(nil)
   App._importAttempt = attempt
   attempt.descriptor = { kind = kind, value = value, requestId = requestId }
-  attempt.receipt = receiptName or App._receiptName(kind, value)
+  -- The display receipt is sanitized UTF-8; the descriptor keeps the exact
+  -- unmodified source path/URI for the importer.
+  local rawReceipt = receiptName
+  if rawReceipt == nil then
+    rawReceipt = App._receiptName(kind, value)
+  else
+    rawReceipt = Utf8Glyphs.truncate(tostring(rawReceipt), 48)
+    if rawReceipt == "" then
+      rawReceipt = nil
+    end
+  end
+  attempt.receipt = rawReceipt
   attempt.mode, attempt.canCancel = "receipt", true
   App._beginImportTransaction(attempt)
 end
@@ -1973,6 +1912,8 @@ end
 
 -- Sanitized basename for the synchronous file-received receipt: the card
 -- names the file without leaking paths and truncates to one card row.
+-- External display text only: the returned receipt is valid UTF-8 on glyph
+-- boundaries, while the source pathname/URI in the descriptor is untouched.
 ---@param kind string "drop" or "path"
 ---@param value unknown dropped File or picked path
 ---@return string? receipt basename, if one can be named
@@ -1989,10 +1930,7 @@ function App._receiptName(kind, value)
   if type(raw) ~= "string" or raw == "" then
     return nil
   end
-  local clean = raw:gsub("[%c]", "?")
-  if #clean > 48 then
-    clean = clean:sub(1, 47) .. "…"
-  end
+  local clean = Utf8Glyphs.truncate(raw, 48)
   if clean == "" then
     return nil
   end
@@ -2035,7 +1973,6 @@ end
 function App._bootExisting()
   App._bootPending = false
   local metadata = readSaveMetadata()
-  App._libraryMetadata = metadata
   App._bootCandidate = newestSave(metadata)
   App._finishBootIntro(false)
   App._routeBoot(App._bootCandidate)
@@ -2682,23 +2619,18 @@ function App.quit()
     App._cancelImport()
   end
   App._finishBootIntro(false)
-  App._abandonIconRecovery()
-  App.setState(nil)
-  App._abandonSelection()
-  -- Quit never joins background work: the controller, compiler, snapshot,
-  -- icon, and preparation threads are only signalled and die with the
-  -- process. A partial snapshot stage is ignored on the next boot, so this
-  -- is persistence-safe and turns a multi-second close into an instant one.
+  -- Quit joins background work through the single ordered retirement path:
+  -- cancel optional demand promptly, signal workers while the host is live,
+  -- then wait for termination before releasing owners. No parallel abandon
+  -- lifecycle exists; a partial snapshot stage is ignored on the next boot.
+  App._releaseIconRecovery()
+  App._retireSelection()
   local service = App.service
   App.service = nil
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
   if service then
-    if type(service.abandon) == "function" then
-      service:abandon()
-    else
-      service:shutdown()
-    end
+    service:shutdown()
   end
   App._releaseLauncherResources()
   App._safeRect = nil

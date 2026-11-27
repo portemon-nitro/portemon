@@ -448,26 +448,26 @@ function T.release_while_idle_joins_the_worker_and_is_idempotent()
   end)
 end
 
-function T.abandon_while_busy_signals_stop_without_joining()
+function T.release_while_busy_signals_stop_and_joins_the_worker()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()
   withLove(host.love, function()
     local queue = newQueue(fakeCacheFs())
     local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
     Assert.isTrue(requestWasPushedFor(host, running))
-    queue:abandon()
-    queue:abandon()
-    Assert.equal(host.threads[1].waits, 0, "abandon never blocks joining a running worker")
+    queue:release()
+    queue:release()
+    Assert.equal(host.threads[1].waits, 1, "quit joins the worker before releasing owners")
     local shutdownSeen = false
     for _, pushed in ipairs(host.allPushes) do
       if type(pushed.value) == "table" and pushed.value.op == "shutdown" then
         shutdownSeen = true
       end
     end
-    Assert.isTrue(shutdownSeen, "abandon still asks the worker to stop")
+    Assert.isTrue(shutdownSeen, "release still asks the worker to stop")
     Assert.throws(function()
       queue:poll(running)
-    end, "an abandoned queue discards outstanding tokens rather than reviving them")
+    end, "a released queue discards outstanding tokens rather than reviving them")
   end)
 end
 

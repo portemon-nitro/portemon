@@ -83,7 +83,6 @@ local function fresh()
   App._startupWarmup = nil
   App._saveLocationWarmup = nil
   App._selectedEntryLocation = nil
-  App._libraryMetadata = nil
   App._bootPending = false
   App._bootIntro = nil
   App._finishBootIntro(false)

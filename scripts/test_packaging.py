@@ -73,13 +73,10 @@ FONT_FILES = (
     "assets/fonts/galmuri/Galmuri11.ttf",
     "assets/fonts/galmuri/Galmuri11-Bold.ttf",
     "assets/fonts/galmuri/LICENSE.txt",
-    "assets/fonts/mplus1p/MPLUS1p-Bold.ttf",
-    "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
-    "assets/fonts/mplus1p/OFL.txt",
 )
 
 LAUNCHER_FONT_FILES = (
-    "assets/fonts/mplus1p/MPLUS1p-Bold.ttf",
+    "assets/fonts/galmuri/Galmuri11-Bold.ttf",
     "assets/fonts/galmuri/Galmuri9.ttf",
 )
 
@@ -1021,7 +1018,7 @@ class PackagingContractTest(unittest.TestCase):
             for relative in (
                 "gen4/battle.lua",
                 "assets/fonts/galmuri/Galmuri11.ttf",
-                "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
+                "assets/fonts/galmuri/Galmuri11-Bold.ttf",
                 "assets/audio/launcher/boot.ogg",
                 "assets/audio/launcher/focus.ogg",
                 "assets/audio/launcher/README.md",
@@ -2012,8 +2009,9 @@ class ReleaseWorkflowIdentityTest(unittest.TestCase):
         acceptance = "\n".join(self.job_block("android-acceptance"))
         self.assertIn("needs: [version, android]", acceptance)
         self.assertIn("environment: android-device-acceptance", acceptance)
-        self.assertIn("runs-on: ubuntu-22.04", acceptance)
-        self.assertNotIn("self-hosted", acceptance)
+        self.assertIn("self-hosted", acceptance)
+        self.assertIn("android-device", acceptance)
+        self.assertNotIn("runs-on: ubuntu-22.04", acceptance)
         self.assertIn("PORTEMON_ANDROID_TEST_SERIAL: ${{ vars.PORTEMON_ANDROID_TEST_SERIAL }}", acceptance)
         self.assertIn("PORTEMON_ANDROID_TEST_ROM: ${{ vars.PORTEMON_ANDROID_TEST_ROM }}", acceptance)
         self.assertIn("PORTEMON_ANDROID_TEST_SAVE: ${{ vars.PORTEMON_ANDROID_TEST_SAVE }}", acceptance)
@@ -2027,10 +2025,12 @@ class ReleaseWorkflowIdentityTest(unittest.TestCase):
         for argument in (
             "scripts/packaging/android_acceptance.py", "--payload", "--apk", "--commit", "--version",
             "--version-code", "--rom", "--save", "--serial", "--workspace", "--manifest",
+            "--timeout", "--recording-time-limit",
         ):
             self.assertIn(argument, command)
         self.assertIn("android-acceptance-evidence", acceptance)
         self.assertIn("acceptance.json", acceptance)
+        self.assertIn("screen-recording-seg", acceptance)
         self.assertIn("screen-recording.mp4", acceptance)
         self.assertIn("if-no-files-found: error", acceptance)
         self.assertIn('test -s "$ACCEPTANCE_WORKSPACE/acceptance.json"', command)

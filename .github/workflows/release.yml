@@ -268,8 +268,15 @@ jobs:
           retention-days: 7
 
   android-acceptance:
+    # The mandatory physical acceptance gate runs only on a dedicated,
+    # isolated, trusted self-hosted device runner that provides the rooted
+    # device, the private ROM/save fixtures, and an operator channel to write
+    # the journey manifest. It never runs on GitHub-hosted runners (which
+    # cannot provide local device resources) and never executes untrusted PR
+    # code: this workflow triggers only on version tags and manual dispatch.
     needs: [version, android]
-    runs-on: ubuntu-22.04
+    runs-on: [self-hosted, android-device, isolated]
+    timeout-minutes: 120
     environment: android-device-acceptance
     env:
       PORTEMON_ANDROID_TEST_SERIAL: ${{ vars.PORTEMON_ANDROID_TEST_SERIAL }}
@@ -309,11 +316,13 @@ jobs:
             --apk "candidate/portemon-nitro-$VERSION-android.apk" \
             --commit "$COMMIT" --version "$VERSION" --version-code "$VERSION_CODE" \
             --rom "$PORTEMON_ANDROID_TEST_ROM" --save "$PORTEMON_ANDROID_TEST_SAVE" \
-            --workspace "$ACCEPTANCE_WORKSPACE" --manifest "$ACCEPTANCE_MANIFEST" --timeout 3600
+            --workspace "$ACCEPTANCE_WORKSPACE" --manifest "$ACCEPTANCE_MANIFEST" \
+            --timeout 3600 --recording-time-limit 150
           test -s "$ACCEPTANCE_WORKSPACE/candidate.json"
           test -s "$ACCEPTANCE_MANIFEST"
           test -s "$ACCEPTANCE_WORKSPACE/acceptance.json"
           test -s "$ACCEPTANCE_WORKSPACE/logcat.txt"
+          test -s "$ACCEPTANCE_WORKSPACE/screen-recording-seg1.mp4"
           test -s "$ACCEPTANCE_WORKSPACE/screen-recording.mp4"
       - name: Upload actual-candidate acceptance evidence
         if: always()
@@ -325,6 +334,7 @@ jobs:
             ${{ runner.temp }}/android-acceptance/journey-manifest.json
             ${{ runner.temp }}/android-acceptance/acceptance.json
             ${{ runner.temp }}/android-acceptance/logcat.txt
+            ${{ runner.temp }}/android-acceptance/screen-recording-seg*.mp4
             ${{ runner.temp }}/android-acceptance/screen-recording.mp4
           if-no-files-found: error
           retention-days: 7

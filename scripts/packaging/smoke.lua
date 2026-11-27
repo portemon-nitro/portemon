@@ -91,9 +91,6 @@ local function runProbe()
     "assets/fonts/galmuri/Galmuri11.ttf",
     "assets/fonts/galmuri/Galmuri11-Bold.ttf",
     "assets/fonts/galmuri/LICENSE.txt",
-    "assets/fonts/mplus1p/MPLUS1p-Bold.ttf",
-    "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
-    "assets/fonts/mplus1p/OFL.txt",
     "assets/audio/launcher/boot.ogg",
     "assets/audio/launcher/focus.ogg",
     "assets/audio/launcher/confirm.ogg",
@@ -112,7 +109,6 @@ local function runProbe()
   for path, name in pairs({
     ["assets/fonts/galmuri/Galmuri9.ttf"] = "Galmuri9.ttf",
     ["assets/fonts/galmuri/Galmuri11.ttf"] = "Galmuri11.ttf",
-    ["assets/fonts/mplus1p/MPLUS1p-Bold.ttf"] = "MPLUS1p-Bold.ttf",
   }) do
     local font = assert(love.filesystem.newFileData(readMember(path), name))
     local loadedFont = assert(love.graphics.newFont(font))
@@ -131,7 +127,12 @@ local function runProbe()
   local logo = assert(love.graphics.newImage(logoData), "packaged boot logo must decode")
   logoData:release()
   local logoWidth, logoHeight = logo:getDimensions()
-  assert(logoWidth == 451 and logoHeight == 115, "packaged boot logo must be 451x115")
+  -- Flexible artwork: prove the logo decodes to a non-degenerate image with
+  -- a sane landscape aspect instead of freezing an incidental 451x115
+  -- literal. Placement and centering are covered by the renderer suite.
+  assert(logoWidth > 0 and logoHeight > 0, "packaged boot logo must decode to a non-empty image")
+  local aspect = logoWidth / logoHeight
+  assert(aspect > 1.5 and aspect < 8, "packaged boot logo must keep a landscape wordmark aspect")
   logo:release()
 
   local iconPath = "assets/ui/mainmenu/sign-out-left.png"

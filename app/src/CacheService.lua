@@ -1451,32 +1451,10 @@ function CacheService:update()
   return self:_emit()
 end
 
--- Abandon the controller thread without joining: process exit kills the
--- controller, compiler, and snapshot threads with it. The shutdown command
--- is still signalled so a lingering host can exit cooperatively, but the
--- game thread never blocks on in-flight cache builds. A partial snapshot
--- stage is ignored on the next boot, so abandoning is persistence-safe.
-function CacheService:abandon()
-  if self._joined then
-    return
-  end
-  self._joined = true
-  self._controls = {}
-  self._ordinary = {}
-  for epoch in pairs(self._cache) do
-    self:_revokeEpoch(epoch)
-  end
-  if not self._started then
-    return
-  end
-  pcall(function()
-    self._command:push({ op = "shutdown" })
-  end)
-end
-
 -- Join the controller thread exactly once. Process shutdown alone joins;
 -- selection retirement never does. Unsent interest is discarded: shutdown
--- is final and nothing after it can observe this process.
+-- is final and nothing after it can observe this process. Quit uses this
+-- same ordered path and waits for termination before releasing owners.
 function CacheService:shutdown()
   if self._joined then
     return

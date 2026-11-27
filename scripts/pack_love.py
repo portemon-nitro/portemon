@@ -26,9 +26,6 @@ FONT_FILES = (
     "assets/fonts/galmuri/Galmuri11.ttf",
     "assets/fonts/galmuri/Galmuri11-Bold.ttf",
     "assets/fonts/galmuri/LICENSE.txt",
-    "assets/fonts/mplus1p/MPLUS1p-Bold.ttf",
-    "assets/fonts/mplus1p/MPLUS1p-Regular.ttf",
-    "assets/fonts/mplus1p/OFL.txt",
 )
 AUDIO_FILES = tuple(
     f"assets/audio/launcher/{name}.ogg" for name in ("boot", "focus", "confirm", "back", "error")

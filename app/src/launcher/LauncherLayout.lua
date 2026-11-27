@@ -188,13 +188,43 @@ function LauncherLayout.loading(width, height, options)
       and rect(MARGIN + 4, MARGIN + 96, width - MARGIN * 2 - 8, math.max(12, height - 150))
     or nil
   plan.titleRect = rect(content.x + 4, content.y + 4, content.width - 8, titleHeight)
+  -- Footer first: the cancel action owns the bottom band, and the status
+  -- block ends above it so the resolved progress geometry never paints
+  -- under the button at the minimum supported height.
+  local footerY = height - MARGIN - ACTION_HEIGHT
+  local statusTop = MARGIN + 62
+  local statusBottom = options.canCancel == true and (footerY - 8) or (height - MARGIN - 8)
+  local statusHeight = math.max(0, statusBottom - statusTop)
   local receipt = options.receipt ~= nil and rect(MARGIN + 4, MARGIN + 34, width - MARGIN * 2 - 8, 24) or nil
-  local cancel = options.canCancel == true
-      and rect(width - MARGIN - 96, height - MARGIN - ACTION_HEIGHT, 96, ACTION_HEIGHT)
-    or nil
+  local status = receipt ~= nil and rect(MARGIN + 4, statusTop, width - MARGIN * 2 - 8, statusHeight) or nil
+  local cancel = options.canCancel == true and rect(width - MARGIN - 96, footerY, 96, ACTION_HEIGHT) or nil
   local targets = cancel ~= nil and { cancel = { kind = "cancel", rect = cancel } } or {}
   plan.receiptRect = receipt
-  plan.statusRect = receipt ~= nil and rect(MARGIN + 4, MARGIN + 62, width - MARGIN * 2 - 8, 32) or nil
+  plan.statusRect = status
+  if status ~= nil then
+    plan.progressTrackRect = rect(status.x, status.y + math.max(0, status.height - 6), status.width, 4)
+    plan.indicatorRect = rect(status.x, status.y + math.max(0, status.height - 10), 50, 8)
+  else
+    plan.progressTrackRect = nil
+    plan.indicatorRect = nil
+  end
+  -- A receipt without room for at least one status line plus its track is
+  -- not an acknowledgement: the caller must see an unavailable plan rather
+  -- than an overlapping paint. The footer cancel target is preserved through
+  -- the empty plan so the operation stays escapable.
+  if receipt ~= nil and (status == nil or status.height < 20) then
+    local unavailable = emptyPlan(width, height)
+    if cancel ~= nil then
+      unavailable.cancelRect = cancel
+      unavailable.graph = graph({ cancel = { kind = "cancel", rect = cancel } }, { "cancel" })
+    end
+    unavailable.titleRect = plan.titleRect
+    unavailable.receiptRect = nil
+    unavailable.statusRect = nil
+    unavailable.progressTrackRect = nil
+    unavailable.indicatorRect = nil
+    return unavailable
+  end
   plan.cancelRect = cancel
   plan.graph = graph(targets, cancel ~= nil and { "cancel" } or {})
   return plan
@@ -230,7 +260,9 @@ local function actionRow(y, width, targets, order)
     targets.back = { kind = "back", rect = rect(width - MARGIN - BACK_WIDTH, y, BACK_WIDTH, ACTION_HEIGHT) }
     return
   end
-  local actionWidth = math.floor((width - gap * (#order - 1)) / #order)
+  -- No-back rows share the inset content width, not the full viewport, so a
+  -- single action keeps its 8px margins and its focus ring stays on screen.
+  local actionWidth = math.floor((width - MARGIN * 2 - gap * (#order - 1)) / #order)
   local x = MARGIN + math.floor((width - MARGIN * 2 - (actionWidth * #order + gap * (#order - 1))) / 2)
   for _, targetId in ipairs(order) do
     targets[targetId] = { kind = targetId, rect = rect(x, y, actionWidth, ACTION_HEIGHT) }
@@ -268,16 +300,61 @@ function LauncherLayout.compute(view, width, height)
         order[#order + 1] = "cancel"
       end
       order[#order + 1] = "back"
-      actionRow(inner.y + inner.height - ACTION_HEIGHT, width, targets, order)
+      local footerY = inner.y + inner.height - ACTION_HEIGHT
+      actionRow(footerY, width, targets, order)
       plan.receiptRect = rect(inner.x + 4, inner.y + 38, inner.width - 8, 28)
-      plan.statusRect = rect(inner.x + 4, inner.y + 72, inner.width - 8, math.max(16, inner.height - 116))
+      local statusTop = inner.y + 72
+      local statusBottom = footerY - 8
+      local statusHeight = math.max(0, statusBottom - statusTop)
+      plan.statusRect = rect(inner.x + 4, statusTop, inner.width - 8, statusHeight)
+      if statusHeight > 0 then
+        plan.progressTrackRect = rect(inner.x + 4, statusTop + statusHeight - 6, inner.width - 8, 4)
+        plan.indicatorRect = rect(inner.x + 4, statusTop + math.max(0, statusHeight - 10), 50, 8)
+      else
+        plan.progressTrackRect = nil
+        plan.indicatorRect = nil
+      end
+      if statusHeight < 20 then
+        local unavailable = emptyPlan(width, height)
+        unavailable.mode = import.mode
+        unavailable.header = plan.header
+        unavailable.headerCells = plan.headerCells
+        unavailable.content = plan.content
+        if next(targets) ~= nil then
+          unavailable.graph = graph(targets, order, true)
+        end
+        return unavailable
+      end
     elseif import.mode == "importing" then
       if import.canCancel == true then
         order[#order + 1] = "cancel"
         actionRow(inner.y + inner.height - ACTION_HEIGHT, width, targets, order)
       end
+      local footerY = inner.y + inner.height - ACTION_HEIGHT
+      local hasFooter = import.canCancel == true
       plan.receiptRect = rect(inner.x + 4, inner.y + 38, inner.width - 8, 28)
-      plan.statusRect = rect(inner.x + 4, inner.y + 72, inner.width - 8, math.max(16, inner.height - 116))
+      local statusTop = inner.y + 72
+      local statusBottom = hasFooter and (footerY - 8) or (inner.y + inner.height - 8)
+      local statusHeight = math.max(0, statusBottom - statusTop)
+      plan.statusRect = rect(inner.x + 4, statusTop, inner.width - 8, statusHeight)
+      if statusHeight > 0 then
+        plan.progressTrackRect = rect(inner.x + 4, statusTop + statusHeight - 6, inner.width - 8, 4)
+        plan.indicatorRect = rect(inner.x + 4, statusTop + math.max(0, statusHeight - 10), 50, 8)
+      else
+        plan.progressTrackRect = nil
+        plan.indicatorRect = nil
+      end
+      if statusHeight < 20 then
+        local unavailable = emptyPlan(width, height)
+        unavailable.mode = import.mode
+        unavailable.header = plan.header
+        unavailable.headerCells = plan.headerCells
+        unavailable.content = plan.content
+        if next(targets) ~= nil then
+          unavailable.graph = graph(targets, order, true)
+        end
+        return unavailable
+      end
     elseif import.mode == "error" then
       order = { "retry", "back" }
       actionRow(inner.y + inner.height - ACTION_HEIGHT, width, targets, order)

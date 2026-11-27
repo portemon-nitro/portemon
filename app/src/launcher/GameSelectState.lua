@@ -213,6 +213,25 @@ function GameSelectState:_snapshot()
   end
   local import = copyImport(self.getImportView())
   local mode = import ~= nil and import.mode or "selection"
+  -- Pressed cartridge feedback derives from the existing active pointer
+  -- gesture: a held edition target with its arm intact. Movement outside,
+  -- cancel, release, resize, or a mode change clears it through the gesture
+  -- itself, so no second button state machine exists.
+  local pressedTarget = nil
+  if mode == "selection" then
+    for _, gesture in pairs(self._gestures) do
+      if
+        type(gesture) == "table"
+        and gesture.armed ~= false
+        and gesture.mode == "selection"
+        and gesture.geometry == self._geometry
+        and (gesture.targetId == "heartgold" or gesture.targetId == "soulsilver")
+      then
+        pressedTarget = gesture.targetId
+        break
+      end
+    end
+  end
   return {
     kind = "game-select",
     games = games,
@@ -222,6 +241,7 @@ function GameSelectState:_snapshot()
     mode = mode,
     import = import,
     receipt = import ~= nil and import.receipt or nil,
+    pressedTarget = pressedTarget,
     version = BuildInfo.version,
     dateText = self._dateText,
     timeText = self._timeText,

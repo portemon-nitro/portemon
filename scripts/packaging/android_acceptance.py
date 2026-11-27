@@ -13,6 +13,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from typing import BinaryIO
 import zipfile
 
@@ -30,9 +31,25 @@ JOURNEY_STEPS = (
     "touchRotationAndBackground",
     "managedRomAndSavePreserved",
 )
-REMOTE_ROM = "/sdcard/Download/portemon-acceptance.nds"
-REMOTE_RECORDING = "/sdcard/portemon-acceptance.mp4"
+# Device-side staging is per-run owned: every acceptance run mints a unique
+# runId and stages only files carrying that identity. Cleanup removes only
+# those owned paths, never fixed shared names, and capture shutdown signals
+# only the recorder started by this run (matched via -f on its unique path).
 APP_FILES = f"/data/data/{APPLICATION_ID}/files"
+RECORDING_TIME_LIMIT_MAX = 180
+RECORDING_TIME_LIMIT_DEFAULT = 150
+
+
+def remote_rom(run_id: str) -> str:
+    return f"/sdcard/Download/portemon-acceptance-{run_id}.nds"
+
+
+def remote_recording(run_id: str, segment: int) -> str:
+    return f"/sdcard/portemon-acceptance-{run_id}-seg{segment}.mp4"
+
+
+def local_recording(workspace: Path, segment: int) -> Path:
+    return workspace / f"screen-recording-seg{segment}.mp4"
 
 
 def sha256(path: Path) -> str:
@@ -160,6 +177,9 @@ def save_fixtures(root: Path) -> dict[str, str]:
 def prepare(args: argparse.Namespace) -> dict[str, object]:
     if not args.serial.strip():
         raise ValueError("an explicit device serial is required")
+    recording_limit = getattr(args, "recording_time_limit", RECORDING_TIME_LIMIT_DEFAULT)
+    if recording_limit <= 0 or recording_limit > RECORDING_TIME_LIMIT_MAX:
+        raise ValueError(f"recording time limit must be 1..{RECORDING_TIME_LIMIT_MAX} seconds")
     if not args.payload.is_file() or not args.apk.is_file() or not args.rom.is_file() or not args.save.is_dir():
         raise ValueError("candidate payload/APK and private ROM/save fixtures are required")
     if args.timeout <= 0:
@@ -187,12 +207,21 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("refusing to touch a device that already has the shipping application installed")
     fixtures = save_fixtures(args.save)
     rom_sha1 = sha1(args.rom)
+    run_id = f"{args.commit[:8]}-{args.version_code}-{uuid.uuid4().hex[:8]}"
+    owned_rom = remote_rom(run_id)
+    # Unique per-run staging: refuse only if our own unique path somehow
+    # already exists; never touch fixed shared names or preexisting files.
+    existing = adb(args.serial, "shell", "ls", owned_rom, check=False)
+    if existing.returncode == 0 and existing.stdout.strip():
+        raise ValueError("owned device staging already exists; retry with a fresh workspace")
 
-    write_json(args.workspace / "ownership.json", {"serial": args.serial, "applicationId": APPLICATION_ID})
+    write_json(
+        args.workspace / "ownership.json",
+        {"serial": args.serial, "applicationId": APPLICATION_ID, "runId": run_id, "remoteRom": owned_rom},
+    )
     adb(args.serial, "install", str(args.apk), timeout=300)
     adb(args.serial, "shell", "mkdir", "-p", APP_FILES)
-    adb(args.serial, "shell", "rm", "-f", REMOTE_ROM)
-    adb(args.serial, "push", str(args.rom), REMOTE_ROM, timeout=300)
+    adb(args.serial, "push", str(args.rom), owned_rom, timeout=300)
     for relative in fixtures:
         remote = f"{APP_FILES}/{relative}"
         adb(args.serial, "shell", "mkdir", "-p", str(Path(remote).parent))
@@ -201,6 +230,8 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
     record = {
         "candidate": candidate,
         "device": device,
+        "runId": run_id,
+        "remoteRom": owned_rom,
         "managedRom": f"roms/{rom_sha1}.zip",
         "romSha1": rom_sha1,
         "saveFiles": fixtures,
@@ -215,7 +246,7 @@ def prepare(args: argparse.Namespace) -> dict[str, object]:
     write_json(template_path, template)
     print(f"Acceptance manifest template: {template_path}")
     print(f"Completed acceptance manifest: {args.manifest}")
-    print(f"Private test ROM is available through the document picker at: {REMOTE_ROM}")
+    print(f"Private test ROM is available through the document picker at: {owned_rom}")
     print("Launch the installed Portémon Nitro app.")
     print("Use the touch-only journey; both edition slots are direct actions, with no separate Run or Add Game control.")
     print("Startup/import: interrupt boot from a slot, tap a missing edition, exercise SAF cancel and wrong-edition rejection, then import the matching ROM and observe its banner.")
@@ -258,10 +289,14 @@ def verify_manifest(
     return errors
 
 
-def start_captures(serial: str, workspace: Path, timeout: int) -> tuple[subprocess.Popen[bytes], subprocess.Popen[bytes]]:
+def start_captures(
+    serial: str, workspace: Path, recording_time_limit: int, remote_recording: str,
+) -> tuple[subprocess.Popen[bytes], subprocess.Popen[bytes]]:
+    if recording_time_limit <= 0 or recording_time_limit > RECORDING_TIME_LIMIT_MAX:
+        raise ValueError(f"recording time limit must be 1..{RECORDING_TIME_LIMIT_MAX} seconds")
     adb(serial, "logcat", "-c")
-    adb(serial, "shell", "rm", "-f", REMOTE_RECORDING)
-    log = (workspace / "logcat.txt").open("wb")
+    adb(serial, "shell", "rm", "-f", remote_recording)
+    log = (workspace / "logcat.txt").open("ab")
     try:
         logcat = subprocess.Popen(
             ["adb", "-s", serial, "logcat", "-v", "threadtime"], stdout=log, stderr=subprocess.STDOUT,
@@ -270,7 +305,7 @@ def start_captures(serial: str, workspace: Path, timeout: int) -> tuple[subproce
         log.close()
     try:
         recorder = subprocess.Popen(
-            ["adb", "-s", serial, "shell", "screenrecord", "--time-limit", str(timeout), REMOTE_RECORDING],
+            ["adb", "-s", serial, "shell", "screenrecord", "--time-limit", str(recording_time_limit), remote_recording],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     except BaseException:
@@ -284,15 +319,19 @@ def start_captures(serial: str, workspace: Path, timeout: int) -> tuple[subproce
     return logcat, recorder
 
 
-def stop_captures(serial: str, workspace: Path, logcat: subprocess.Popen[bytes], recorder: subprocess.Popen[bytes]) -> None:
-    if logcat.poll() is None:
-        logcat.terminate()
-        try:
-            logcat.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            logcat.kill()
-            logcat.wait(timeout=5)
-    adb(serial, "shell", "pkill", "-INT", "screenrecord", check=False)
+def stop_capture_segment(
+    serial: str,
+    workspace: Path,
+    logcat: subprocess.Popen[bytes] | None,
+    recorder: subprocess.Popen[bytes],
+    remote_recording: str,
+    local_path: Path,
+    run_id: str,
+    keep_logcat: bool = False,
+) -> None:
+    # Stop only this run's recorder: match its unique device path so an
+    # unrelated screenrecord on the same device is never interrupted.
+    adb(serial, "shell", "pkill", "-INT", "-f", f"screenrecord.*{run_id}", check=False)
     try:
         recorder.wait(timeout=20)
     except subprocess.TimeoutExpired:
@@ -302,9 +341,28 @@ def stop_captures(serial: str, workspace: Path, logcat: subprocess.Popen[bytes],
         except subprocess.TimeoutExpired:
             recorder.kill()
             recorder.wait(timeout=5)
-    adb(serial, "pull", REMOTE_RECORDING, str(workspace / "screen-recording.mp4"), timeout=120)
-    if not (workspace / "screen-recording.mp4").is_file() or (workspace / "screen-recording.mp4").stat().st_size == 0:
-        raise ValueError("the acceptance screen recording is missing or empty")
+    adb(serial, "pull", remote_recording, str(local_path), timeout=120)
+    if not local_path.is_file() or local_path.stat().st_size == 0:
+        raise ValueError("the acceptance screen recording segment is missing or empty")
+    if not keep_logcat and logcat is not None and logcat.poll() is None:
+        logcat.terminate()
+        try:
+            logcat.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            logcat.kill()
+            logcat.wait(timeout=5)
+
+
+def stop_captures(
+    serial: str,
+    workspace: Path,
+    logcat: subprocess.Popen[bytes],
+    recorder: subprocess.Popen[bytes],
+    remote_recording: str,
+    local_path: Path,
+    run_id: str,
+) -> None:
+    stop_capture_segment(serial, workspace, logcat, recorder, remote_recording, local_path, run_id)
 
 
 def verify_preserved_data(args: argparse.Namespace, record: dict[str, object]) -> dict[str, object]:
@@ -345,6 +403,25 @@ def verify_preserved_data(args: argparse.Namespace, record: dict[str, object]) -
     }
 
 
+def app_scoped_log(log: bytes) -> bytes:
+    # Scope runtime failure detection to the tested app instead of failing
+    # the release on unrelated device logs. Keep lines that name the app
+    # package, the engine, or an Android runtime crash; unrelated chatter is
+    # retained on disk but never gates publication.
+    kept = []
+    for line in log.splitlines(keepends=True):
+        lowered = line.lower()
+        if (
+            APPLICATION_ID.encode() in line
+            or b"portemon" in lowered
+            or b"love" in lowered
+            or b"androidruntime" in lowered
+            or b"fatal exception" in lowered
+        ):
+            kept.append(line)
+    return b"".join(kept)
+
+
 def verify(args: argparse.Namespace, record: dict[str, object]) -> None:
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     errors = verify_manifest(manifest, record["candidate"], record["device"])
@@ -362,22 +439,32 @@ def verify(args: argparse.Namespace, record: dict[str, object]) -> None:
         raise ValueError("the installed package is not the accepted release candidate")
     preserved = verify_preserved_data(args, record)
     log = (args.workspace / "logcat.txt").read_bytes()
-    recording = args.workspace / "screen-recording.mp4"
-    if not log or not recording.is_file() or recording.stat().st_size == 0:
+    segments = sorted(args.workspace.glob("screen-recording-seg*.mp4"))
+    # Backwards compatibility: a single-segment run also publishes the legacy
+    # screen-recording.mp4 alias alongside its segment file.
+    legacy = args.workspace / "screen-recording.mp4"
+    if legacy.is_file() and legacy not in segments:
+        segments.append(legacy)
+    if not log or not segments or any(not p.is_file() or p.stat().st_size == 0 for p in segments):
         raise ValueError("acceptance logcat and screen recording are required")
-    if re.search(rb"(?i)Error:|stack traceback|boot\.lua|\.lua:[0-9]+:", log):
-        raise ValueError("acceptance logcat contains a runtime failure")
+    scoped = app_scoped_log(log)
+    if not scoped:
+        raise ValueError("acceptance logcat contains no tested-app output")
+    if re.search(rb"(?i)Error:|stack traceback|boot\.lua|\.lua:[0-9]+:|fatal exception", scoped):
+        raise ValueError("acceptance logcat contains a tested-app runtime failure")
+    evidence = {f"recording{index}Sha256": sha256(path) for index, path in enumerate(sorted(segments), start=1)}
     acceptance = {
         "verified": True,
         "candidate": actual_candidate,
         "device": record["device"],
+        "runId": record.get("runId"),
         "journey": manifest["journey"],
         "operator": manifest["operator"],
         **preserved,
         "evidence": {
             "manifestSha256": sha256(args.manifest),
             "logcatSha256": sha256(args.workspace / "logcat.txt"),
-            "recordingSha256": sha256(recording),
+            **evidence,
         },
     }
     write_json(args.workspace / "acceptance.json", acceptance)
@@ -392,23 +479,64 @@ def manifest_ready(path: Path) -> bool:
 
 
 def run_acceptance(args: argparse.Namespace) -> None:
+    recording_limit = getattr(args, "recording_time_limit", RECORDING_TIME_LIMIT_DEFAULT)
+    if recording_limit <= 0 or recording_limit > RECORDING_TIME_LIMIT_MAX:
+        raise ValueError(f"recording time limit must be 1..{RECORDING_TIME_LIMIT_MAX} seconds")
     record = prepare(args)
-    logcat = recorder = None
+    run_id = str(record["runId"])
+    logcat: subprocess.Popen[bytes] | None = None
+    recorder: subprocess.Popen[bytes] | None = None
+    segment = 1
     try:
-        logcat, recorder = start_captures(args.serial, args.workspace, args.timeout)
+        # Truncate the shared log once; segments append so rotation stages
+        # stay in one evidence file while each screenrecord stays bounded.
+        if (args.workspace / "logcat.txt").exists():
+            (args.workspace / "logcat.txt").unlink()
+        remote = remote_recording(run_id, segment)
+        logcat, recorder = start_captures(args.serial, args.workspace, recording_limit, remote)
         deadline = time.monotonic() + args.timeout
         while not manifest_ready(args.manifest):
+            assert recorder is not None
             if recorder.poll() is not None:
-                raise ValueError("screen recording stopped before acceptance evidence was supplied")
+                # One bounded segment elapsed: pull it and start the next so
+                # an hour-budget journey never assumes a single recording.
+                local_path = local_recording(args.workspace, segment)
+                stop_capture_segment(args.serial, args.workspace, logcat, recorder, remote, local_path, run_id, keep_logcat=True)
+                # Keep the legacy alias pointing at the latest pulled segment
+                # so existing evidence collectors keep working.
+                legacy = args.workspace / "screen-recording.mp4"
+                legacy.write_bytes(local_path.read_bytes())
+                if time.monotonic() >= deadline:
+                    raise ValueError("timed out waiting for the human acceptance manifest")
+                segment += 1
+                remote = remote_recording(run_id, segment)
+                # New recorder segment; the logcat stream keeps appending.
+                adb(args.serial, "shell", "rm", "-f", remote)
+                recorder = subprocess.Popen(
+                    ["adb", "-s", args.serial, "shell", "screenrecord", "--time-limit", str(recording_limit), remote],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                continue
             if time.monotonic() >= deadline:
                 raise ValueError("timed out waiting for the human acceptance manifest")
             time.sleep(2)
-        stop_captures(args.serial, args.workspace, logcat, recorder)
+        assert logcat is not None and recorder is not None
+        local_path = local_recording(args.workspace, segment)
+        stop_capture_segment(args.serial, args.workspace, logcat, recorder, remote, local_path, run_id)
+        legacy = args.workspace / "screen-recording.mp4"
+        legacy.write_bytes(local_path.read_bytes())
         logcat = recorder = None
         verify(args, record)
     finally:
         if logcat is not None and recorder is not None:
-            stop_captures(args.serial, args.workspace, logcat, recorder)
+            try:
+                local_path = local_recording(args.workspace, segment)
+                stop_capture_segment(args.serial, args.workspace, logcat, recorder, remote_recording(run_id, segment), local_path, run_id)
+            except Exception:
+                if logcat.poll() is None:
+                    logcat.terminate()
+                if recorder.poll() is None:
+                    recorder.terminate()
 
 
 def cleanup(args: argparse.Namespace) -> None:
@@ -417,13 +545,30 @@ def cleanup(args: argparse.Namespace) -> None:
         print("android_acceptance: no owned installation to clean")
         return
     ownership = json.loads(marker.read_text(encoding="utf-8"))
-    if ownership != {"serial": args.serial, "applicationId": APPLICATION_ID}:
+    if ownership.get("serial") != args.serial or ownership.get("applicationId") != APPLICATION_ID:
         raise ValueError("refusing to clean an acceptance installation owned by another device")
+    run_id = ownership.get("runId")
+    owned_rom = ownership.get("remoteRom")
     adb(args.serial, "uninstall", APPLICATION_ID, check=False)
     remaining = adb(args.serial, "shell", "pm", "path", APPLICATION_ID, check=False)
     if remaining.stdout.strip():
         raise ValueError("the isolated acceptance application could not be removed")
-    adb(args.serial, "shell", "rm", "-f", REMOTE_ROM, REMOTE_RECORDING)
+    # Remove only this run's owned device files. A failed prepare never
+    # deletes a preexisting file it did not acquire.
+    if isinstance(run_id, str) and run_id:
+        targets = []
+        if isinstance(owned_rom, str) and owned_rom:
+            targets.append(owned_rom)
+        # Segment recordings share the runId prefix; remove them without
+        # touching unrelated screenrecord files on the device.
+        listing = adb(args.serial, "shell", "ls", f"/sdcard/portemon-acceptance-{run_id}-seg*.mp4", check=False)
+        if listing.returncode == 0:
+            for name in listing.stdout.split():
+                name = name.strip()
+                if name.startswith(f"/sdcard/portemon-acceptance-{run_id}-seg"):
+                    targets.append(name)
+        if targets:
+            adb(args.serial, "shell", "rm", "-f", *targets, check=False)
     marker.unlink()
 
 
@@ -441,7 +586,14 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--save", required=True, type=Path)
     run.add_argument("--workspace", required=True, type=Path)
     run.add_argument("--manifest", required=True, type=Path)
-    run.add_argument("--timeout", required=True, type=int)
+    run.add_argument("--timeout", required=True, type=int, help="overall human acceptance deadline in seconds")
+    run.add_argument(
+        "--recording-time-limit",
+        required=False,
+        type=int,
+        default=RECORDING_TIME_LIMIT_DEFAULT,
+        help=f"bounded per-segment screenrecord limit in seconds (1..{RECORDING_TIME_LIMIT_MAX})",
+    )
     clean = subparsers.add_parser("cleanup")
     clean.add_argument("--serial", required=True)
     clean.add_argument("--workspace", required=True, type=Path)

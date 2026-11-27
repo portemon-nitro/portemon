@@ -220,7 +220,7 @@ function T.recovery_returns_one_verified_png_without_mutating_managed_data()
   end)
 end
 
-function T.abandon_drops_a_running_recovery_without_joining()
+function T.dispose_joins_a_running_recovery_before_releasing()
   local Recovery = recoveryModule()
   ManagedRomIconFixture.with(function(fixture)
     local edition = fixture.heartgold
@@ -230,15 +230,10 @@ function T.abandon_drops_a_running_recovery_without_joining()
     bytes:release()
     withRecoveryHost({ catalog = fixture.catalog }, function(host)
       local job = assert(Recovery.start("heartgold"))
-      local startedAt = love.timer.getTime()
-      job:abandon()
-      job:abandon()
-      Assert.isTrue(
-        love.timer.getTime() - startedAt < 5,
-        "abandon returns without waiting for the worker"
-      )
-      Assert.isNil(job:poll(), "abandon drops the result instead of delivering it")
-      Assert.equal(#host.threads, 1, "abandon keeps the single scoped worker for process teardown")
+      job:dispose()
+      job:dispose()
+      Assert.isNil(job:poll(), "dispose drops the result instead of delivering it twice")
+      Assert.equal(#host.threads, 1, "dispose keeps the single scoped worker for process teardown")
     end)
   end)
 end
