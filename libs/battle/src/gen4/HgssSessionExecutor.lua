@@ -117,7 +117,6 @@ local BERRY_FLAVORS = {
 ---@field private _battleKind string
 ---@field _moveFacts table<string, table<string, unknown>>
 ---@field private _speciesFacts table<string, SpeciesFormFacts>
----@field captureSessionFacts fun(state: table<string, unknown>, actorId: integer, targetId: integer): table<string, unknown>, table<string, unknown>
 ---@field private _itemFacts table<string, table<string, unknown>>
 ---@field private _chart table<string, unknown>
 ---@field private _moneyUpItems table<string, boolean>
@@ -2304,6 +2303,18 @@ local function captureSessionFacts(state, speciesFacts, actorId, targetId)
     species = actorMon.species,
     gender = genderOf(actorMon, speciesFacts),
   }
+end
+
+--- Resolves the throw capture facts through the session-owned species
+--- facts without an extra per-instance closure: the handler calls this
+--- shared method on its executor instead of scraping combatant records.
+---@param state table<string, unknown> live battle state under the throw
+---@param actorId integer thrower combatant identity
+---@param targetId integer target combatant identity
+---@return table<string, unknown> staged target facts for the throw
+---@return table<string, unknown> staged attacker facts for the throw
+function HgssSessionExecutor:captureSessionFacts(state, actorId, targetId)
+  return captureSessionFacts(state, self._speciesFacts, actorId, targetId)
 end
 
 ---@param mon table<string, unknown> battle mon record under the sleep read
@@ -5910,7 +5921,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     end
     local planRecord = plan --[[@as table<string, unknown>]]
     local sessionTarget, sessionAttacker =
-      executor.captureSessionFacts(state, actor.combatant --[[@as integer]], target.combatant --[[@as integer]])
+      executor:captureSessionFacts(state, actor.combatant --[[@as integer]], target.combatant --[[@as integer]])
     local outcome = Capture.execute({
       actor = actor.combatant,
       inventoryId = choice.inventoryId,
@@ -7711,9 +7722,6 @@ local function wrap(
   -- Single typed capture staging bound to the session facts: the throw
   -- boundary resolves its rates, types, levels, genders, and conditions
   -- through this owner instead of scraping combatant records.
-  local function captureFactsFor(captureState, actorId, targetId)
-    return captureSessionFacts(captureState, speciesFacts, actorId, targetId)
-  end
   local executor = setmetatable({
     _state = live,
     _content = content,
@@ -7721,7 +7729,6 @@ local function wrap(
     _battleKind = battleKind,
     _moveFacts = moveFacts,
     _speciesFacts = speciesFacts,
-    captureSessionFacts = captureFactsFor,
     _itemFacts = itemFacts,
     _chart = sessionChart(content, HgssSessionExecutor.RULESET),
     _moneyUpItems = moneySet,

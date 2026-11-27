@@ -2396,7 +2396,7 @@ local function ballRecord(selector)
     openingFrames[index] = restage(frame, "-open-" .. (index - 1))
   end
   return {
-    schema = "g4-battle-ball-v4",
+    schema = "g4-battle-ball-v5",
     selector = selector,
     catalogIdentity = "synthetic-catalog",
     entry = {

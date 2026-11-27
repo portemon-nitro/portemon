@@ -3797,8 +3797,12 @@ CaptureActor.CLICK_LEAD_TICKS = 12
 CaptureActor.CLICK_PEAK = 10
 -- CaptureStateFlash goes yellow RGB(31,27,0) 0 -> 12 -> 0 around the drop.
 CaptureActor.FLASH_PEAK = 12
+-- PaletteData wait -1 gives step abs(-1) + 2 for the yellow flash.
+CaptureActor.FLASH_STEP = 3
 CaptureActor.FLASH_YELLOW = { 1, 27 / 31, 0 }
 CaptureActor.CLICK_BLACK = { 0, 0, 0 }
+-- PaletteData wait -5 gives step abs(-5) + 2 for the black click/restore.
+CaptureActor.CLICK_STEP = 7
 -- CaptureStateFadeOut steps its translucent OBJ alpha 15 -> 0.
 CaptureActor.FADE_TICKS = 16
 -- Ticks a completion join waits past its effect start before trusting
@@ -3809,6 +3813,10 @@ CaptureActor.JOIN_GUARD_TICKS = 2
 -- BallThrow_OpenInPlace creates the generic burst at step 2 (tick 5)
 -- and starts it at step 3 (tick 6): five ticks after the open starts.
 CaptureActor.BREAKOUT_BURST_START_TICKS = 5
+-- The forced in-place cells run 2-frame 0/2, then 6-frame 2/1/0:
+-- the open owns 17 ticks past the two-frame old-ball overlap before
+-- it may retire like the send-out open.
+CaptureActor.BREAKOUT_OPEN_TICKS = 17
 
 --- Names the tick of the open cue that starts the opening burst:
 --- staged cell durations, exactly like the producer-side burstStartTick
@@ -4047,15 +4055,21 @@ local function translateThrow(self, event)
       burstTick = burstTick,
     })
     self._captureBall = { ballKey = ballKey, x = resting.x, y = resting.y + BALL_DROP_PIXELS }
-    -- STATE_GET_POKEMON_CALCULATE_SHAKES draws the target in once the
-    -- open completes (23 frames after it started when the burst is
-    -- short); the withdraw cue owns the shrink-out.
+    -- The 23-frame entry counter emits EnterBall independently of the
+    -- open burst lifetime: the target starts shrinking at 23 while the
+    -- ball still holds its open cell. The drop later waits for both
+    -- the shrink and the burst retirement like BALL_FALL does.
     enqueue(self, {
       kind = "withdraw",
       combatant = target,
       duration = BattleTimeline.VANISH_TICKS,
       requiresImage = self:_imageKeyFor(target),
+      captureAbsorb = true,
     })
+    -- Join the opening burst before the closed-ball flash restores
+    -- frame zero: the flash/drop run on the closed ball only after the
+    -- burst retires.
+    enqueue(self, { kind = "particles-idle", minHold = CaptureActor.JOIN_GUARD_TICKS })
     -- CaptureStateFlash yellows the closed ball 0 -> 12 -> 0 before the
     -- drop; the flash cue owns the coefficient ramp and its color.
     enqueue(self, {
@@ -4063,6 +4077,7 @@ local function translateThrow(self, event)
       selector = "ball:" .. ballKey,
       color = CaptureActor.FLASH_YELLOW,
       peak = CaptureActor.FLASH_PEAK,
+      step = CaptureActor.FLASH_STEP,
     })
     -- BallThrow_CaptureStateDrop lowers the opened ball 32 pixels over
     -- 10 ticks: the bounce, the shakes, the click, and a break-out all
@@ -4113,6 +4128,8 @@ local function translateShake(self, event)
     selector = resting ~= nil and ("ball:" .. resting.ballKey) or "ball:POKE_BALL",
     ballKey = resting ~= nil and resting.ballKey or "POKE_BALL",
     row = row,
+    x = resting ~= nil and resting.x or 0,
+    y = resting ~= nil and resting.y or 0,
   })
   enqueue(self, { kind = "wait", duration = CaptureActor.SHAKE_TRAIL_TICKS })
 end
@@ -4156,6 +4173,7 @@ local function translateCaught(self, event)
       selector = "ball:" .. ball.ballKey,
       color = CaptureActor.CLICK_BLACK,
       peak = CaptureActor.CLICK_PEAK,
+      step = CaptureActor.CLICK_STEP,
       hold = true,
     })
     enqueue(self, {
@@ -4178,7 +4196,7 @@ local function translateCaught(self, event)
     self,
     messageText(self, "battle/narration/gotcha", { caughtName }),
     false,
-    BattleTimeline.AUTO_SCROLL_TICKS + 30
+    BattleTimeline.AUTO_SCROLL_TICKS
   )
   if ball ~= nil then
     enqueue(self, {
@@ -4186,11 +4204,19 @@ local function translateCaught(self, event)
       selector = "ball:" .. ball.ballKey,
       color = CaptureActor.CLICK_BLACK,
       peak = CaptureActor.CLICK_PEAK,
+      step = CaptureActor.CLICK_STEP,
       reverse = true,
     })
     enqueue(self, {
       kind = "ball-fade",
       selector = "ball:" .. ball.ballKey,
+    })
+    -- CHECK_MON_DATA holds 30 frames once printing ends while the
+    -- fade retires: the serial queue holds the post-fade remainder
+    -- after the 16-tick translucent transition.
+    enqueue(self, {
+      kind = "wait",
+      duration = math.max(0, 30 - CaptureActor.FADE_TICKS),
     })
   end
   -- The target already entered the ball at the throw; a capture that
@@ -4235,6 +4261,8 @@ local function translateBrokeFree(self, event)
         selector = "ball:" .. sendOutBall,
         ballKey = sendOutBall,
         oldBallKey = resting.ballKey,
+        oldX = resting.x,
+        oldY = resting.y,
         battlerType = battlerTypeOf(self, target),
         x = spot.x,
         y = spot.y,
@@ -4257,6 +4285,10 @@ local function translateBrokeFree(self, event)
     end
     enqueueReveal(self, target, nil, sendOutCry, sendOutBall)
   end
+  -- The mode-1 gate starts the seal and the target growth together:
+  -- the reveal overlaps the seal, and only the selected failure line
+  -- waits for both effects and the open before printing.
+  enqueue(self, { kind = "particles-idle", minHold = CaptureActor.JOIN_GUARD_TICKS })
   -- STATE_GET_POKEMON_BREAK_OUT_MESSAGE/_DONE prints the selected
   -- outcome line (msg_0197_00863 and siblings have no \r), then counts
   -- 30 frames once printing ends.
@@ -5444,15 +5476,29 @@ local function startCue(self, cue)
       local ballKey = assert(cue.selector:match("^ball:([%w_]+)$"), "thrown balls name their staged ball key") --[[@as string]]
       cue.ballKey = ballKey
       cue.throwFrames = self._ballThrow ~= nil and self._ballThrow(ballKey) or nil
-      cue.throwAnimated = true
-      state.ballThrow = {
-        selector = cue.selector,
-        x = cue.startX,
-        y = cue.startY,
-        drawableKey = ballCellKey(ballKey, 0),
-        rotation = 0,
-        visible = true,
-      }
+      -- The closed-ball drop (spin == false) moves the existing closed
+      -- ball with no new throw playback; only spinning flights replay
+      -- the airborne cells.
+      cue.throwAnimated = cue.spin ~= false
+      local existing = state.ballThrow
+      if cue.spin == false and type(existing) == "table" and existing.selector == cue.selector then
+        existing.x = cue.startX
+        existing.y = cue.startY
+        existing.rotation = 0
+        existing.visible = true
+        if type(existing.drawableKey) ~= "string" then
+          existing.drawableKey = ballCellKey(ballKey, 0)
+        end
+      else
+        state.ballThrow = {
+          selector = cue.selector,
+          x = cue.startX,
+          y = cue.startY,
+          drawableKey = ballCellKey(ballKey, 0),
+          rotation = 0,
+          visible = true,
+        }
+      end
     end
   elseif cue.kind == "ball-particles" then
     self._ballParticleStarts[#self._ballParticleStarts + 1] = {
@@ -5463,11 +5509,10 @@ local function startCue(self, cue)
       y = cue.y,
     }
   elseif cue.kind == "ball-shake" then
-    -- The wobble shows the closed ball with staged throw art: the bounce
-    -- leaves an opening cell selected, whose staged art the bag may no
-    -- longer hold, so the shake would inherit an unstaged drawable and
-    -- vanish behind its own sounds and rotation. Resetting to the gated
-    -- throw cell keeps the resting ball visible through every wobble.
+    -- The wobble animates the resting closed ball in place (native
+    -- CaptureStateShake changes position/rotation on the same actor).
+    -- It inherits the closed resting cell the bounce left; only a
+    -- missing actor stages the gated throw cell at the cue position.
     CaptureActor.ensureStage(self)
     local state = self._openingPresentation
     if state ~= nil then
@@ -5476,8 +5521,8 @@ local function startCue(self, cue)
       if ball == nil then
         ball = {
           selector = cue.selector,
-          x = 0,
-          y = 0,
+          x = cue.x or 0,
+          y = cue.y or 0,
           drawableKey = ballCellKey(ballKey, 0),
           rotation = 0,
           visible = true,
@@ -5485,7 +5530,9 @@ local function startCue(self, cue)
         state.ballThrow = ball
       end
       ball.visible = true
-      ball.drawableKey = ballCellKey(ballKey, 0)
+      if type(ball.drawableKey) ~= "string" then
+        ball.drawableKey = ballCellKey(ballKey, 0)
+      end
     end
   elseif cue.kind == "sound" then
     emitSound(self, cue.cue --[[@as table<string, unknown>]])
@@ -6181,6 +6228,22 @@ local function tickWaitCue(_, cue)
   return elapsed >= duration
 end
 
+---@param cue table<string, unknown> cue carrying the staged opening
+---@param ballKey string staged ball behind the cells
+---@param frameIndex integer zero-based forced animation frame
+---@return string drawableKey of the forced cell
+function CaptureActor.cellForFrameIndex(cue, ballKey, frameIndex)
+  local opening = cue.opening
+  if type(opening) == "table" and type(opening.frames) == "table" then
+    local frames = opening.frames --[[@as table<integer, table<string, unknown>>]]
+    local cell = frames[frameIndex + 1]
+    if type(cell) == "table" and type(cell.drawableKey) == "string" then
+      return cell.drawableKey --[[@as string]]
+    end
+  end
+  return ballCellKey(ballKey, frameIndex)
+end
+
 -- Names the staged opening cell for one capture-actor tick: the opening
 -- animation's own cells in staged durations, falling back to the throw
 -- cell when the ball stages no opening art.
@@ -6220,11 +6283,7 @@ function CaptureActor.tickBallCaptureOpenCue(self, cue)
   local ballKey = cue.ballKey --[[@as string]]
   local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
   if ball == nil then
-    return CaptureActor.effectJoined(
-      self,
-      elapsed,
-      math.max(CaptureActor.ENTRY_TICKS, burstTick + CaptureActor.JOIN_GUARD_TICKS)
-    )
+    return elapsed >= CaptureActor.ENTRY_TICKS
   end
   ball.x = cue.x
   ball.y = cue.y
@@ -6232,11 +6291,17 @@ function CaptureActor.tickBallCaptureOpenCue(self, cue)
   ball.rotation = 0
   ball.paletteFlash = nil
   ball.paletteFlashColor = nil
-  -- The open runs the staged animation cells; the burst starts once
-  -- the animation reaches its second frame (burstTick), and the open
-  -- completes 23 frames after it started once the burst retired: the
-  -- entry and the fall wait on both barriers like BALL_FALL does.
-  ball.drawableKey = CaptureActor.cellKey(cue, ballKey, math.max(1, elapsed))
+  -- The open holds its frame-2 cell once the animation reaches it
+  -- (native SetAnimationFrame hold through the burst): the 23-frame
+  -- entry counter runs independently, so the open completes at 23
+  -- without joining the burst lifetime. The later idle barrier joins
+  -- the burst before the flash/drop, like BALL_FALL waits for both
+  -- the open and the controller completion.
+  if elapsed < burstTick then
+    ball.drawableKey = CaptureActor.cellKey(cue, ballKey, math.max(1, elapsed))
+  else
+    ball.drawableKey = CaptureActor.cellForFrameIndex(cue, ballKey, 2)
+  end
   if elapsed == 1 then
     -- The particle system owns the staged start tick (burstTick): the
     -- open only cues the burst, exactly like CaptureStateOpen creating
@@ -6248,10 +6313,7 @@ function CaptureActor.tickBallCaptureOpenCue(self, cue)
       y = cue.y,
     }
   end
-  if elapsed < CaptureActor.ENTRY_TICKS then
-    return false
-  end
-  return CaptureActor.effectJoined(self, elapsed, burstTick + CaptureActor.JOIN_GUARD_TICKS)
+  return elapsed >= CaptureActor.ENTRY_TICKS
 end
 
 ---@param self BattleTimeline
@@ -6260,12 +6322,29 @@ end
 function CaptureActor.tickBallFlashCue(self, cue)
   local elapsed = cue.elapsed --[[@as integer]]
   local peak = cue.peak --[[@as integer]]
-  local upTicks = math.ceil(peak / 2)
-  local downTicks = math.ceil(peak / 2)
+  local step = cue.step --[[@as integer?]]
+  if type(step) ~= "number" then
+    step = peak == CaptureActor.FLASH_PEAK and CaptureActor.FLASH_STEP or CaptureActor.CLICK_STEP
+  end
+  assert(step > 0, "flash cues advance by a positive native step")
+  local upTicks = math.ceil(peak / step)
+  local downTicks = math.ceil(peak / step)
   local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  if ball ~= nil and elapsed == 1 then
+    -- The flash/drop run on the closed ball only after the burst
+    -- retires: the open held frame 2 through the burst, so restore
+    -- frame zero here (native OPEN_DONE SetAnimationFrame(0)).
+    local selector = ball.selector --[[@as string?]]
+    local key = type(selector) == "string" and selector:match("^ball:([%w_]+)$") or nil
+    if key ~= nil then
+      ball.drawableKey = ballCellKey(key, 0)
+    end
+    ball.rotation = 0
+    ball.visible = true
+  end
   if cue.reverse == true then
     -- RestorePalette returns peak -> 0 after the Gotcha print.
-    local left = math.max(0, peak - elapsed * 2)
+    local left = math.max(0, peak - elapsed * step)
     if ball ~= nil then
       ball.paletteFlash = left > 0 and left or nil
       ball.paletteFlashColor = left > 0 and cue.color or nil
@@ -6274,9 +6353,9 @@ function CaptureActor.tickBallFlashCue(self, cue)
   end
   local coefficient
   if elapsed <= upTicks then
-    coefficient = math.min(peak, elapsed * 2)
+    coefficient = math.min(peak, elapsed * step)
   else
-    coefficient = math.max(0, peak - (elapsed - upTicks) * 2)
+    coefficient = math.max(0, peak - (elapsed - upTicks) * step)
   end
   if ball ~= nil then
     ball.paletteFlash = coefficient > 0 and coefficient or nil
@@ -6315,7 +6394,11 @@ function CaptureActor.tickBallBounceCue(self, cue)
   if elapsed <= #CaptureActor.BOUNCE_STEPS then
     local row = CaptureActor.BOUNCE_STEPS[elapsed]
     ball.y = ball.y + row[1]
-    ball.drawableKey = CaptureActor.cellKey(cue, cue.ballKey --[[@as string]], row[2] + 1)
+    -- The bounce rows name forced animation frames (native
+    -- SetAnimationFrame), not elapsed-time samples of the authored
+    -- durations: confusing the two shows the wrong cell whenever the
+    -- first cell lasts two or more ticks.
+    ball.drawableKey = CaptureActor.cellForFrameIndex(cue, cue.ballKey --[[@as string]], row[2])
   end
   return false
 end
@@ -6372,13 +6455,14 @@ function CaptureActor.tickBallBreakoutOpenCue(self, cue)
   local ballKey = cue.ballKey --[[@as string]]
   local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
   if ball == nil then
-    return CaptureActor.effectJoined(self, elapsed, 6 + CaptureActor.JOIN_GUARD_TICKS)
+    return elapsed >= 2 + CaptureActor.BREAKOUT_OPEN_TICKS
   end
   if elapsed <= 2 then
     -- BREAK_OUT_CLEANUP keeps the old capture ball two frames before
-    -- deleting it.
-    ball.x = cue.x
-    ball.y = cue.y
+    -- deleting it: the old ball stays at its resting coordinates,
+    -- not teleported to the fresh in-place spot.
+    ball.x = cue.oldX ~= nil and cue.oldX or cue.x
+    ball.y = cue.oldY ~= nil and cue.oldY or cue.y
     ball.visible = true
     ball.rotation = 0
     ball.paletteFlash = nil
@@ -6387,6 +6471,10 @@ function CaptureActor.tickBallBreakoutOpenCue(self, cue)
     return false
   end
   local openElapsed = elapsed - 2
+  -- The fresh in-place actor owns the field from here: its position,
+  -- forced cells, generic burst and retirement belong to this actor,
+  -- not the retired resting ball.
+  ball.selector = cue.selector
   ball.x = cue.x
   ball.y = cue.y
   ball.visible = true
@@ -6435,13 +6523,11 @@ function CaptureActor.tickBallBreakoutOpenCue(self, cue)
       battlerType = cue.battlerType,
     }
   end
-  if
-    CaptureActor.effectJoined(
-      self,
-      openElapsed,
-      CaptureActor.BREAKOUT_BURST_START_TICKS + CaptureActor.JOIN_GUARD_TICKS
-    )
-  then
+  -- The open owns its forced cells (17 ticks past the overlap) and
+  -- retires its sprite; the seal it started at tick 5 continues into
+  -- the reveal, which grows the target while the seal plays. The
+  -- failure message joins both effects after the reveal.
+  if openElapsed >= CaptureActor.BREAKOUT_OPEN_TICKS then
     -- The retired open releases its sprite like the send-out open:
     -- the emerged mon owns the field from here.
     ball.visible = false
@@ -6462,17 +6548,26 @@ end
 ---@return boolean finished
 function CaptureActor.tickBallFadeCue(self, cue)
   local elapsed = cue.elapsed --[[@as integer]]
-  -- CaptureStateFadeOut steps its translucent OBJ alpha 15 -> 0 over
-  -- 16 ticks; the host blend path stages no OBJ alpha, so the cue
-  -- preserves the source duration and the hidden lifecycle here.
-  if elapsed >= CaptureActor.FADE_TICKS then
-    local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
-    if ball ~= nil then
+  local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+  if ball ~= nil then
+    if elapsed >= CaptureActor.FADE_TICKS then
       ball.visible = false
+      ball.fadeAlpha = 0
+      ball.fadeBeta = 15
+      ball.oamMode = "translucent"
+      return true
     end
-    return true
+    -- CaptureStateFadeOut switches the ball OBJ to XLU and steps the
+    -- foreground coefficient down while the background steps up:
+    -- 15/0 -> ... -> 0/15 over the 16 ticks before hiding.
+    local fadeA = math.max(0, 15 - elapsed)
+    ball.visible = true
+    ball.oamMode = "translucent"
+    ball.fadeAlpha = fadeA
+    ball.fadeBeta = 15 - fadeA
+    return false
   end
-  return false
+  return elapsed >= CaptureActor.FADE_TICKS
 end
 
 local function tickHpCue(self, cue)
@@ -6575,6 +6670,31 @@ local function tickWithdrawCue(self, cue)
   local shown = self:_shown(cue.combatant --[[@as integer]])
   if shown ~= nil and cue.fadeColor ~= nil then
     tickBallPoof(self, cue, shown, false)
+  elseif shown ~= nil and cue.captureAbsorb == true then
+    -- Task_PokemonEnterBall shrinks the target into the ball: affine
+    -- -32 per update, Y upward by one while the remaining height is
+    -- nonzero, deleting the picture at zero scale.
+    local step = cue.elapsed --[[@as integer]]
+    local affine = math.max(0, 0x100 - 0x20 * step)
+    if affine < 0x100 then
+      shown.affineMode = true
+      shown.affineWidth = affine
+      shown.affineHeight = affine
+      local lift = cue.rowHeight
+      if lift == nil then
+        local appearance = self._faintAppearance and self._faintAppearance(shown) or nil
+        local height = appearance and appearance.height or 0
+        lift = 40 - height
+        cue.rowHeight = lift
+      end
+      shown.pictureYOffset = lift - math.floor(lift * affine / 0x100)
+    else
+      shown.affineMode = nil
+      shown.affineWidth = nil
+      shown.affineHeight = nil
+      shown.pictureYOffset = nil
+    end
+    shown.visible = true
   end
   if
     cue.elapsed --[[@as integer]]
@@ -6582,6 +6702,12 @@ local function tickWithdrawCue(self, cue)
   then
     if shown ~= nil then
       shown.visible = false
+      if cue.captureAbsorb == true then
+        shown.affineMode = nil
+        shown.affineWidth = nil
+        shown.affineHeight = nil
+        shown.pictureYOffset = nil
+      end
       if cue.keepHud == true then
         shown.hudVisible = true
       end

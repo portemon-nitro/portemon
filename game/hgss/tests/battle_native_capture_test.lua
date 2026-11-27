@@ -322,15 +322,16 @@ function T.bounce_runs_source_rows_and_returns()
   timeline:reset(openingView())
   local driver = driveParticles(timeline)
   Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
-  -- From the entry anchor the yellow flash (12) and the drop (11)
-  -- precede the 21-tick bounce at the resting spot.
+  -- From the entry anchor the burst join guard (2), the yellow flash
+  -- (peak 12 step 3: 4 up + 4 down = 8) and the drop (11) precede the
+  -- 21-tick bounce at the resting spot.
   Assert.isTrue(
     waitFor(timeline, driver, function()
       return not battler(timeline:battlers(), 3).visible
     end, 3000),
     "the target enters the ball"
   )
-  for _ = 1, 12 + 11 do
+  for _ = 1, 2 + 8 + 11 do
     timeline:update(TICK, function(_)
       return true
     end)
@@ -374,15 +375,15 @@ function T.shakes_run_source_rows_with_rotation_reset()
   timeline:reset(openingView())
   local driver = driveParticles(timeline)
   Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
-  -- Reach the first wobble from the entry anchor: flash (12), drop
-  -- (11), and the 21-tick bounce.
+  -- Reach the first wobble from the entry anchor: join guard (2),
+  -- flash (8), drop (11), and the 21-tick bounce.
   Assert.isTrue(
     waitFor(timeline, driver, function()
       return not battler(timeline:battlers(), 3).visible
     end, 3000),
     "the target enters the ball"
   )
-  for _ = 1, 12 + 11 + 21 do
+  for _ = 1, 2 + 8 + 11 + 21 do
     timeline:update(TICK, function(_)
       return true
     end)
@@ -659,6 +660,107 @@ function T.blocked_throws_still_deflect_off_trainer_targets()
     "SEQ_SE_DP_KON",
   }, "the deflection arcs, bounces off, and voices its sound")
   Assert.isTrue(battler(timeline:battlers(), 3).visible, "the defended target stays out")
+end
+
+function T.flash_uses_native_colors_and_steps()
+  -- Native waits give step abs(wait)+2: yellow wait -1 -> 3,
+  -- black wait -5 -> 7. A hardcoded step of 2 or a hardcoded white
+  -- target must fail this test.
+  local timeline = BattleTimeline.new({})
+  stageBallArt(timeline)
+  timeline:reset(openingView())
+  local driver = driveParticles(timeline)
+  Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
+  Assert.isTrue(
+    waitFor(timeline, driver, function()
+      local ok, ball = pcall(ballOf, timeline)
+      return ok and ball.paletteFlash ~= nil and ball.paletteFlashColor ~= nil
+    end, 3000),
+    "the open flash publishes its color"
+  )
+  local ball = ballOf(timeline)
+  Assert.deepEqual(
+    ball.paletteFlashColor,
+    { 1, 27 / 31, 0 },
+    "the open flash carries yellow RGB(31,27,0), not white"
+  )
+  Assert.isTrue(ball.paletteFlash % 3 == 0, "the yellow coefficient advances by threes")
+  Assert.isTrue(ball.paletteFlash <= 12, "the yellow coefficient peaks at native 12")
+end
+
+function T.bounce_forces_cells_by_index_not_elapsed_time()
+  -- The staged opening cells each last 2 ticks, so the first bounce
+  -- row (forced frame 1) must show the second cell. Elapsed-time
+  -- sampling at tick 2 would still show the first cell, confusing the
+  -- forced frame domain with the authored duration domain.
+  local timeline = BattleTimeline.new({})
+  stageBallArt(timeline)
+  timeline:reset(openingView())
+  local driver = driveParticles(timeline)
+  Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
+  Assert.isTrue(
+    waitFor(timeline, driver, function()
+      return not battler(timeline:battlers(), 3).visible
+    end, 3000),
+    "the target enters the ball"
+  )
+  for _ = 1, 2 + 8 + 11 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+  end
+  timeline:update(TICK, function(_)
+    return true
+  end)
+  driver.step()
+  local ball = ballOf(timeline)
+  Assert.equal(ball.drawableKey, "cell:POKE_BALL:1", "the first bounce row forces frame 1")
+end
+
+function T.fade_publishes_translucent_alpha_not_a_hide_timer()
+  local timeline = BattleTimeline.new({})
+  stageBallArt(timeline)
+  timeline:reset(openingView())
+  local driver = driveParticles(timeline)
+  Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
+  Assert.isTrue(
+    waitFor(timeline, driver, function()
+      local ok, ball = pcall(ballOf, timeline)
+      return ok and ball.fadeAlpha ~= nil
+    end, 3000),
+    "the successful catch publishes its fade coefficients"
+  )
+  local ball = ballOf(timeline)
+  Assert.equal(ball.oamMode, "translucent", "the fade runs as a translucent OBJ")
+  Assert.isTrue(
+    ball.fadeAlpha >= 0 and ball.fadeAlpha <= 15,
+    "the fade coefficient runs native 15..0"
+  )
+  Assert.equal(ball.fadeBeta, 15 - ball.fadeAlpha, "the background coefficient complements the foreground")
+end
+
+function T.absorb_shrinks_affine_before_hiding()
+  local timeline = BattleTimeline.new({})
+  stageBallArt(timeline)
+  timeline:reset(openingView())
+  local driver = driveParticles(timeline)
+  Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
+  local shrank = waitFor(timeline, driver, function()
+    for _, entry in ipairs(timeline:battlers()) do
+      if entry.combatant == 3 and entry.affineWidth ~= nil and entry.affineWidth < 0x100 then
+        return true
+      end
+    end
+    return false
+  end, 3000)
+  Assert.isTrue(shrank, "the target shrinks through affine before vanishing")
+  Assert.isTrue(
+    waitFor(timeline, driver, function()
+      return not battler(timeline:battlers(), 3).visible
+    end, 3000),
+    "the target hides after its shrink"
+  )
 end
 
 return { tests = T }

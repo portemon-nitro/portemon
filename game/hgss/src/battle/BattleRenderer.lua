@@ -2759,8 +2759,9 @@ end
 ---@param graphics table<string, unknown> injected host graphics
 ---@param image table<string, unknown>|userdata staged ball drawable
 ---@param flash integer|nil source blend coefficient 0..16
+---@param flashColor table<string, number>|number[]|nil source RGB blend target, default white
 ---@param ... unknown placement arguments forwarded to the draw call
-local function drawBallCell(graphics, image, flash, ...)
+local function drawBallCell(graphics, image, flash, flashColor, ...)
   if flash == nil or flash == 0 then
     drawArtwork(graphics, image, nil, ...)
     return
@@ -2769,6 +2770,14 @@ local function drawBallCell(graphics, image, flash, ...)
     type(flash) == "number" and flash % 1 == 0 and flash >= 0 and flash <= 16,
     "ball flash is a source blend 0..16"
   )
+  local target = { 1, 1, 1 }
+  if type(flashColor) == "table" then
+    local r = flashColor[1] or flashColor.r
+    local g = flashColor[2] or flashColor.g
+    local b = flashColor[3] or flashColor.b
+    assert(type(r) == "number" and type(g) == "number" and type(b) == "number", "ball flash colors carry RGB")
+    target = { r, g, b }
+  end
   local drawable = image
   local palette = nil
   local sampler = samplerOf(image)
@@ -2788,7 +2797,7 @@ local function drawBallCell(graphics, image, flash, ...)
       end
     end
   end
-  drawPaletteFaded(graphics, { 1, 1, 1 }, flash, palette, 0, drawable, ...)
+  drawPaletteFaded(graphics, target, flash, palette, 0, drawable, ...)
 end
 
 -- Draws the thrown Poke Ball sprite over the battlefield. Ball cells are
@@ -2822,18 +2831,49 @@ local function drawThrownBall(graphics, assets, view)
       -- Ball cells anchor at their own center: the throw cells are 16x16
       -- and the opening animation's burst cell is 32x32.
       local width, height = imageCellExtent(image)
-      drawBallCell(
-        graphics,
-        image,
-        ball.paletteFlash --[[@as integer?]],
-        x,
-        y,
-        rotation / 0x10000 * 2 * math.pi,
-        1,
-        1,
-        math.floor(width / 2),
-        math.floor(height / 2)
-      )
+      local fadeAlpha = ball.fadeAlpha --[[@as integer?]]
+      if type(fadeAlpha) == "number" then
+        -- The successful-catch fade runs the ball as a translucent OBJ:
+        -- the foreground coefficient steps 15 -> 0 while the hidden
+        -- lifecycle ends at zero. Emulate with normalized alpha under
+        -- the shared compositor; both layouts read this same state.
+        assert(fadeAlpha % 1 == 0 and fadeAlpha >= 0 and fadeAlpha <= 15, "ball fade carries native 15..0")
+        local alpha = fadeAlpha / 15
+        graphics.push("all")
+        graphics.setColor(1, 1, 1, alpha)
+        local ok, err = pcall(
+          drawBallCell,
+          graphics,
+          image,
+          ball.paletteFlash,
+          ball.paletteFlashColor,
+          x,
+          y,
+          rotation / 0x10000 * 2 * math.pi,
+          1,
+          1,
+          math.floor(width / 2),
+          math.floor(height / 2)
+        )
+        graphics.pop()
+        if not ok then
+          error(err, 0)
+        end
+      else
+        drawBallCell(
+          graphics,
+          image,
+          ball.paletteFlash --[[@as integer?]],
+          ball.paletteFlashColor, --[[@as table<string, number>?]]
+          x,
+          y,
+          rotation / 0x10000 * 2 * math.pi,
+          1,
+          1,
+          math.floor(width / 2),
+          math.floor(height / 2)
+        )
+      end
     end
   end
 end
@@ -4795,10 +4835,15 @@ local function drawCompactScene(resources, view, content, compactUI)
     local function drawCompactBall()
       drawThrownBall(graphics, assets, view)
     end
+    local ballThrow = opening.ballThrow --[[@as table<string, unknown>]]
+    local ballMode = type(ballThrow.oamMode) == "string" and ballThrow.oamMode or "normal"
+    if ballMode ~= "normal" and ballMode ~= "translucent" and ballMode ~= "semitransparent" then
+      ballMode = "normal"
+    end
     objects[#objects + 1] = {
       objPriority = view.levelUpStats ~= nil and 1 or 0,
       submissionOrder = 1,
-      oamMode = "normal",
+      oamMode = ballMode,
       draw = drawCompactBall,
     }
   end

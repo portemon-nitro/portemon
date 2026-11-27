@@ -889,13 +889,15 @@ local function ballImagePaths(entry)
   end
   addCells(entry.frames)
   addCells(assert(entry.opening, "a staged ball carries its opening animation").frames)
-  local particles = entry.particles --[[@as { seal: table<string, unknown>, burst: table<string, unknown> }?]]
+  local particles = entry.particles --[[@as { seal: table<string, unknown>?, burst: table<string, unknown>?, genericBurst: table<string, unknown>? }?]]
   if particles ~= nil then
-    for _, set in ipairs({ particles.seal, particles.burst }) do
-      for _, texture in
-        ipairs(set.textures --[[@as table<string, unknown>[] ]])
-      do
-        paths[#paths + 1] = texture.image --[[@as string]]
+    for _, set in ipairs({ particles.seal, particles.burst, particles.genericBurst }) do
+      if type(set) == "table" then
+        for _, texture in
+          ipairs(set.textures --[[@as table<string, unknown>[] ]])
+        do
+          paths[#paths + 1] = texture.image --[[@as string]]
+        end
       end
     end
   end
@@ -3291,7 +3293,9 @@ function FieldBattlePresentation:_preparationServices()
       return resolveCatalogImage(envelope, graphics, images, failures, cacheFs, key, path)
     end
     local particleBall, particleKind, particleTexture = key:match("^battle%-ball%-particle:([%w_]+):(%a+):(%d+)$")
-    if particleBall ~= nil and (particleKind == "seal" or particleKind == "burst") then
+    if
+      particleBall ~= nil and (particleKind == "seal" or particleKind == "burst" or particleKind == "genericBurst")
+    then
       local entry = envelope._launchLeafRecords.battleBalls["ball:" .. particleBall]
       local particles = type(entry) == "table" and entry.particles or nil
       local set = type(particles) == "table" and particles[particleKind] or nil

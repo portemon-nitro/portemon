@@ -15,7 +15,7 @@ local SplParticleSimulation = require("libs.hgss.src.presentation.SplParticleSim
 
 ---@class BattleBallParticleResolver
 ---@field particles fun(ballKey: string): table<string, unknown>|nil staged particles of a ball, nil when it has none
----@field has (fun(ballKey: string): boolean)? entry probe, false when the ball stages no particles by contract
+---@field has (fun(ballKey: string): boolean|nil)? entry probe, false when the ball stages no particles by contract, nil while its entry is unstaged
 ---@field texture fun(ballKey: string, kind: "seal"|"burst"|"genericBurst", textureId: integer): table<string, unknown>|nil drawable handle, nil while staging
 
 ---@class BattleBallParticles

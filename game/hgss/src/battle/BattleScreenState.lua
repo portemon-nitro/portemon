@@ -1537,7 +1537,7 @@ function BattleScreenState.new(opts)
   -- of guessing an emitter lifetime. Headless drivers without a screen
   -- keep their explicit probe behind the same join.
   self._timeline:setParticleIdleProbe(function()
-    return self._ballParticles:isIdle()
+    return self._ballParticles:isIdle() and #self._ballParticles:failures() == 0
   end)
   local cases = nil
   if type(overrides.cases) == "table" then
@@ -8137,6 +8137,7 @@ function BattleScreenState:_stepBallParticles()
     and next(queued) == nil
     and self._ballParticles:isIdle()
     and #self._ballParticles:drawSystems() == 0
+    and #self._ballParticles:failures() == 0
   then
     return
   end
@@ -8148,13 +8149,39 @@ function BattleScreenState:_stepBallParticles()
     return entry ~= nil and entry.particles or nil
   end
   ---@param ballKey string
+  ---@return boolean|nil staged false only for affirmatively staged no-effect balls, nil when the entry has not staged yet
+  local function hasParticles(ballKey)
+    local entry = entries["ball:" .. ballKey]
+    if entry == nil then
+      return nil
+    end
+    if entry.particles == nil then
+      return false
+    end
+    return true
+  end
+  ---@param ballKey string
   ---@param kind "seal"|"burst"|"genericBurst"
   ---@param textureId integer
   ---@return table<string, unknown>|userdata|nil
   local function textureOf(ballKey, kind, textureId)
     return (self._assets:drawable("battle-ball-particle:" .. ballKey .. ":" .. kind .. ":" .. textureId))
   end
-  self._ballParticles:step(starts, queued, { particles = particlesOf, texture = textureOf })
+  self._ballParticles:step(starts, queued, { particles = particlesOf, has = hasParticles, texture = textureOf })
+  local failures = self._ballParticles:failures()
+  if #failures > 0 and self._mode ~= "failed" then
+    local first = failures[1] --[[@as table<string, unknown>]]
+    local start = first.start --[[@as table<string, unknown>]]
+    self._mode = "failed"
+    self._error = "battle ball effect "
+      .. tostring(start.effect)
+      .. " for ball "
+      .. tostring(start.ballKey)
+      .. " failed: "
+      .. tostring(first.reason)
+      .. " for launch "
+      .. tostring(self._launchId)
+  end
 end
 
 -- One fixed update: prepare, cancel held presses across remeasure, map
