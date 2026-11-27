@@ -3685,6 +3685,61 @@ function T.switch_voices_recall_and_send_out_with_the_side_pan()
   Assert.equal(sounds.played[3].pan, BattleAudio.SIDE_PAN.player, "the send-out pans to the player side")
 end
 
+-- Task_RecallPokemon mode-5 opens the ball in place with the shared
+-- generic burst while the mon shrinks: the recall wires the mode-5
+-- selector through its production route, keeping the generic resources
+-- for their verified consumer instead of an unused capture-era set.
+function T.recall_wires_mode5_generic_burst_through_its_production_route()
+  local timeline = BattleTimeline.new({ sound = sink().sound })
+  local view = openingView()
+  view.own[2] = {
+    combatant = 2,
+    participant = 1,
+    side = 1,
+    controller = "player",
+    active = false,
+    hp = 30,
+    maxHp = 30,
+    species = "EEVEE",
+    form = 0,
+    name = "BENCH",
+    ballKey = "POKE_BALL",
+    level = 20,
+    experience = 8000,
+  }
+  timeline:reset(view)
+  local after = openingView()
+  after.own[2] = view.own[2]
+  local swap = event("switch", { from = 1, to = 2, position = 1 }, { [1] = 52, [3] = 57 })
+  swap.cause = { kind = "switch" }
+  local delivery = packet(1, { swap }, after)
+  delivery.before.own[2] = view.own[2]
+  Assert.isTrue(timeline:present(delivery), "the switch is accepted")
+  -- The recall ball-particles cue starts once its narration page
+  -- releases: drain until the mode-5 start appears, like the production
+  -- screen steps its particle owner alongside the timeline.
+  local generics = {}
+  for _ = 1, 600 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    for _, start in ipairs(timeline:takeBallParticleStarts()) do
+      if type(start) == "table" and start.effect == "generic-burst" then
+        generics[#generics + 1] = start
+      end
+    end
+    if #generics >= 1 then
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.equal(#generics, 1, "the recall starts one mode-5 generic burst")
+  Assert.equal(generics[1].ballKey, "POKE_BALL", "the generic burst rides the recalled ball")
+  Assert.isTrue(type(generics[1].x) == "number" and type(generics[1].y) == "number", "the generic burst carries its in-place spot")
+end
+
 -- subscript_0011_ThrowBall names the throwing trainer, the target enters
 -- the ball before any shake, shakes print nothing, and a break-out sends
 -- the target back out before its line.

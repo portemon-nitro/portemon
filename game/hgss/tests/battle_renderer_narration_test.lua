@@ -166,13 +166,26 @@ function T.level_up_stats_window_draws_over_the_hud()
   local windowPriority = plain.animation.priority.window --[[@as integer]]
   -- Detail composes the ball on its own translucent-capable fragment
   -- ahead of the HUD fragment so the capture fade can blend the ball
-  -- while HUD stays normal.
-  Assert.equal(#plain.objects, 2, "detail separates the ball and HUD fragments")
-  Assert.equal(plain.objects[2].objPriority, windowPriority, "the HUD shares the window's top priority and wins ties")
+  -- while HUD stays normal. The HUD is identified by its
+  -- submission order, not a rigid array slot, so an extra
+  -- behavior-preserving fragment or a skipped empty ball never breaks
+  -- the ordering intent.
+  local function hudOf(frame)
+    for _, fragment in ipairs(frame.objects) do
+      if type(fragment) == "table" and fragment.submissionOrder == 2 then
+        return fragment
+      end
+    end
+    return nil
+  end
+  Assert.isTrue(#plain.objects >= 2, "detail separates the ball and HUD fragments")
+  local plainHud = assert(hudOf(plain), "the detail frame carries its HUD fragment")
+  Assert.equal(plainHud.objPriority, windowPriority, "the HUD shares the window's top priority and wins ties")
 
   local leveled = composedFrame({ rows = { { label = "Max. HP", value = "+3" } } })
   Assert.equal(leveled.animation.priority.window, windowPriority, "the stat window keeps its top BG priority")
-  Assert.isTrue(leveled.objects[2].objPriority > windowPriority, "the HUD drops behind the open level-up stat window")
+  local leveledHud = assert(hudOf(leveled), "the leveled frame carries its HUD fragment")
+  Assert.isTrue(leveledHud.objPriority > windowPriority, "the HUD drops behind the open level-up stat window")
 end
 
 -- Strip quads segregate by graphics namespace and strip dimensions: the same

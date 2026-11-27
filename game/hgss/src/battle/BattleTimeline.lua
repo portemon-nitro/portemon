@@ -3350,6 +3350,29 @@ local function translateSwitch(self, event)
   if type(departed) == "number" and not replacesFaint then
     enqueueMessage(self, recallText(self, departed --[[@as integer]], event), false, 0)
     enqueueBallSound(self, departed --[[@as integer]])
+    -- Task_RecallPokemon mode-5 opens the ball in place with the shared
+    -- generic burst while the mon fades and shrinks: the particle effect
+    -- starts here and runs concurrently with the withdraw below through
+    -- the owning screen's particle step, exactly like the native ball
+    -- task overlaps the shrink.
+    local recallBall = ballKeyOf(self, departed --[[@as integer]])
+    if type(recallBall) == "string" then
+      local recallType = battlerTypeOf(self, departed --[[@as integer]])
+      local spot = FOE_BALL_START_BY_BATTLER_TYPE[recallType]
+      if spot == nil then
+        spot = BattleTimeline.PLAYER_ARC_TARGETS[recallType]
+      end
+      if spot ~= nil then
+        enqueue(self, {
+          kind = "ball-particles",
+          effect = "generic-burst",
+          ballKey = recallBall,
+          battlerType = recallType,
+          x = spot.x,
+          y = spot.y,
+        })
+      end
+    end
     local fadeColor = ballFadeColorOf(self, departed --[[@as integer]])
     enqueue(self, {
       kind = "withdraw",
