@@ -42,13 +42,26 @@ local function stubAssets(opts)
   function assets.release(key)
     assets.released[key] = (assets.released[key] or 0) + 1
   end
-  function assets.paletteImage(key, raster)
+  function assets.paletteImage(key, source, palette)
     if assets.images[key] == nil then
-      assets.images[key] = { handle = key, raster = raster }
+      assets.images[key] = { handle = key, source = source, palette = palette }
     end
     return assets.images[key]
   end
   return assets
+end
+
+---@param id string stable source identity under staging
+---@param byte string repeated index/coverage byte filling the probe source
+---@return table<string, unknown> immutable probe source indices
+local function probeSource(id, byte)
+  return { id = id, width = 2, height = 2, pixels = string.rep(byte, 2 * 2 * 4) }
+end
+
+---@param byte string repeated palette byte filling the 256-slot probe palette
+---@return string exact 256-slot probe palette bytes
+local function probePalette(byte)
+  return string.rep(byte, 256 * 4)
 end
 
 ---@param overrides table? per-instance definition input under test driving
@@ -77,8 +90,8 @@ function T.faded_intro_uploads_through_services_and_releases_exactly_once()
     return "faded-image"
   end
   local battle = holder(nil, assets)
-  local raster = { width = 8, height = 8, pixels = "pixels" }
-  Assert.equal(battle:fadedIntro(raster), "faded-image", "the faded intro uploads through services")
+  local source = { id = "probe-intro", width = 8, height = 8, pixels = string.rep("p", 8 * 8 * 4) }
+  Assert.equal(battle:fadedIntro(source, probePalette("i")), "faded-image", "the faded intro uploads through services")
   Assert.equal(uploads, 1, "the faded intro uploads once")
   battle:releaseFadedIntro()
   Assert.equal(assets.released["battle-faded-intro"], 1, "releasing returns the services upload once")
@@ -101,29 +114,24 @@ function T.palette_drawable_generations_publish_transactionally()
     end
     return count
   end
-  local function paletteImage(key, raster)
+  local function paletteImage(key, source, palette)
     if failKey ~= nil and key:find(failKey, 1, true) ~= nil then
       return nil, "probe upload failure"
     end
-    local image = { handle = key, raster = raster }
+    local image = { handle = key, source = source, palette = palette }
     uploads[key] = image
     return image
   end
   assets.paletteImage = paletteImage
   local battle = holder(nil, assets)
-  local first = {
-    width = 1,
-    height = 1,
-    pixels = "first",
-  }
-  local second = {
-    width = 1,
-    height = 1,
-    pixels = "second",
-  }
+  local source = probeSource("probe-terrain", "f")
+  local firstPalette = probePalette("a")
+  local secondPalette = probePalette("b")
   local firstKey = nil
   Assert.isTrue(
-    battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:1", raster = first } }),
+    battle:updatePaletteDrawables({
+      terrain = { uploadKey = "battle-palette:scene:1", source = source, palette = firstPalette },
+    }),
     "the initial palette generation publishes"
   )
   for key in pairs(uploads) do
@@ -131,17 +139,18 @@ function T.palette_drawable_generations_publish_transactionally()
   end
   Assert.equal(battle:drawable("terrain"), uploads[firstKey], "the source key resolves its sampled image")
   local initialUploadCount = uploadCount()
-  local duplicate = { width = first.width, height = first.height, pixels = first.pixels }
   Assert.isTrue(
-    battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:2", raster = duplicate } }),
-    "equal source pixels reuse their published upload"
+    battle:updatePaletteDrawables({
+      terrain = { uploadKey = "battle-palette:scene:2", source = source, palette = firstPalette },
+    }),
+    "an identical source and palette reuse their published upload"
   )
-  Assert.equal(battle:drawable("terrain"), uploads[firstKey], "equal pixels retain the existing image")
-  Assert.equal(uploadCount(), initialUploadCount, "equal pixels acquire no replacement")
+  Assert.equal(battle:drawable("terrain"), uploads[firstKey], "an identical batch retains the existing image")
+  Assert.equal(uploadCount(), initialUploadCount, "an identical batch acquires no replacement")
   failKey = "battle-palette:scene:2"
   local published, failure = battle:updatePaletteDrawables({
-    terrain = { uploadKey = "battle-palette:scene:2", raster = second },
-    hud = { uploadKey = "battle-palette:hud:2", raster = second },
+    terrain = { uploadKey = "battle-palette:scene:2", source = source, palette = secondPalette },
+    hud = { uploadKey = "battle-palette:hud:2", source = probeSource("probe-hud", "h"), palette = secondPalette },
   })
   Assert.isFalse(published, "one failed upload rejects the replacement generation")
   Assert.isTrue(
@@ -167,7 +176,13 @@ function T.palette_drawable_generations_publish_transactionally()
   assets.paletteImage = paletteImage
   local replacement = holder(nil, assets)
   Assert.isTrue(
-    replacement:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:3", raster = second } }),
+    replacement:updatePaletteDrawables({
+      terrain = {
+        uploadKey = "battle-palette:scene:3",
+        source = probeSource("probe-terrain", "f"),
+        palette = secondPalette,
+      },
+    }),
     "a complete palette replacement publishes"
   )
   local replacementKey = "battle-palette:scene:3:generation:1"
@@ -183,14 +198,17 @@ function T.unchanged_palette_batch_reuses_the_published_generation()
   local assets = stubAssets({})
   local uploads = 0
   local baseUpload = assets.paletteImage
-  function assets.paletteImage(key, raster)
+  function assets.paletteImage(key, source, palette)
     uploads = uploads + 1
-    return baseUpload(key, raster)
+    return baseUpload(key, source, palette)
   end
+  local source = probeSource("probe-terrain", "a")
+  local palette = probePalette("p")
   local battle = holder(nil, assets)
-  local raster = { width = 2, height = 2, pixels = "abcd" }
   Assert.isTrue(
-    battle:updatePaletteDrawables({ terrain = { uploadKey = "battle-palette:scene:1", raster = raster } }),
+    battle:updatePaletteDrawables({
+      terrain = { uploadKey = "battle-palette:scene:1", source = source, palette = palette },
+    }),
     "the initial palette generation publishes"
   )
   Assert.equal(uploads, 1, "the initial batch uploads once")
@@ -199,7 +217,7 @@ function T.unchanged_palette_batch_reuses_the_published_generation()
   local generation = battle._paletteGeneration
   Assert.isTrue(
     battle:updatePaletteDrawables({
-      terrain = { uploadKey = "battle-palette:scene:1", raster = { width = 2, height = 2, pixels = "abcd" } },
+      terrain = { uploadKey = "battle-palette:scene:1", source = source, palette = probePalette("p") },
     }),
     "an identical batch republishes"
   )
@@ -213,8 +231,8 @@ end
 -- failure, so adapter-less hosts keep drawing the static intro lease.
 function T.faded_intro_without_a_services_adapter_draws_nothing_and_fails_nothing()
   local battle = holder()
-  local raster = { width = 8, height = 8, pixels = "pixels" }
-  Assert.isNil(battle:fadedIntro(raster), "no adapter stages no faded intro")
+  local source = { id = "probe-intro", width = 8, height = 8, pixels = string.rep("p", 8 * 8 * 4) }
+  Assert.isNil(battle:fadedIntro(source, probePalette("i")), "no adapter stages no faded intro")
   Assert.equal(battle:state(), "pending", "a missing adapter never latches a failure")
   battle:dispose()
 end
@@ -226,8 +244,8 @@ function T.faded_intro_upload_failure_latches_the_holder()
     return nil, "probe-failure"
   end
   local battle = holder(nil, assets)
-  local raster = { width = 8, height = 8, pixels = "pixels" }
-  local image, failure = battle:fadedIntro(raster)
+  local source = { id = "probe-intro", width = 8, height = 8, pixels = string.rep("p", 8 * 8 * 4) }
+  local image, failure = battle:fadedIntro(source, probePalette("i"))
   Assert.isNil(image, "a failed faded intro upload answers no image")
   Assert.isTrue(
     type(failure) == "string" and failure:find("probe-failure", 1, true) ~= nil,
@@ -692,8 +710,8 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     return stored
   end
   function assets.release(_) end
-  function assets.paletteImage(key, raster)
-    return { handle = key, raster = raster }
+  function assets.paletteImage(key, source, palette)
+    return { handle = key, source = source, palette = palette }
   end
   local launchId = "launch-portrait-rebind"
   local screen = BattleScreenState.new({

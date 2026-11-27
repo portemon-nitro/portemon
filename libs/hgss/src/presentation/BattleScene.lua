@@ -2436,6 +2436,17 @@ function BattleScene:hasIntro()
   return self._introRasterizer ~= nil
 end
 
+-- Exposes the unbaked intro plane's immutable index+coverage surface
+-- without composing colors: red carries the effective slot with bank
+-- and flip applied, green and blue stay zero, and coverage follows the
+-- intro transparency policy. Steady reads reuse the cached raster.
+---@return table<string, unknown> immutable index intro surface
+function BattleScene:introIndexRaster()
+  local rasterizer = assert(self._introRasterizer, "intro index raster requires staged base characters")
+  assert(not self._released, "released scenes compose no intro planes")
+  return rasterizer:indexRaster()
+end
+
 -- Composes the unbaked intro plane through 256 staged RGB888 colors:
 -- the installed palette when colors is nil, else a per-frame encounter
 -- fade. Effect layers never apply here: the intro is the battle-start

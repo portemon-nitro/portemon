@@ -203,8 +203,8 @@ function T.switched_arrival_travels_from_its_spawn_side_to_its_settled_edge(_, c
       drawable = function(key)
         return stagedDrawable(key)
       end,
-      paletteImage = function(key, raster)
-        return { handle = key, raster = raster, width = raster.width, height = raster.height }
+      paletteImage = function(key, source, palette)
+        return { handle = key, source = source, palette = palette, width = source.width, height = source.height }
       end,
       release = function(_, _) end,
     },

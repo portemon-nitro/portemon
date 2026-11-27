@@ -2102,21 +2102,28 @@ function T.faded_intro_uploads_once_and_releases_exactly_once()
     imagePool = scriptedPool(),
   })
   local services = envelope:_preparationServices()
-  local function raster(byte)
-    return { width = 8, height = 8, pixels = string.rep(byte, 8 * 8 * 4) }
+  local function introSource(byte)
+    return { id = "probe-intro", width = 8, height = 8, pixels = string.rep(byte, 8 * 8 * 4) }
   end
-  local first = raster("\1")
-  local firstImage = assert(services.fadedIntro(first), "the faded intro uploads")
-  Assert.equal(#uploads, 1, "the first faded raster uploads once")
-  Assert.isTrue(services.fadedIntro(first) == firstImage, "an unchanged raster reuses its upload")
-  Assert.equal(#uploads, 1, "an unchanged raster uploads nothing new")
-  local secondImage = assert(services.fadedIntro(raster("\2")), "a changed raster re-uploads")
-  Assert.equal(#uploads, 2, "a changed raster uploads once more")
-  Assert.isTrue(firstImage.released, "replacing the upload releases its predecessor exactly once")
-  Assert.isFalse(secondImage.released, "the live upload stays borrowed")
+  local function introPalette(byte)
+    return string.rep(byte, 256 * 4)
+  end
+  local source = introSource("\1")
+  local firstImage = assert(services.fadedIntro(source, introPalette("a")), "the faded intro uploads")
+  Assert.equal(#uploads, 2, "the first generation uploads its shared source and its small palette")
+  Assert.isTrue(
+    services.fadedIntro(source, introPalette("a")) == firstImage,
+    "an unchanged generation reuses its upload"
+  )
+  Assert.equal(#uploads, 2, "an unchanged generation uploads nothing new")
+  local secondImage = assert(services.fadedIntro(source, introPalette("b")), "a changed palette re-uploads")
+  Assert.equal(#uploads, 3, "a changed palette uploads only its small exact palette")
+  Assert.isTrue(uploads[2].released, "replacing the upload releases its predecessor palette exactly once")
+  Assert.isFalse(uploads[1].released, "the shared source stays borrowed across generations")
   services.release("battle-faded-intro")
-  Assert.isTrue(secondImage.released, "releasing the faded intro returns its upload")
-  local thirdImage = assert(services.fadedIntro(raster("\2")), "a released raster uploads again")
+  Assert.isTrue(uploads[3].released, "releasing the faded intro returns its live palette")
+  Assert.isTrue(uploads[1].released, "releasing the last handle returns its shared source")
+  local thirdImage = assert(services.fadedIntro(source, introPalette("b")), "a released generation uploads again")
   Assert.isTrue(thirdImage ~= secondImage, "a released upload never resurrects")
   envelope:dispose()
 end
@@ -2146,7 +2153,8 @@ function T.faded_intro_upload_failure_fails_closed()
     imagePool = scriptedPool(),
   })
   local services = envelope:_preparationServices()
-  local image, failure = services.fadedIntro({ width = 8, height = 8, pixels = string.rep("\1", 8 * 8 * 4) })
+  local source = { id = "probe-intro", width = 8, height = 8, pixels = string.rep("\1", 8 * 8 * 4) }
+  local image, failure = services.fadedIntro(source, string.rep("a", 256 * 4))
   Assert.isNil(image, "a failed faded intro upload answers no image")
   Assert.isTrue(
     type(failure) == "string" and failure:find("faded intro upload failed", 1, true) ~= nil,
@@ -2195,30 +2203,49 @@ function T.palette_images_reuse_replace_and_release_exactly_once()
     imagePool = scriptedPool(),
   })
   local services = envelope:_preparationServices()
-  local raster = { width = 2, height = 2, pixels = string.rep("\1", 2 * 2 * 4) }
-  local first = assert(services.paletteImage("battle-palette:probe:1", raster), "the first palette image uploads")
-  Assert.equal(#uploads, 1, "the first palette raster uploads once")
-  Assert.isTrue(services.paletteImage("battle-palette:probe:1", raster) == first, "matching bytes reuse the image")
-  Assert.equal(#uploads, 1, "matching bytes do not upload twice")
-  local changed = { width = 2, height = 2, pixels = string.rep("\2", 2 * 2 * 4) }
-  local second =
-    assert(services.paletteImage("battle-palette:probe:1", changed), "changed palette bytes replace the image")
-  Assert.equal(#uploads, 2, "changed bytes upload once")
-  Assert.isTrue(first.released, "replacement releases the old image")
-  Assert.isFalse(second.released, "the replacement stays live")
+  local function probeSource(id, byte)
+    return { id = id, width = 2, height = 2, pixels = string.rep(byte, 2 * 2 * 4) }
+  end
+  local function probePalette(byte)
+    return string.rep(byte, 256 * 4)
+  end
+  local source = probeSource("probe-art", "\1")
+  local first = assert(
+    services.paletteImage("battle-palette:probe:1", source, probePalette("a")),
+    "the first palette image uploads"
+  )
+  Assert.equal(#uploads, 2, "the first generation uploads its source and palette")
+  Assert.isTrue(
+    services.paletteImage("battle-palette:probe:1", source, probePalette("a")) == first,
+    "matching sources reuse the image"
+  )
+  Assert.equal(#uploads, 2, "matching sources do not upload twice")
+  local second = assert(
+    services.paletteImage("battle-palette:probe:1", source, probePalette("b")),
+    "a changed palette replaces the image"
+  )
+  Assert.equal(#uploads, 3, "a changed palette uploads only its small palette")
+  Assert.isTrue(second ~= first, "a changed palette resolves a new generation")
+  Assert.isTrue(uploads[2].released, "replacement releases the old palette")
+  Assert.isFalse(uploads[1].released, "the shared source stays borrowed across generations")
+  Assert.isFalse(uploads[3].released, "the replacement stays live")
   services.release("battle-palette:probe:1")
-  Assert.isTrue(second.released, "release returns the live image")
+  Assert.isTrue(uploads[3].released, "release returns the live palette")
+  Assert.isTrue(uploads[1].released, "release returns the shared source with its last handle")
   services.release("battle-palette:probe:1")
-  Assert.equal(second.releases, 1, "a repeated release returns the image only once")
-  Assert.equal(#uploads, 2, "a repeated release uploads nothing")
+  Assert.equal(uploads[3].releases, 1, "a repeated release returns the image only once")
+  Assert.equal(#uploads, 3, "a repeated release uploads nothing")
   failFilter = true
-  local failed, failure = services.paletteImage("battle-palette:probe:2", raster)
+  local failed, failure =
+    services.paletteImage("battle-palette:probe:2", probeSource("probe-other", "\2"), probePalette("c"))
   Assert.isNil(failed, "a filter setup failure publishes no partial image")
   Assert.isTrue(
     type(failure) == "string" and failure:find("probe filter setup failure", 1, true) ~= nil,
     "filter failure keeps its cause"
   )
-  Assert.equal(uploads[3].releases, 1, "a partially acquired image releases exactly once")
+  Assert.equal(#uploads, 4, "a failed acquire stages only its rolled-back source")
+  Assert.isTrue(uploads[4].released, "a partially acquired image releases")
+  Assert.equal(uploads[4].releases, 1, "a partially acquired image releases exactly once")
   envelope:dispose()
 end
 

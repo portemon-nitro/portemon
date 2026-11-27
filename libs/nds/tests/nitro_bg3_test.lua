@@ -171,4 +171,60 @@ function T.renders_native_8bpp_tiles_without_nibble_or_palette_bank_indexing()
   Assert.deepEqual({ raster:pixel(1, 0) }, { 0, 255, 0, 255 }, "8bpp pixels advance one byte per pixel")
 end
 
+-- The index raster exposes the cached effective palette index per pixel
+-- with native coverage instead of composed colors: red carries the
+-- banked/flipped slot, green and blue stay zero, and alpha follows the
+-- index-zero transparency policy. Palette-only updates never disturb
+-- it; only map patches invalidate it.
+function T.index_raster_exposes_effective_indices_with_native_coverage()
+  local tile = string.char(0x21) .. string.rep("\0", 31)
+  local chars = tile .. string.rep("\0", 32)
+  local colors = {}
+  for index = 0, 31 do
+    colors[index + 1] = { r = index, g = index + 1, b = index + 2 }
+  end
+  local bg = NitroBg3.new({
+    characters = chars,
+    map = {
+      width = 16,
+      height = 8,
+      entries = {
+        { tile = 0, flipH = false, flipV = false, palette = 0 },
+        { tile = 0, flipH = true, flipV = false, palette = 1 },
+      },
+    },
+    palette = { colors = colors },
+    colorMode = "4bpp",
+    transparentZero = true,
+  })
+  local index = bg:indexRaster()
+  Assert.equal(index.width, 16, "the index raster keeps the map width")
+  Assert.equal(index.height, 8, "the index raster keeps the map height")
+  Assert.equal(#index.pixels, 16 * 8 * 4, "the index raster packs one RGBA8 texel per pixel")
+  local function texel(pixel)
+    return { index.pixels:byte(pixel * 4 + 1, pixel * 4 + 4) }
+  end
+  Assert.deepEqual(texel(0), { 1, 0, 0, 255 }, "the low nibble keeps its effective slot with opaque coverage")
+  Assert.deepEqual(texel(1), { 2, 0, 0, 255 }, "the high nibble keeps its effective slot with opaque coverage")
+  Assert.deepEqual(texel(8), { 16, 0, 0, 255 }, "the flipped banked texel keeps its effective slot")
+  Assert.deepEqual(texel(15), { 17, 0, 0, 255 }, "the flipped banked corner keeps its effective slot")
+  Assert.equal(bg:indexRaster(), index, "steady reads reuse the cached index raster")
+  bg:patchPalette(1, { r = 90, g = 91, b = 92 })
+  Assert.equal(bg:indexRaster(), index, "palette patches never disturb the cached index raster")
+  local faded = {}
+  for slot = 1, 256 do
+    faded[slot] = { r = slot % 256, g = 0, b = 0 }
+  end
+  bg:replacePalette(faded)
+  Assert.equal(bg:indexRaster(), index, "palette replacement never disturbs the cached index raster")
+  bg:patchMap(1, { tile = 1, flipH = false, flipV = false, palette = 0 })
+  local remapped = bg:indexRaster()
+  Assert.isTrue(remapped ~= index, "map patches invalidate the cached index raster")
+  Assert.deepEqual(
+    { remapped.pixels:byte(8 * 4 + 1, 8 * 4 + 4) },
+    { 0, 0, 0, 0 },
+    "a remapped zero slot clears coverage under the transparency policy"
+  )
+end
+
 return { tests = T }

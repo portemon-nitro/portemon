@@ -10,6 +10,7 @@ local ffi = require("ffi")
 ---@field _palette { colors: table[] } owned mutable RGB888 palette
 ---@field _transparentZero boolean whether palette index zero clears pixels
 ---@field _indexPlane table<integer, integer>? cached effective palette index per pixel
+---@field _indexRaster table<string, unknown>? last composed immutable index surface
 ---@field _raster table<string, unknown>? last composed immutable surface
 local NitroBg3 = {}
 NitroBg3.__index = NitroBg3
@@ -63,6 +64,7 @@ function NitroBg3.new(opts)
     _palette = { colors = colors },
     _transparentZero = opts.transparentZero,
     _indexPlane = nil,
+    _indexRaster = nil,
     _raster = nil,
   }, NitroBg3)
 end
@@ -85,6 +87,7 @@ function NitroBg3:patchMap(index, entry)
   assert(type(entry.flipH) == "boolean" and type(entry.flipV) == "boolean", "map patches carry both flip bits")
   self._map.entries[index + 1] = copyEntry(entry)
   self._indexPlane = nil
+  self._indexRaster = nil
   self._raster = nil
 end
 
@@ -141,6 +144,11 @@ function NitroBg3:replacePalette(colors)
   self._palette = { colors = staged }
   self._raster = nil
 end
+
+---@class NitroBg3.IndexRaster
+---@field width integer raster width
+---@field height integer raster height
+---@field pixels string packed index RGBA8 pixels (red effective slot, alpha coverage)
 
 ---@class NitroBg3.Raster
 ---@field width integer raster width
@@ -215,6 +223,36 @@ local function indexPlaneFor(bg)
   end
   bg._indexPlane = plane
   return plane
+end
+
+-- Exposes the cached effective palette index plane as an immutable
+-- index+coverage surface without composing colors: red carries the
+-- banked/flipped slot, green and blue stay zero, and alpha follows the
+-- index-zero transparency policy. The surface memoizes with the index
+-- plane, so palette-only updates reuse it while map patches rebuild it.
+---@return NitroBg3.IndexRaster immutable index surface
+function NitroBg3:indexRaster()
+  if self._indexRaster ~= nil then
+    return self._indexRaster --[[@as NitroBg3.IndexRaster]]
+  end
+  local width, height = self._map.width, self._map.height
+  local plane = indexPlaneFor(self)
+  local count = width * height
+  local size = count * 4
+  local transparentZero = self._transparentZero
+  local out = ffi.new("uint8_t[?]", size)
+  for pixel = 0, count - 1 do
+    local colorIndex = plane[pixel + 1]
+    local target = pixel * 4
+    out[target] = colorIndex
+    out[target + 1] = 0
+    out[target + 2] = 0
+    out[target + 3] = (transparentZero and colorIndex == 0) and 0 or 255
+  end
+  ---@type NitroBg3.IndexRaster
+  local raster = { width = width, height = height, pixels = ffi.string(out, size) }
+  self._indexRaster = raster
+  return raster
 end
 
 ---@return NitroBg3.Raster immutable composed RGBA8 surface

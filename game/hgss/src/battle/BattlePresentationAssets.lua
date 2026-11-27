@@ -17,8 +17,8 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field prepareEvolution (fun(): table<string, unknown>?, string?)? late evolution leaf demand, nil while pending
 ---@field sceneLayer? fun(): table<string, unknown>?, string?
 ---@field background? fun(raster: table<string, unknown>): table<string, unknown>?, string?
----@field fadedIntro? fun(raster: table<string, unknown>): table<string, unknown>?, string?
----@field paletteImage? fun(key: string, raster: table<string, unknown>): table<string, unknown>|userdata|nil, string?
+---@field fadedIntro? fun(source: table<string, unknown>, palette: string): table<string, unknown>?, string?
+---@field paletteImage? fun(key: string, source: table<string, unknown>, palette: string): table<string, unknown>|userdata|nil, string?
 ---@field requestEffect? fun(key: string): boolean?, string?
 ---@field loadEffect? fun(key: string): table<string, unknown>?, string?
 ---@field resolveEffectResource? fun(effect: table<string, unknown>, resourceKey: string): table<string, unknown>?, string?
@@ -52,7 +52,7 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field _trainerPictures string[] semantic trainer picture class keys named so far
 ---@field _battleBalls string[] semantic ball selectors needed by this launch
 ---@field _owned table<string, boolean> image keys acquired through this holder
----@field _paletteDrawables table<string, { image: table<string, unknown>|userdata, uploadKey: string, raster: table<string, unknown> }> active palette-sampled drawable substitutions
+---@field _paletteDrawables table<string, { image: table<string, unknown>|userdata, uploadKey: string, source: table<string, unknown>, palette: string }> active palette-sampled drawable substitutions
 ---@field _paletteGeneration integer generation for transactional palette image replacements
 ---@field _imageErrors table<string, string> terminal upload failures by key, latched without retry
 ---@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load/lease state by flat effect key
@@ -514,10 +514,42 @@ function BattlePresentationAssets:drawable(key)
   return handle
 end
 
--- Publishes a complete keyed palette image set after its uploads succeed.
--- Upload keys are generation-specific so the previous drawable set remains
--- valid until the replacement batch is ready.
----@param requests table<string, { uploadKey: string, raster: table<string, unknown> }> source drawable key to sampled raster request
+-- Validates one source-indexed palette substitution request: the source
+-- carries its stable identity with immutable index bytes, and the
+-- palette carries the exact 256-slot RGBA8 bytes behind the generation.
+---@param sourceKey string source drawable key under staging
+---@param request table<string, unknown> staged substitution request under staging
+local function checkPaletteRequest(sourceKey, request)
+  assert(type(sourceKey) == "string" and sourceKey ~= "", "palette substitutions name their source drawable")
+  assert(type(request) == "table", "palette substitution carries its upload request")
+  assert(
+    type(request.uploadKey) == "string" and request.uploadKey:match("^battle%-palette:") ~= nil,
+    "palette upload keys are battle-scoped"
+  )
+  local source = request.source
+  assert(type(source) == "table", "palette substitutions carry their immutable source indices")
+  assert(type(source.id) == "string" and source.id ~= "", "palette substitutions name their stable source identity")
+  assert(
+    type(source.width) == "number"
+      and source.width % 1 == 0
+      and source.width > 0
+      and type(source.height) == "number"
+      and source.height % 1 == 0
+      and source.height > 0
+      and type(source.pixels) == "string"
+      and #source.pixels == source.width * source.height * 4,
+    "palette source indices match their raster dimensions"
+  )
+  assert(type(request.palette) == "string", "palette substitutions carry their exact palette bytes")
+end
+
+-- Publishes a complete keyed source-indexed palette set after its
+-- uploads succeed. Upload keys are generation-specific so the previous
+-- drawable set remains valid until the replacement batch is ready. An
+-- unchanged batch reuses its handles without uploading: only source
+-- identity and the exact palette signature compare, never upload keys
+-- or composed pixels.
+---@param requests table<string, { uploadKey: string, source: table<string, unknown>, palette: string }> source drawable key to source-index request
 ---@return boolean published
 ---@return string? failure
 function BattlePresentationAssets:updatePaletteDrawables(requests)
@@ -542,30 +574,15 @@ function BattlePresentationAssets:updatePaletteDrawables(requests)
     self._error = "battle palette image upload service is unavailable for launch " .. self._launchId
     return false, self._error
   end
-  -- A batch that changes no key and no raster reuses the published
-  -- generation without allocating a new one: no upload, no replacement,
-  -- and no release. Obsolete keys still retire only after a successful
-  -- replacement below.
+  -- A batch that changes no key, no source identity, and no palette
+  -- signature reuses the published generation without allocating a new
+  -- one: no upload, no replacement, and no release. Obsolete keys still
+  -- retire only after a successful replacement below.
   local unchanged = true
   for sourceKey, request in pairs(requests) do
-    assert(type(sourceKey) == "string" and sourceKey ~= "", "palette substitutions name their source drawable")
-    assert(type(request) == "table", "palette substitution carries its upload request")
-    assert(
-      type(request.uploadKey) == "string" and request.uploadKey:match("^battle%-palette:") ~= nil,
-      "palette upload keys are battle-scoped"
-    )
-    local raster = request.raster
-    assert(
-      type(raster) == "table" and type(raster.pixels) == "string",
-      "palette image requests carry RGBA8 raster pixels"
-    )
+    checkPaletteRequest(sourceKey, request)
     local current = self._paletteDrawables[sourceKey]
-    if
-      current == nil
-      or current.raster.width ~= raster.width
-      or current.raster.height ~= raster.height
-      or current.raster.pixels ~= raster.pixels
-    then
+    if current == nil or current.source ~= request.source or current.palette ~= request.palette then
       unchanged = false
       break
     end
@@ -586,47 +603,53 @@ function BattlePresentationAssets:updatePaletteDrawables(requests)
   local nextDrawables = {}
   local nextKeys = {}
   local newlyUploaded = {}
-  for sourceKey, request in pairs(requests) do
-    assert(type(sourceKey) == "string" and sourceKey ~= "", "palette substitutions name their source drawable")
-    assert(type(request) == "table", "palette substitution carries its upload request")
-    assert(
-      type(request.uploadKey) == "string" and request.uploadKey:match("^battle%-palette:") ~= nil,
-      "palette upload keys are battle-scoped"
-    )
+  -- Staging iterates keys in sorted order so multi-key batches behave
+  -- deterministically, and every changed key stages before any failure
+  -- rejects the generation: a partial short-circuit would leave which
+  -- candidates exist to chance, while the all-or-nothing publication
+  -- below keeps the prior generation intact either way.
+  local orderedKeys = {}
+  for sourceKey in pairs(requests) do
+    orderedKeys[#orderedKeys + 1] = sourceKey
+  end
+  table.sort(orderedKeys)
+  local failedKey = nil
+  local failedCause = nil
+  for _, sourceKey in ipairs(orderedKeys) do
+    local request = requests[sourceKey]
+    checkPaletteRequest(sourceKey, request)
     local current = self._paletteDrawables[sourceKey]
-    local raster = request.raster
-    assert(
-      type(raster) == "table" and type(raster.pixels) == "string",
-      "palette image requests carry RGBA8 raster pixels"
-    )
-    if
-      current ~= nil
-      and current.raster.width == raster.width
-      and current.raster.height == raster.height
-      and current.raster.pixels == raster.pixels
-    then
+    if current ~= nil and current.source == request.source and current.palette == request.palette then
       nextDrawables[sourceKey] = current
       nextKeys[current.uploadKey] = true
     else
       local uploadKey = request.uploadKey .. ":generation:" .. tostring(generation)
-      local image, failure = upload(uploadKey, raster)
+      local image, failure = upload(uploadKey, request.source, request.palette)
       if failure ~= nil or image == nil then
-        for rollbackKey in pairs(newlyUploaded) do
-          self._assets.release(rollbackKey)
+        if failedKey == nil then
+          failedKey = sourceKey
+          failedCause = failure
         end
-        self._state = "failed"
-        self._error = "battle palette image failed for "
-          .. sourceKey
-          .. " in launch "
-          .. self._launchId
-          .. ": "
-          .. tostring(failure or "upload returned no image")
-        return false, self._error
+      else
+        nextDrawables[sourceKey] =
+          { image = image, uploadKey = uploadKey, source = request.source, palette = request.palette }
+        nextKeys[uploadKey] = true
+        newlyUploaded[uploadKey] = true
       end
-      nextDrawables[sourceKey] = { image = image, uploadKey = uploadKey, raster = raster }
-      nextKeys[uploadKey] = true
-      newlyUploaded[uploadKey] = true
     end
+  end
+  if failedKey ~= nil then
+    for rollbackKey in pairs(newlyUploaded) do
+      self._assets.release(rollbackKey)
+    end
+    self._state = "failed"
+    self._error = "battle palette image failed for "
+      .. failedKey
+      .. " in launch "
+      .. self._launchId
+      .. ": "
+      .. tostring(failedCause or "upload returned no image")
+    return false, self._error
   end
   for _, current in pairs(self._paletteDrawables) do
     if not nextKeys[current.uploadKey] and self._owned[current.uploadKey] ~= nil then
@@ -921,18 +944,33 @@ function BattlePresentationAssets:background(raster)
   return image
 end
 
--- Uploads one composed faded intro raster through the services adapter:
--- nil without an adapter, nil plus a launch-scoped terminal error when
--- a configured upload fails. Successful uploads mark the key owned so
--- disposal returns them exactly once.
----@param raster table<string, unknown> composed RGBA8 intro raster from the battle scene
+-- Uploads one source-indexed faded intro generation through the services
+-- adapter: nil without an adapter, nil plus a launch-scoped terminal
+-- error when a configured upload fails. Successful uploads mark the key
+-- owned so disposal returns them exactly once.
+---@param source table<string, unknown> immutable intro source indices with stable identity
+---@param palette string exact 256-slot RGBA8 intro palette bytes
 ---@return table<string, unknown>? image handle, nil without an adapter or after failure
 ---@return string? terminal upload failure, nil without an adapter or on success
-function BattlePresentationAssets:fadedIntro(raster)
+function BattlePresentationAssets:fadedIntro(source, palette)
   if type(self._assets.fadedIntro) ~= "function" then
     return nil
   end
-  local image, failure = self._assets.fadedIntro(raster)
+  assert(type(source) == "table", "the faded intro carries its immutable source indices")
+  assert(type(source.id) == "string" and source.id ~= "", "the faded intro names its stable source identity")
+  assert(
+    type(source.width) == "number"
+      and source.width % 1 == 0
+      and source.width > 0
+      and type(source.height) == "number"
+      and source.height % 1 == 0
+      and source.height > 0
+      and type(source.pixels) == "string"
+      and #source.pixels == source.width * source.height * 4,
+    "the faded intro source indices match their raster dimensions"
+  )
+  assert(type(palette) == "string", "the faded intro carries its exact palette bytes")
+  local image, failure = self._assets.fadedIntro(source, palette)
   if failure ~= nil or image == nil then
     self._state = "failed"
     self._error = "battle faded intro image failed for launch "

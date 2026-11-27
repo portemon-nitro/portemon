@@ -9,6 +9,7 @@
 
 local Assert = require("tests.support.Assert")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local BattleEncounterIndexedRaster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
 local BattleScreenFixture = require("game.hgss.tests.support.BattleScreenFixture")
 local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local EncounterParticlesFixture = require("tests.support.BattleEncounterParticlesFixture")
@@ -18,6 +19,18 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local Rgb555 = require("libs.codec.src.Rgb555")
 
 local CompositionFrameDrain = require("tests.support.CompositionFrameDrain")
+
+-- Composes one uploaded source-indexed generation through its displayed
+-- words with the exact CPU oracle: the battle-local GPU sampler
+-- reproduces these bytes pixel-identically, so composed assertions
+-- keep proving the sampled colors without a composed upload.
+---@param record { source: table<string, unknown>, palette: string } uploaded generation under inspection
+---@param words table<integer, integer> displayed RGB555 words keyed by one-based slot
+---@return string composed RGBA8 pixels
+local function composedGeneration(record, words)
+  local source = assert(record.source, "uploaded generations carry their immutable source")
+  return BattleEncounterIndexedRaster.render(source.pixels, source.width, source.height, words).pixels
+end
 
 local T = {}
 ---@param draws table[] recorded draws under inspection
@@ -200,17 +213,17 @@ local function openEncounterRig(opts)
   function assets.sceneLayer()
     return staged
   end
-  function assets.fadedIntro(raster)
-    fadedRasters[#fadedRasters + 1] = raster
+  function assets.fadedIntro(source, palette)
+    fadedRasters[#fadedRasters + 1] = { source = source, palette = palette }
     if opts.fadedIntroFailure ~= nil then
       return nil, opts.fadedIntroFailure
     end
-    return { handle = "faded-intro-image" }
+    return { handle = "faded-intro-image", source = source, palette = palette }
   end
-  function assets.paletteImage(key, raster)
-    local image = { handle = key, raster = raster, width = raster.width, height = raster.height }
+  function assets.paletteImage(key, source, palette)
+    local image = { handle = key, source = source, palette = palette, width = source.width, height = source.height }
     paletteRasters[key] = paletteRasters[key] or {}
-    paletteRasters[key][#paletteRasters[key] + 1] = raster
+    paletteRasters[key][#paletteRasters[key] + 1] = { source = source, palette = palette }
     return image
   end
   function assets.drawable(key)
@@ -714,19 +727,32 @@ function T.screen_draws_source_sampled_terrain_under_untinted_encounter_particle
     local key = "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player"
     local image = rig.screen._assets:drawable(key)
     Assert.notNil(image, "native terrain publishes a keyed palette drawable")
-    local raster = image.raster
-    Assert.notNil(raster, "the keyed drawable retains its uploaded raster for verification")
-    Assert.equal(raster.width, width, "the sampled terrain keeps source width")
-    Assert.equal(raster.height, height, "the sampled terrain keeps source height")
-    for pixelIndex, slot in ipairs({ 1, 2 }) do
-      local rgb = Rgb555.decode(palette.mainObj[slot])
+    local source = image.source
+    Assert.notNil(source, "the keyed drawable retains its uploaded source for verification")
+    Assert.equal(source.width, width, "the sampled terrain keeps source width")
+    Assert.equal(source.height, height, "the sampled terrain keeps source height")
+    -- The staged source alternates indices 0 and 1 with the first two
+    -- pixels opaque: indices ride the uploaded source while displayed
+    -- colors ride the exact uploaded palette, never a composed raster.
+    for pixelIndex, slot in ipairs({ 0, 1 }) do
+      local rgb = Rgb555.decode(palette.mainObj[slot + 1])
       local offset = (pixelIndex - 1) * 4
-      Assert.equal(raster.pixels:byte(offset + 1), rgb.r, "source slot " .. slot .. " samples its displayed red")
-      Assert.equal(raster.pixels:byte(offset + 2), rgb.g, "source slot " .. slot .. " samples its displayed green")
-      Assert.equal(raster.pixels:byte(offset + 3), rgb.b, "source slot " .. slot .. " samples its displayed blue")
-      Assert.equal(raster.pixels:byte(offset + 4), 255, "opaque source coverage remains opaque")
+      Assert.equal(source.pixels:byte(offset + 1), slot, "source pixels name their displayed slot")
+      Assert.equal(source.pixels:byte(offset + 4), 255, "opaque source coverage remains opaque")
+      local paletteOffset = slot * 4
+      Assert.equal(image.palette:byte(paletteOffset + 1), rgb.r, "source slot " .. slot .. " samples its displayed red")
+      Assert.equal(
+        image.palette:byte(paletteOffset + 2),
+        rgb.g,
+        "source slot " .. slot .. " samples its displayed green"
+      )
+      Assert.equal(
+        image.palette:byte(paletteOffset + 3),
+        rgb.b,
+        "source slot " .. slot .. " samples its displayed blue"
+      )
     end
-    Assert.equal(raster.pixels:byte(12), 0, "transparent source coverage stays transparent")
+    Assert.equal(source.pixels:byte(12), 0, "transparent source coverage stays transparent")
 
     local uploadCount = #rig.paletteRasters[image.handle]
     -- The published pre-advance frame shows the tick-start state, so a
@@ -936,18 +962,16 @@ function T.interaction_menu_samples_source_bg_and_obj_planes_without_the_lower_w
     Assert.isFalse(sampledScreen("menu:two-option:screen:1@general"), "inactive child screens are not sampled")
     local bgRgb = Rgb555.decode(palette.subBg[1])
     local objRgb = Rgb555.decode(palette.subObj[2])
-    Assert.deepEqual({
-      bgImage.raster.pixels:byte(1),
-      bgImage.raster.pixels:byte(2),
-      bgImage.raster.pixels:byte(3),
-      bgImage.raster.pixels:byte(4),
-    }, { bgRgb.r, bgRgb.g, bgRgb.b, 255 }, "menu source pixels sample SUB_BG words")
-    Assert.deepEqual({
-      objImage.raster.pixels:byte(1),
-      objImage.raster.pixels:byte(2),
-      objImage.raster.pixels:byte(3),
-      objImage.raster.pixels:byte(4),
-    }, { objRgb.r, objRgb.g, objRgb.b, 255 }, "menu source pixels sample SUB_OBJ words")
+    Assert.deepEqual(
+      { composedGeneration({ source = bgImage.source }, palette.subBg):byte(1, 4) },
+      { bgRgb.r, bgRgb.g, bgRgb.b, 255 },
+      "menu source pixels sample SUB_BG words"
+    )
+    Assert.deepEqual(
+      { composedGeneration({ source = objImage.source }, palette.subObj):byte(1, 4) },
+      { objRgb.r, objRgb.g, objRgb.b, 255 },
+      "menu source pixels sample SUB_OBJ words"
+    )
     -- While the encounter reveal holds the controls disabled, only the
     -- backdrop plane draws: the button tilemaps stay hidden, matching the
     -- retail SUB_2-only disabled composition.
@@ -1192,22 +1216,30 @@ function T.wild_encounter_fade_draws_the_faded_intro_while_active()
     0,
     "the running fade draws no static intro lease"
   )
-  Assert.isTrue(#rig.fadedRasters >= 2, "several encounter frames upload their own raster")
+  Assert.isTrue(#rig.fadedRasters >= 2, "several encounter frames upload their own generation")
+  -- The unbaked intro tile addresses index 0x78, staged with the red
+  -- base word: the uploaded palette carries the displayed word at that
+  -- slot while the source keeps the immutable index.
+  local INTRO_SLOT = 0x78
+  local function introSlotBytes(record)
+    local base = INTRO_SLOT * 4 + 1
+    return { record.palette:byte(base, base + 3) }
+  end
   Assert.deepEqual(
-    { rig.fadedRasters[1]:pixel(0, 0) },
+    introSlotBytes(rig.fadedRasters[1]),
     { 255, 0, 0, 255 },
-    "the first faded raster samples the unfaded red base"
+    "the first faded generation samples the unfaded red base"
   )
   local midFade = false
   local distinct = {}
-  for _, raster in ipairs(rig.fadedRasters) do
-    local r, g, b, a = raster:pixel(0, 0)
+  for _, record in ipairs(rig.fadedRasters) do
+    local r, g, b, a = unpack(introSlotBytes(record))
     distinct[r * 65536 + g * 256 + b] = true
     if r == 255 and g == 25 and b == 25 and a == 255 then
       midFade = true
     end
   end
-  Assert.isTrue(midFade, "a mid-fade raster blends red toward white at coefficient 2")
+  Assert.isTrue(midFade, "a mid-fade generation blends red toward white at coefficient 2")
   local distinctCount = 0
   for _ in pairs(distinct) do
     distinctCount = distinctCount + 1
@@ -1275,8 +1307,9 @@ function T.encounter_intro_uploads_follow_visible_palette_changes()
   local frame11Word =
     assert(frame11.openingPresentation.encounterPalette.mainBg[121], "the visible source color is staged")
   local frame11Expected = Rgb555.decode(frame11Word)
+  local frame11Slot = { rig.fadedRasters[#rig.fadedRasters].palette:byte(0x78 * 4 + 1, 0x78 * 4 + 4) }
   Assert.deepEqual(
-    { rig.fadedRasters[#rig.fadedRasters]:pixel(0, 0) },
+    frame11Slot,
     { frame11Expected.r, frame11Expected.g, frame11Expected.b, 255 },
     "the frame-11 upload carries that tick's displayed palette word"
   )
@@ -1296,26 +1329,26 @@ function T.encounter_intro_uploads_follow_visible_palette_changes()
     settledPaletteUploadCount,
     "late palette changes outside visible source indices do not replace indexed plane images"
   )
-  local rastersBySource = {}
-  for key, rasters in pairs(rig.paletteRasters) do
+  local generationsBySource = {}
+  for key, records in pairs(rig.paletteRasters) do
     local sourceKey = key:gsub(":generation:%d+$", "")
-    local published = rastersBySource[sourceKey] or {}
+    local published = generationsBySource[sourceKey] or {}
     local generation = tonumber(key:match(":generation:(%d+)$"))
-    for _, raster in ipairs(rasters) do
-      published[#published + 1] = { generation = generation, raster = raster }
+    for _, record in ipairs(records) do
+      published[#published + 1] = { generation = generation, source = record.source, palette = record.palette }
     end
-    rastersBySource[sourceKey] = published
+    generationsBySource[sourceKey] = published
   end
-  for sourceKey, uploads in pairs(rastersBySource) do
+  for sourceKey, uploads in pairs(generationsBySource) do
     table.sort(uploads, function(left, right)
       return left.generation < right.generation
     end)
     for index = 2, #uploads do
-      local previous = uploads[index - 1].raster
-      local current = uploads[index].raster
-      Assert.isFalse(
-        current.width == previous.width and current.height == previous.height and current.pixels == previous.pixels,
-        "a source drawable never uploads a duplicate current raster: " .. sourceKey
+      local previous = uploads[index - 1]
+      local current = uploads[index]
+      Assert.isTrue(
+        current.source ~= previous.source or current.palette ~= previous.palette,
+        "a source drawable never uploads a duplicate current generation: " .. sourceKey
       )
     end
   end
@@ -1584,18 +1617,20 @@ function T.wild_singles_palette_requests_cover_only_visible_drawables()
   local palette = rig.screen:view().openingPresentation.encounterPalette
   Assert.notNil(palette, "the composed frame carries its displayed native planes")
   local terrainExpected = Rgb555.decode(assert(palette.mainObj[33], "the terrain slot stages its word"))
-  local terrainRaster = latestPublishedRaster(rig, prefix .. "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player")
-  Assert.notNil(terrainRaster, "the terrain publishes its sampled raster")
-  Assert.equal(terrainRaster.pixels:byte(1), terrainExpected.r, "the sampled terrain red follows its word")
-  Assert.equal(terrainRaster.pixels:byte(2), terrainExpected.g, "the sampled terrain green follows its word")
-  Assert.equal(terrainRaster.pixels:byte(3), terrainExpected.b, "the sampled terrain blue follows its word")
-  Assert.equal(terrainRaster.pixels:byte(4), 255, "opaque terrain coverage stays opaque")
+  local terrainRecord = latestPublishedRaster(rig, prefix .. "scene-terrain:" .. ENCOUNTER_SCENE_KEY .. ":player")
+  Assert.notNil(terrainRecord, "the terrain publishes its sampled generation")
+  local terrainComposed = composedGeneration(terrainRecord, palette.mainObj)
+  Assert.equal(terrainComposed:byte(1), terrainExpected.r, "the sampled terrain red follows its word")
+  Assert.equal(terrainComposed:byte(2), terrainExpected.g, "the sampled terrain green follows its word")
+  Assert.equal(terrainComposed:byte(3), terrainExpected.b, "the sampled terrain blue follows its word")
+  Assert.equal(terrainComposed:byte(4), 255, "opaque terrain coverage stays opaque")
   local menuExpected = Rgb555.decode(assert(palette.subBg[1], "the menu slot stages its word"))
-  local menuRaster = latestPublishedRaster(rig, prefix .. "menu:command:screen:1@general")
-  Assert.notNil(menuRaster, "the command menu publishes its sampled raster")
-  Assert.equal(menuRaster.pixels:byte(1), menuExpected.r, "the sampled menu red follows its word")
-  Assert.equal(menuRaster.pixels:byte(2), menuExpected.g, "the sampled menu green follows its word")
-  Assert.equal(menuRaster.pixels:byte(3), menuExpected.b, "the sampled menu blue follows its word")
+  local menuRecord = latestPublishedRaster(rig, prefix .. "menu:command:screen:1@general")
+  Assert.notNil(menuRecord, "the command menu publishes its sampled generation")
+  local menuComposed = composedGeneration(menuRecord, palette.subBg)
+  Assert.equal(menuComposed:byte(1), menuExpected.r, "the sampled menu red follows its word")
+  Assert.equal(menuComposed:byte(2), menuExpected.g, "the sampled menu green follows its word")
+  Assert.equal(menuComposed:byte(3), menuExpected.b, "the sampled menu blue follows its word")
   rig.screen:dispose()
 end
 
@@ -1723,17 +1758,19 @@ function T.trainer_doubles_reveal_binds_visible_slots_and_enemy_gauge()
   local palette = rig.screen:view().openingPresentation.encounterPalette
   Assert.notNil(palette, "the revealed frame carries its displayed native planes")
   local expected = Rgb555.decode(assert(palette.subObj[1], "the enemy gauge slot stages its word"))
-  local raster = latestPublishedRaster(rig, prefix .. "gauges:enemy")
-  Assert.notNil(raster, "the revealed gauge publishes its sampled raster")
-  Assert.equal(raster.pixels:byte(1), expected.r, "the revealed gauge red follows its displayed word")
-  Assert.equal(raster.pixels:byte(2), expected.g, "the revealed gauge green follows its displayed word")
-  Assert.equal(raster.pixels:byte(3), expected.b, "the revealed gauge blue follows its displayed word")
+  local record = latestPublishedRaster(rig, prefix .. "gauges:enemy")
+  Assert.notNil(record, "the revealed gauge publishes its sampled generation")
+  local composed = composedGeneration(record, palette.subObj)
+  Assert.equal(composed:byte(1), expected.r, "the revealed gauge red follows its displayed word")
+  Assert.equal(composed:byte(2), expected.g, "the revealed gauge green follows its displayed word")
+  Assert.equal(composed:byte(3), expected.b, "the revealed gauge blue follows its displayed word")
   local hudExpected = Rgb555.decode(assert(palette.mainObj[1], "the doubles HUD slot stages its word"))
-  local hudRaster = latestPublishedRaster(rig, prefix .. "hud:player-left")
-  Assert.notNil(hudRaster, "the revealed doubles strip publishes its sampled raster")
-  Assert.equal(hudRaster.pixels:byte(1), hudExpected.r, "the revealed HUD red follows its displayed word")
-  Assert.equal(hudRaster.pixels:byte(2), hudExpected.g, "the revealed HUD green follows its displayed word")
-  Assert.equal(hudRaster.pixels:byte(3), hudExpected.b, "the revealed HUD blue follows its displayed word")
+  local hudRecord = latestPublishedRaster(rig, prefix .. "hud:player-left")
+  Assert.notNil(hudRecord, "the revealed doubles strip publishes its sampled generation")
+  local hudComposed = composedGeneration(hudRecord, palette.mainObj)
+  Assert.equal(hudComposed:byte(1), hudExpected.r, "the revealed HUD red follows its displayed word")
+  Assert.equal(hudComposed:byte(2), hudExpected.g, "the revealed HUD green follows its displayed word")
+  Assert.equal(hudComposed:byte(3), hudExpected.b, "the revealed HUD blue follows its displayed word")
   rig.screen:dispose()
 end
 
@@ -1800,11 +1837,9 @@ function T.foe_trainer_ball_samples_its_own_native_palette_instance()
 end
 
 -- A palette version bump that touches only banks no visible drawable
--- uses performs no rasterization and keeps every published image: the
--- screen reuses its sampled rasters and the holder performs no upload.
+-- uses keeps every published image: the screen reuses its sampled
+-- sources and exact palettes and the holder performs no upload.
 function T.unused_palette_banks_keep_published_drawables()
-  local Raster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
-  local realRender = Raster.render
   local rig = openEncounterRig()
   rig.stage(stagedEncounterLayer(60, 43))
   rig.pump(5)
@@ -1828,17 +1863,10 @@ function T.unused_palette_banks_keep_published_drawables()
     presentation.encounterPalette.mainObj[6] = 0x7FFF
     return presentation
   end
-  local renders = 0
-  Raster.render = function(...)
-    renders = renders + 1
-    return realRender(...)
-  end
   local ok, err = pcall(function()
     rig.pump(1)
   end)
-  Raster.render = realRender
   Assert.isTrue(ok, "the unused bank change never fails the screen: " .. tostring(err))
-  Assert.equal(renders, 0, "an unused bank change rasterizes no visible drawable")
   Assert.equal(paletteUploadCount(rig), before, "an unused bank change uploads no replacement")
   Assert.equal(
     rig.screen._assets:drawable(terrainKey),

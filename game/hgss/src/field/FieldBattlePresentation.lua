@@ -20,6 +20,7 @@ local FieldEvolutionAssets = require("game.hgss.src.field.FieldEvolutionAssets")
 local MonCache = require("libs.assets.src.MonCache")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local BattleEncounterTransition = require("libs.hgss.src.transition.BattleEncounterTransition")
+local BattleEncounterPaletteImage = require("game.hgss.src.battle.BattleEncounterPaletteImage")
 local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
 local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFamilyFactory")
 
@@ -59,6 +60,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field _manifest table<string, unknown> staged or planning presentation manifest
 ---@field _services table<string, unknown> cache-backed preparation services carrying prepare/drawable/release
+---@field _paletteOwner table<string, unknown>? battle-local indexed palette sampler owner behind launch uploads
 ---@field _preparedDemands table<integer, table<string, unknown>> exact launch demands requested, in order
 ---@field _launchId string? active launch identity, nil outside launches
 ---@field _descriptor table<string, unknown>? active launch descriptor from the runtime
@@ -2175,9 +2177,23 @@ function FieldBattlePresentation:_preparationServices()
   local stagedSourceMeta = nil
   local backgroundPixels = nil
   local backgroundImage = nil
-  local fadedIntroPixels = nil
+  local fadedIntroSource = nil
+  local fadedIntroPalette = nil
   local fadedIntroImage = nil
-  local palettePixels = {} ---@type table<string, { width: integer, height: integer, pixels: string }>
+  local paletteStages = {} ---@type table<string, { source: table<string, unknown>, palette: string, handle: table<string, unknown> }>
+  -- The battle-local indexed sampler owner behind the faded intro and
+  -- palette image services: stable source indices stay shared across
+  -- generations while each displayed palette uploads its own tiny
+  -- image. Created on first use and released at envelope disposal; no
+  -- cache outlives the live handles.
+  local function indexedPaletteOwner()
+    local owner = envelope._paletteOwner
+    if owner == nil then
+      owner = BattleEncounterPaletteImage.new({ graphics = graphics })
+      envelope._paletteOwner = owner
+    end
+    return owner
+  end
   local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
   local services = { headless = graphics == nil }
   -- Whether every encounter particle texture of the staged scene still
@@ -2660,87 +2676,66 @@ function FieldBattlePresentation:_preparationServices()
     images["battle-background"] = backgroundImage
     return backgroundImage
   end
-  -- Uploads one composed faded intro raster through the bulk pixel path:
-  -- the raster already carries packed RGBA8 pixels, so no per-pixel Lua
-  -- runs on the frame loop. Ownership mirrors the background upload: an
-  -- unchanged raster reuses its image, a changed raster releases its
-  -- predecessor exactly once, and failures adopt nothing.
-  function services.fadedIntro(raster)
+  -- Uploads one source-indexed faded intro generation through the
+  -- battle-local sampler owner: the immutable source indices stay
+  -- shared while each displayed palette uploads its own tiny image.
+  -- Ownership mirrors the background upload: an unchanged generation
+  -- reuses its handle, a changed generation releases its predecessor
+  -- exactly once, and failures adopt nothing.
+  function services.fadedIntro(source, palette)
     assert(graphics ~= nil, "faded intro upload requires host graphics")
-    assert(type(raster) == "table" and type(raster.pixels) == "string", "faded intro upload takes a composed raster")
-    if raster == fadedIntroPixels then
+    assert(
+      type(source) == "table" and type(source.id) == "string" and type(source.pixels) == "string",
+      "faded intro upload takes immutable source indices"
+    )
+    assert(type(palette) == "string", "faded intro upload takes exact palette bytes")
+    if fadedIntroImage ~= nil and fadedIntroSource == source and fadedIntroPalette == palette then
       return fadedIntroImage
     end
-    local ok, uploadedOrError = pcall(function()
-      local imageData = love.image.newImageData(raster.width, raster.height, "rgba8", raster.pixels)
-      local uploaded = graphics.newImage(imageData)
-      assert(uploaded ~= nil, "the graphics driver handed out no faded intro image")
-      uploaded:setFilter("nearest", "nearest")
-      return uploaded
-    end)
-    if not ok or uploadedOrError == nil then
-      local cause = ok and "empty faded intro image handle" or tostring(uploadedOrError)
-      return nil, "battle scene faded intro upload failed for " .. tostring(stagedSceneKey) .. ": " .. cause
+    local handle, failure = indexedPaletteOwner():acquire(source, palette)
+    if handle == nil then
+      return nil, "battle scene faded intro upload failed for " .. tostring(stagedSceneKey) .. ": " .. tostring(failure)
     end
     if fadedIntroImage ~= nil and type(fadedIntroImage.release) == "function" then
       fadedIntroImage:release()
     end
-    fadedIntroPixels = raster
-    fadedIntroImage = uploadedOrError
+    fadedIntroSource = source
+    fadedIntroPalette = palette
+    fadedIntroImage = handle
     images["battle-faded-intro"] = fadedIntroImage
     return fadedIntroImage
   end
-  -- Uploads one battle-private sampled palette image. The source image pool
-  -- never sees these keys; replacement adopts only a fully created image.
-  function services.paletteImage(key, raster)
+  -- Uploads one battle-private source-indexed palette generation through
+  -- the battle-local sampler owner. The source image pool never sees
+  -- these keys; replacement adopts only a fully created handle. An
+  -- unchanged generation reuses its handle while a changed one
+  -- releases its predecessor exactly once, and failures adopt nothing.
+  function services.paletteImage(key, source, palette)
     assert(graphics ~= nil, "battle palette upload requires host graphics")
     assert(type(key) == "string" and key:match("^battle%-palette:") ~= nil, "palette images use battle-scoped keys")
-    assert(type(raster) == "table" and type(raster.pixels) == "string", "palette upload takes packed RGBA8 pixels")
     assert(
-      type(raster.width) == "number"
-        and raster.width % 1 == 0
-        and raster.width > 0
-        and type(raster.height) == "number"
-        and raster.height % 1 == 0
-        and raster.height > 0
-        and #raster.pixels == raster.width * raster.height * 4,
-      "palette image pixels match their raster dimensions"
+      type(source) == "table" and type(source.id) == "string" and type(source.pixels) == "string",
+      "palette upload takes immutable source indices"
     )
-    local existingPixels = palettePixels[key]
-    local existingImage = images[key]
-    if
-      existingPixels ~= nil
-      and existingPixels.width == raster.width
-      and existingPixels.height == raster.height
-      and existingPixels.pixels == raster.pixels
-      and existingImage ~= nil
-    then
-      return existingImage
+    assert(type(palette) == "string", "palette upload takes exact palette bytes")
+    local staged = paletteStages[key]
+    if staged ~= nil and staged.source == source and staged.palette == palette and images[key] == staged.handle then
+      return staged.handle
     end
-    local uploaded = nil
-    local ok, uploadedOrError = pcall(function()
-      local imageData = love.image.newImageData(raster.width, raster.height, "rgba8", raster.pixels)
-      uploaded = graphics.newImage(imageData)
-      assert(uploaded ~= nil, "the graphics driver handed out no palette image")
-      uploaded:setFilter("nearest", "nearest")
-      return uploaded
-    end)
-    if not ok or uploadedOrError == nil then
-      if uploaded ~= nil and type(uploaded.release) == "function" then
-        pcall(function()
-          uploaded:release()
-        end)
-      end
-      local cause = ok and "empty palette image handle" or tostring(uploadedOrError)
+    local handle, failure = indexedPaletteOwner():acquire(source, palette)
+    if handle == nil then
       return nil,
-        "battle palette image upload failed for " .. key .. " in " .. tostring(stagedSceneKey) .. ": " .. cause
+        "battle palette image upload failed for " .. key .. " in " .. tostring(stagedSceneKey) .. ": " .. tostring(
+          failure
+        )
     end
+    local existingImage = images[key]
     if existingImage ~= nil and type(existingImage.release) == "function" then
       existingImage:release()
     end
-    palettePixels[key] = { width = raster.width, height = raster.height, pixels = raster.pixels }
-    images[key] = uploadedOrError
-    return uploadedOrError
+    paletteStages[key] = { source = source, palette = palette, handle = handle }
+    images[key] = handle
+    return handle
   end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
@@ -3359,15 +3354,16 @@ function FieldBattlePresentation:_preparationServices()
     if key == "battle-faded-intro" and fadedIntroImage ~= nil and type(fadedIntroImage.release) == "function" then
       fadedIntroImage:release()
       fadedIntroImage = nil
-      fadedIntroPixels = nil
+      fadedIntroSource = nil
+      fadedIntroPalette = nil
     end
-    local palette = palettePixels[key]
-    if palette ~= nil then
+    local staged = paletteStages[key]
+    if staged ~= nil then
       local image = images[key]
       if image ~= nil and type(image.release) == "function" then
         image:release()
       end
-      palettePixels[key] = nil
+      paletteStages[key] = nil
     end
     images[key] = nil
   end
@@ -5614,6 +5610,11 @@ function FieldBattlePresentation:dispose()
   self._warmBg3 = nil
   self._warmFailure = nil
   self:_dropLaunch()
+  local owner = self._paletteOwner
+  if owner ~= nil then
+    self._paletteOwner = nil
+    owner:dispose()
+  end
   self._cover = 0
   self._accumulator = 0
 end

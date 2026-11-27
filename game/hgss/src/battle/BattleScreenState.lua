@@ -15,7 +15,6 @@ local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
 local BattleBallParticles = require("game.hgss.src.battle.BattleBallParticles")
 local BattleEncounterParticles = require("game.hgss.src.battle.BattleEncounterParticles")
-local BattleEncounterIndexedRaster = require("game.hgss.src.battle.BattleEncounterIndexedRaster")
 local BattleFinger = require("game.hgss.src.battle.BattleFinger")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
@@ -157,13 +156,11 @@ local Rgb555 = require("libs.codec.src.Rgb555")
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
 ---@field _fadedIntroImage table<string, unknown>? live faded intro upload while the encounter fade runs
 ---@field _fadedIntroFrame integer? encounter frame behind the live faded upload
----@field _fadedIntroWidth integer? width of the published faded intro raster
----@field _fadedIntroHeight integer? height of the published faded intro raster
----@field _fadedIntroPixels string? pixels of the published faded intro raster
+---@field _fadedIntroSource table<string, unknown>? stable intro source indices behind the published generation
 ---@field _fadedIntroPaletteWords integer[]? main BG words sampled by the published intro raster
 ---@field _fadedIntroUnavailable boolean true once faded uploads prove unavailable this launch
 ---@field _paletteDrawableFrame integer? encounter frame behind the published indexed palette images
----@field _paletteRasterCache table<string, { sourceMap: table<string, unknown>, used: table<integer, boolean>, words: table<integer, integer>, raster: table<string, unknown> }> sampled indexed rasters with per-key used-slot signatures
+---@field _paletteRasterCache table<string, { sourceMap: table<string, unknown>, source: table<string, unknown>, used: table<integer, boolean>, words: table<integer, integer>, palette: string }> stable indexed sources with per-key used-slot signatures
 ---@field _paletteCommitted { version: integer, entries: { key: string, variant: string|table<string, unknown> }[] }? last fully published visible key set behind the fast-path skip
 ---@field _paletteSceneLayer table<string, unknown>? staged scene layer owning the cached signatures
 ---@field _outcomeDone boolean terminal narration and timed holds have settled
@@ -1176,9 +1173,7 @@ function BattleScreenState.new(opts)
     _nativePaletteLayoutReady = false,
     _fadedIntroImage = nil,
     _fadedIntroFrame = nil,
-    _fadedIntroWidth = nil,
-    _fadedIntroHeight = nil,
-    _fadedIntroPixels = nil,
+    _fadedIntroSource = nil,
     _fadedIntroPaletteWords = nil,
     _fadedIntroUnavailable = false,
     _paletteDrawableFrame = nil,
@@ -7433,6 +7428,44 @@ local function encounterSourceOf(layer, fadeBlack, restoreType)
   }
 end
 
+-- Packs the exact displayed intro palette: every main-background word
+-- through the authoritative 5-to-8-bit decode with opaque colors.
+-- All 256 slots sample every frame, so a missing word fails loudly.
+---@param words integer[] displayed main BG RGB555 words, 256 entries
+---@return string exact 256-slot RGBA8 palette bytes
+local function exactIntroPaletteBytes(words)
+  local out = {}
+  for slot = 0, 255 do
+    local word = assert(words[slot + 1], "intro palette samples its displayed main background word " .. slot)
+    local color = Rgb555.decode(word)
+    out[#out + 1] = string.char(color.r, color.g, color.b, 255)
+  end
+  return table.concat(out)
+end
+
+-- Packs the exact displayed palette for the sampled slots: referenced
+-- words through the authoritative 5-to-8-bit decode with opaque
+-- colors, unreferenced gaps zeroed. A sampled slot without a displayed
+-- word fails loudly instead of sampling a neighboring color.
+---@param words table<integer, integer> displayed RGB555 words keyed by one-based palette slot
+---@param used table<integer, boolean> sampled slots keyed by one-based palette slot
+---@param plane string source-index plane name for diagnostics
+---@return string exact 256-slot RGBA8 palette bytes
+local function exactPaletteBytes(words, used, plane)
+  local out = {}
+  for slot = 0, 255 do
+    if not used[slot + 1] then
+      out[#out + 1] = "\0\0\0\0"
+    else
+      local word = words[slot + 1]
+      assert(word ~= nil, plane .. " palette sample names a displayed word for slot " .. slot)
+      local color = Rgb555.decode(word)
+      out[#out + 1] = string.char(color.r, color.g, color.b, 255)
+    end
+  end
+  return table.concat(out)
+end
+
 -- Returns the held faded intro upload without a later disposal
 -- double-release: draws fall back to the static intro lease afterwards.
 function BattleScreenState:_releaseFadedIntro()
@@ -7441,35 +7474,46 @@ function BattleScreenState:_releaseFadedIntro()
     self._fadedIntroImage = nil
   end
   self._fadedIntroFrame = nil
-  self._fadedIntroWidth = nil
-  self._fadedIntroHeight = nil
-  self._fadedIntroPixels = nil
+  self._fadedIntroSource = nil
   self._fadedIntroPaletteWords = nil
 end
 
--- Renders one encounter frame of the unbaked intro plane through the
--- published main-background palette and uploads changed pixels, holding
--- the image for draws. A missing adapter is explicit headless mode; a
--- configured upload failure fails the battle screen.
+-- Samples one encounter frame of the unbaked intro plane through the
+-- published main-background palette and uploads a changed generation,
+-- holding the sampler handle for draws. The immutable source indices
+-- upload once while each displayed palette uploads as a tiny exact
+-- image. A missing adapter is explicit headless mode; a configured
+-- upload failure fails the battle screen.
 ---@param snapshot table<string, unknown> staged per-plane palette state under drawing
 ---@param frame integer encounter frame under drawing
 function BattleScreenState:_renderFadedIntro(snapshot, frame)
   local mainBg = assert(snapshot.mainBg, "encounter snapshots carry the main background plane")
-  local colors = {}
-  for index = 1, 256 do
-    colors[index] = Rgb555.decode(mainBg[index])
+  local index = self._scene:introIndexRaster()
+  local source = self._fadedIntroSource
+  if source == nil or source.pixels ~= index.pixels then
+    source = {
+      id = "battle-intro:" .. self._sceneKey,
+      width = index.width,
+      height = index.height,
+      pixels = index.pixels,
+    }
   end
-  local raster = self._scene:introRaster(colors)
-  if
-    self._fadedIntroImage ~= nil
-    and self._fadedIntroWidth == raster.width
-    and self._fadedIntroHeight == raster.height
-    and self._fadedIntroPixels == raster.pixels
-  then
-    self._fadedIntroFrame = frame
-    return
+  local sameSource = self._fadedIntroSource ~= nil and self._fadedIntroSource.pixels == index.pixels
+  if self._fadedIntroImage ~= nil and sameSource and self._fadedIntroPaletteWords ~= nil then
+    local unchanged = true
+    for slot = 1, 256 do
+      if self._fadedIntroPaletteWords[slot] ~= mainBg[slot] then
+        unchanged = false
+        break
+      end
+    end
+    if unchanged then
+      self._fadedIntroFrame = frame
+      return
+    end
   end
-  local image, failure = self._assets:fadedIntro(raster)
+  local palette = exactIntroPaletteBytes(mainBg)
+  local image, failure = self._assets:fadedIntro(source, palette)
   if image == nil then
     if failure ~= nil then
       self._mode = "failed"
@@ -7481,13 +7525,11 @@ function BattleScreenState:_renderFadedIntro(snapshot, frame)
     return
   end
   self._fadedIntroImage = image
+  self._fadedIntroSource = source
   self._fadedIntroFrame = frame
-  self._fadedIntroWidth = raster.width
-  self._fadedIntroHeight = raster.height
-  self._fadedIntroPixels = raster.pixels
   self._fadedIntroPaletteWords = {}
-  for index = 1, 256 do
-    self._fadedIntroPaletteWords[index] = mainBg[index]
+  for slot = 1, 256 do
+    self._fadedIntroPaletteWords[slot] = mainBg[slot]
   end
 end
 
@@ -7571,12 +7613,12 @@ local function usedPaletteSlots(pixels)
   return used
 end
 
----@param requests table<string, { uploadKey: string, raster: table<string, unknown> }> pending image replacements
+---@param requests table<string, { uploadKey: string, source: table<string, unknown>, palette: string }> pending image replacements
 ---@param sourceKey string existing renderer drawable key or battle-private frame key
 ---@param sourceMap table<string, unknown> validated source-index map
 ---@param palette table<string, unknown> current native palette snapshot
 ---@param sceneKey string selected scene identity
----@param rasterCache table<string, { sourceMap: table<string, unknown>, used: table<integer, boolean>, words: table<integer, integer>, raster: table<string, unknown> }> cached sampled rasters with used-slot signatures
+---@param rasterCache table<string, { sourceMap: table<string, unknown>, source: table<string, unknown>, used: table<integer, boolean>, words: table<integer, integer>, palette: string }> cached indexed sources with used-slot signatures
 local function addEncounterPaletteRequest(requests, sourceKey, sourceMap, palette, sceneKey, rasterCache)
   local plane = sourceMap.plane
   assert(type(plane) == "string" and plane ~= "", "source map names its native plane")
@@ -7590,29 +7632,39 @@ local function addEncounterPaletteRequest(requests, sourceKey, sourceMap, palett
   local cached = rasterCache[sourceKey]
   local sameSource = cached ~= nil and cached.sourceMap == sourceMap
   local used = sameSource and cached.used or usedPaletteSlots(pixels)
-  local changed = not sameSource or cached.raster == nil
+  local changed = not sameSource
   local sampled = {}
-  if not changed then
-    for slot = 1, 256 do
-      if used[slot] then
-        local word = paletteWords[slot]
-        sampled[slot] = word
-        if cached.words[slot] ~= word then
-          changed = true
-        end
-      end
-    end
-  else
-    for slot = 1, 256 do
-      if used[slot] then
-        sampled[slot] = paletteWords[slot]
+  for slot = 1, 256 do
+    if used[slot] then
+      local word = paletteWords[slot]
+      assert(word ~= nil, plane .. " palette sample names a displayed word for slot " .. (slot - 1))
+      sampled[slot] = word
+      if not changed and cached.words[slot] ~= word then
+        changed = true
       end
     end
   end
-  local raster = changed and BattleEncounterIndexedRaster.render(pixels, width, height, paletteWords) or cached.raster
-  rasterCache[sourceKey] = { sourceMap = sourceMap, used = used, words = sampled, raster = raster }
+  local source
+  if sameSource then
+    source = cached.source
+  else
+    source = { id = sourceKey, width = width, height = height, pixels = pixels }
+  end
+  local paletteBytes
+  if changed then
+    paletteBytes = exactPaletteBytes(paletteWords, used, plane)
+  else
+    paletteBytes = cached.palette
+  end
+  rasterCache[sourceKey] = {
+    sourceMap = sourceMap,
+    source = source,
+    used = used,
+    words = sampled,
+    palette = paletteBytes,
+  }
   local uploadKey = "battle-palette:" .. sceneKey .. ":" .. sourceKey
-  requests[sourceKey] = { uploadKey = uploadKey, raster = raster }
+  requests[sourceKey] = { uploadKey = uploadKey, source = source, palette = paletteBytes }
 end
 
 -- Names the descriptor identity behind one visible palette candidate: a
@@ -7948,7 +8000,7 @@ function BattleScreenState:_updateEncounterPaletteDrawables()
     self._paletteDrawableFrame = frame
     return
   end
-  local requests = {} ---@type table<string, { uploadKey: string, raster: table<string, unknown> }>
+  local requests = {} ---@type table<string, { uploadKey: string, source: table<string, unknown>, palette: string }>
   for _, candidate in ipairs(candidates) do
     addEncounterPaletteRequest(
       requests,

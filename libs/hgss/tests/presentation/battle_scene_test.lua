@@ -1421,4 +1421,52 @@ function T.wrapper_display_policy_freezes_health_tasks_while_its_root_runs()
   scene:release()
 end
 
+-- The intro index raster exposes the unbaked plane's immutable source
+-- indices without composing colors: red carries the effective slot with
+-- bank and flip applied, green and blue stay zero, and coverage follows
+-- the intro transparency policy. Steady reads reuse the cached raster,
+-- and faded palette overrides never disturb it.
+function T.intro_index_raster_exposes_stable_source_indices_without_colors()
+  local colors = {}
+  for index = 1, 32 do
+    colors[index] = { r = index % 256, g = (index + 10) % 256, b = (index + 20) % 256 }
+  end
+  local scene = BattleScene.new()
+  scene:installBackground({
+    characters = string.rep("\0", 32),
+    baseCharacters = string.char(0x12, 0x34, 0x56, 0x78) .. string.rep("\0", 28),
+    colorMode = "4bpp",
+    map = {
+      width = 16,
+      height = 8,
+      entries = {
+        { tile = 0, flipH = false, flipV = false, palette = 0 },
+        { tile = 0, flipH = true, flipV = true, palette = 1 },
+      },
+    },
+    palette = { colors = colors },
+  })
+  local index = scene:introIndexRaster()
+  Assert.equal(index.width, 16, "the intro index raster keeps its width")
+  Assert.equal(index.height, 8, "the intro index raster keeps its height")
+  Assert.equal(#index.pixels, 16 * 8 * 4, "the intro index raster packs one RGBA8 texel per pixel")
+  Assert.equal(index.pixels:byte(0 * 4 + 1), 2, "an unflipped bank-zero texel keeps its effective index")
+  Assert.equal(index.pixels:byte(120 * 4 + 1), 23, "a flipped banked texel keeps its effective index")
+  Assert.equal(index.pixels:byte(127 * 4 + 1), 18, "a flipped banked corner texel keeps its effective index")
+  for pixel = 0, 16 * 8 - 1 do
+    local base = pixel * 4 + 1
+    local _, green, blue, alpha = index.pixels:byte(base, base + 3)
+    Assert.equal(green, 0, "intro index texels carry no composed green")
+    Assert.equal(blue, 0, "intro index texels carry no composed blue")
+    Assert.equal(alpha, 255, "intro coverage stays opaque under the intro transparency policy")
+  end
+  local faded = {}
+  for slot = 1, 256 do
+    faded[slot] = { r = slot % 256, g = 0, b = 0 }
+  end
+  scene:introRaster(faded)
+  Assert.equal(scene:introIndexRaster(), index, "faded palette overrides reuse the cached index raster")
+  scene:release()
+end
+
 return { tests = T }
