@@ -188,6 +188,91 @@ function T.level_up_stats_window_draws_over_the_hud()
   Assert.isTrue(leveledHud.objPriority > windowPriority, "the HUD drops behind the open level-up stat window")
 end
 
+-- The successful-catch fade runs the ball as a translucent OBJ with the
+-- native EVA/EVB pair: the production compositor blends the translucent
+-- ball against the second planes with first-target NONE, keeping every
+-- native second plane eligible so world3d/window/transition stay
+-- translucent alongside the battlefield. A scripted compositor blend
+-- never replaces the live capture coefficients, and the retired actor
+-- returns control to the ordinary scene blend.
+function T.capture_fade_projects_native_register_through_production_composition()
+  local palette = {}
+  for index = 0, 15 do
+    palette[index + 1] = { r = index, g = index, b = index }
+  end
+  local graphics = {}
+  function graphics.getColor()
+    return 1, 1, 1, 1
+  end
+  function graphics.setColor() end
+  function graphics.transformPoint(x, y)
+    return x, y
+  end
+  function graphics.push() end
+  function graphics.pop() end
+  function graphics.intersectScissor() end
+  function graphics.draw() end
+  local function composedCapture(spriteBlend, compositorBlend)
+    local captured = nil
+    BattleRenderer.drawPane({
+      graphics = graphics,
+      text = { drawTextForRole = function() end },
+      windows = { drawWindow = function() end },
+      assets = {
+        drawable = function()
+          return nil
+        end,
+        renderPictures = function(_, _, frame)
+          captured = frame
+          return { handle = "picture-composite" }
+        end,
+      },
+      frameKey = "default",
+    }, {
+      battlers = {},
+      effectInstances = {},
+      hudPatchSpans = {},
+      message = "message",
+      textPalettes = { narration = { colors = palette } },
+      spriteBlend = spriteBlend,
+      sceneAnimation = {
+        main = {
+          systemBlend = {
+            blend = nil,
+            firstTarget = {},
+            secondTarget = { world3d = true, window = true, transition = true, battlefield = true },
+            objTargets = { second = true },
+          },
+          compositor = compositorBlend ~= nil and { blend = compositorBlend } or {},
+        },
+      },
+    }, "detail", {})
+    return assert(captured, "the detail pane composes one main frame")
+  end
+  local cases = {
+    { a = 15, b = 1 },
+    { a = 8, b = 8 },
+    { a = 1, b = 15 },
+    { a = 0, b = 16 },
+  }
+  for _, sample in ipairs(cases) do
+    local frame = composedCapture({ blendCoefficientA = sample.a, blendCoefficientB = sample.b }, { mode = "alpha", eva = 8, evb = 8, evy = 0 })
+    local blend = assert(frame.animation.blend, "the capture frame carries its blend register")
+    Assert.equal(blend.mode, "alpha", "the capture fade blends as translucent OBJ")
+    Assert.equal(blend.eva, sample.a, "the capture fade carries native EVA")
+    Assert.equal(blend.evb, sample.b, "the capture fade carries native EVB")
+    local targets = assert(frame.animation.secondTarget, "the capture frame carries its second-target mask")
+    Assert.isTrue(targets.battlefield == true, "the battlefield stays eligible under the fade")
+    Assert.isTrue(targets.world3d == true, "world3d stays eligible under the fade")
+    Assert.isTrue(targets.window == true, "the window plane stays eligible under the fade")
+    Assert.isTrue(targets.transition == true, "the transition plane stays eligible under the fade")
+    local first = frame.animation.firstTarget or {}
+    Assert.isTrue(next(first) == nil, "the capture fade marks no first-target plane")
+  end
+  local retired = composedCapture(nil, nil)
+  Assert.isTrue(retired.animation.blend.mode ~= "alpha" or retired.animation.blend.eva ~= 0, "the retired fade releases the capture register")
+end
+
 -- Strip quads segregate by graphics namespace and strip dimensions: the same
 -- tile index through another namespace allocates a distinct quad, a modded
 -- wider strip allocates wider geometry, and returning to the original width
