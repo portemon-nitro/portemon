@@ -243,4 +243,227 @@ function T.probe_and_dialog_share_one_bridge_binding()
   end)
 end
 
+local ANDROID_REQUEST = "123e4567-e89b-12d3-a456-426614174000"
+local ANDROID_OTHER = "223e4567-e89b-12d3-a456-426614174000"
+
+local function withAndroidHost(spec, fn)
+  spec = spec or {}
+  local results = {}
+  for _, result in ipairs(spec.results or {}) do
+    results[#results + 1] = result
+  end
+  local calls = { open = 0, poll = 0 }
+  local previousFfi = package.loaded.ffi
+  local previousPicker = package.loaded[PICKER_MODULE]
+  local originalGetOS = love.system.getOS
+  local originalOpen = love.system.openRomPicker
+  local originalPoll = love.system.pollRomPicker
+  package.loaded[PICKER_MODULE] = nil
+  love.system.getOS = function()
+    return "Android"
+  end
+  love.system.openRomPicker = function()
+    calls.open = calls.open + 1
+    if spec.openBusy == true then
+      return nil, "the previous picker operation is still finishing"
+    end
+    return spec.requestId or ANDROID_REQUEST
+  end
+  love.system.pollRomPicker = function()
+    calls.poll = calls.poll + 1
+    return table.remove(results, 1)
+  end
+  if spec.missingPoll == true then
+    love.system.pollRomPicker = nil
+  end
+  local ok, err = pcall(function()
+    fn(require(PICKER_MODULE), calls)
+  end)
+  love.system.getOS = originalGetOS
+  love.system.openRomPicker = originalOpen
+  love.system.pollRomPicker = originalPoll
+  package.loaded.ffi = previousFfi
+  package.loaded[PICKER_MODULE] = previousPicker
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function writeAndroidStage(requestId, extension, validate)
+  if validate ~= false then
+    Assert.isTrue(requestId:match("^%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x$") ~= nil)
+  end
+  Assert.isTrue(love.filesystem.createDirectory("imports"), "Android stage root setup failed")
+  local path = "imports/" .. requestId .. "." .. (extension or "nds")
+  Assert.isTrue(love.filesystem.write(path, "completed private copy"), "Android stage setup failed")
+  return path
+end
+
+function T.android_bridge_availability_and_open_return_one_pending_request()
+  withAndroidHost({}, function(picker, calls)
+    Assert.equal(picker.available(), true, "both private Android bindings are required")
+    Assert.deepEqual(picker.openSingle(), { kind = "pending", requestId = ANDROID_REQUEST })
+    Assert.deepEqual(calls, { open = 1, poll = 0 }, "opening the chooser never polls or blocks")
+  end)
+  withAndroidHost({ missingPoll = true }, function(picker)
+    Assert.equal(picker.available(), false, "a half-present bridge is not an Android picker")
+  end)
+  withAndroidHost({ openBusy = true }, function(picker, calls)
+    local result = picker.openSingle()
+    Assert.equal(result.kind, "error")
+    Assert.isTrue(result.message:find("still finishing", 1, true) ~= nil, "native busy errors stay actionable")
+    Assert.deepEqual(calls, { open = 1, poll = 0 }, "a busy reattempt opens no second chooser")
+  end)
+end
+
+function T.android_terminal_path_is_consumed_once_and_remains_caller_owned()
+  withAndroidHost({
+    results = {
+      {
+        requestId = ANDROID_REQUEST,
+        kind = "path",
+        relativePath = "imports/" .. ANDROID_REQUEST .. ".nds",
+        displayName = "My game.NDS",
+      },
+    },
+  }, function(picker, calls)
+    Assert.equal(type(picker.poll), "function", "Android completion needs nonblocking result polling")
+    local path = writeAndroidStage(ANDROID_REQUEST)
+    local ok, err = pcall(function()
+      local result = picker.poll(ANDROID_REQUEST)
+      Assert.deepEqual(result, {
+        requestId = ANDROID_REQUEST,
+        kind = "path",
+        relativePath = path,
+        displayName = "My game.NDS",
+      })
+      Assert.notNil(love.filesystem.getInfo(path), "a matching result transfers no file ownership to the adapter")
+      Assert.isNil(picker.poll(ANDROID_REQUEST), "the native terminal result is one-shot")
+      Assert.deepEqual(calls, { open = 0, poll = 2 })
+    end)
+    pcall(love.filesystem.remove, path)
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+function T.android_stale_results_are_drained_and_removed_without_a_current_request()
+  withAndroidHost({
+    results = {
+      {
+        requestId = ANDROID_REQUEST,
+        kind = "path",
+        relativePath = "imports/" .. ANDROID_REQUEST .. ".zip",
+        displayName = "cloud copy.zip",
+      },
+    },
+  }, function(picker, calls)
+    Assert.equal(type(picker.poll), "function", "stale cleanup needs nonblocking result polling")
+    local path = writeAndroidStage(ANDROID_REQUEST, "zip")
+    local ok, err = pcall(function()
+      Assert.isNil(picker.poll(nil), "no current token never navigates or imports")
+      Assert.isNil(love.filesystem.getInfo(path), "an abandoned completed stage is removed")
+      Assert.isNil(picker.poll(ANDROID_OTHER), "a different token cannot adopt the stale result")
+      Assert.deepEqual(calls, { open = 0, poll = 2 })
+    end)
+    pcall(love.filesystem.remove, path)
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+function T.android_uuid_mismatch_consumes_and_removes_the_stale_stage()
+  withAndroidHost({
+    results = {
+      {
+        requestId = ANDROID_REQUEST,
+        kind = "path",
+        relativePath = "imports/" .. ANDROID_REQUEST .. ".nds",
+        displayName = "old request.nds",
+      },
+    },
+  }, function(picker, calls)
+    Assert.equal(type(picker.poll), "function", "UUID correlation needs nonblocking result polling")
+    local path = writeAndroidStage(ANDROID_REQUEST)
+    local ok, err = pcall(function()
+      Assert.isNil(picker.poll(ANDROID_OTHER), "a mismatched UUID never adopts a terminal result")
+      Assert.isNil(love.filesystem.getInfo(path), "the mismatched completed stage is removed as stale")
+      Assert.deepEqual(calls, { open = 0, poll = 1 })
+    end)
+    pcall(love.filesystem.remove, path)
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+function T.android_cancel_and_error_are_distinct_one_shot_results()
+  withAndroidHost({
+    results = {
+      { requestId = ANDROID_REQUEST, kind = "cancel" },
+      { requestId = ANDROID_REQUEST, kind = "error", message = "copy failed" },
+    },
+  }, function(picker, calls)
+    Assert.equal(type(picker.poll), "function", "Android completion needs nonblocking result polling")
+    Assert.deepEqual(picker.poll(ANDROID_REQUEST), { requestId = ANDROID_REQUEST, kind = "cancel" })
+    Assert.deepEqual(picker.poll(ANDROID_REQUEST), {
+      requestId = ANDROID_REQUEST,
+      kind = "error",
+      message = "copy failed",
+    })
+    Assert.isNil(picker.poll(ANDROID_REQUEST))
+    Assert.deepEqual(calls, { open = 0, poll = 3 })
+  end)
+end
+
+function T.android_malformed_or_unsafe_terminal_results_fail_before_removal()
+  for _, result in ipairs({
+    { requestId = ANDROID_REQUEST, kind = "unknown" },
+    {
+      requestId = ANDROID_REQUEST,
+      kind = "path",
+      relativePath = "imports/not-a-uuid.nds",
+      displayName = "unsafe.nds",
+    },
+    {
+      requestId = ANDROID_REQUEST,
+      kind = "path",
+      relativePath = "imports/../outside.nds",
+      displayName = "../outside.nds",
+    },
+  }) do
+    withAndroidHost({ results = { result } }, function(picker)
+      Assert.equal(type(picker.poll), "function", "Android protocol validation needs result polling")
+      Assert.throws(function()
+        picker.poll(ANDROID_REQUEST)
+      end, "malformed native results are invariant failures, not empty selections")
+    end)
+  end
+  withAndroidHost({
+    results = {
+      {
+        requestId = ANDROID_REQUEST,
+        kind = "path",
+        relativePath = "imports/not-a-uuid.nds",
+        displayName = "unsafe.nds",
+      },
+    },
+  }, function(picker)
+    Assert.equal(type(picker.poll), "function", "Android protocol validation needs result polling")
+    local path = writeAndroidStage("not-a-uuid", "nds", false)
+    local ok, err = pcall(function()
+      Assert.throws(function()
+        picker.poll(ANDROID_REQUEST)
+      end, "an invalid stage name is rejected before removal")
+      Assert.notNil(love.filesystem.getInfo(path), "protocol rejection never deletes an unvalidated path")
+    end)
+    pcall(love.filesystem.remove, path)
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
 return { tests = T }

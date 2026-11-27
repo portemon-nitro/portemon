@@ -163,7 +163,9 @@ function MainMenuController:setCatalog(globalActions, saves)
   end
 end
 
-local GLOBAL_NODE = "global"
+local function globalNode(index)
+  return "global:" .. index
+end
 
 local function bodyNode(index)
   return "save:" .. index .. ":body"
@@ -178,42 +180,66 @@ end
 -- callers translate the resolved node back to the public focus structs.
 ---@class MainMenuFocusTargetGlobal
 ---@field kind "global"
+---@field actionId string
 ---@class MainMenuFocusTargetSave
 ---@field kind "save"
 ---@field index integer
 ---@field lane "body"|"overflow"
 ---@alias MainMenuFocusTarget MainMenuFocusTargetGlobal|MainMenuFocusTargetSave
 
+---@param globalActions table[]
 ---@param saves table[]
 ---@param rememberedSaveId string?
 ---@param rememberedLane ("body"|"overflow")?
 ---@return table<string, table<string, string[]>> graph, table<string, MainMenuFocusTarget> targets
-local function buildFocusGraph(saves, rememberedSaveId, rememberedLane)
+local function buildFocusGraph(globalActions, saves, rememberedSaveId, rememberedLane)
   local graph = {}
   local targets = {}
+  for index, action in ipairs(globalActions) do
+    local node = globalNode(index)
+    graph[node] = { up = {}, down = {}, left = {}, right = {} }
+    targets[node] = { kind = "global", actionId = action.id }
+  end
+  local newGameIndex = assert(indexOf(globalActions, "new-game"), "the Main Menu needs its New Game action")
+  local firstGlobal = globalNode(newGameIndex)
+  local returnIndex = indexOf(globalActions, "game-selection")
+  if returnIndex ~= nil then
+    local returnNode = globalNode(returnIndex)
+    graph[firstGlobal].left = { returnNode }
+    graph[returnNode].right = { firstGlobal }
+  end
   local count = #saves
   if count == 0 then
-    graph[GLOBAL_NODE] = { up = {}, down = {}, left = {}, right = {} }
-    targets[GLOBAL_NODE] = { kind = "global" }
     return graph, targets
   end
-  graph[GLOBAL_NODE] = { up = { bodyNode(count) }, down = { bodyNode(1) }, left = {}, right = {} }
-  targets[GLOBAL_NODE] = { kind = "global" }
+  graph[firstGlobal].up = { bodyNode(count) }
+  graph[firstGlobal].down = { bodyNode(1) }
+  local rememberedIndex = rememberedSaveId and indexOf(saves, rememberedSaveId) or nil
+  if rememberedIndex ~= nil then
+    local remembered = assert(saves[rememberedIndex])
+    if rememberedLane == "overflow" and canDelete(remembered) then
+      graph[firstGlobal].right = { overflowNode(rememberedIndex), bodyNode(1) }
+    else
+      graph[firstGlobal].right = { bodyNode(rememberedIndex), bodyNode(1) }
+    end
+  else
+    graph[firstGlobal].right = { bodyNode(1) }
+  end
   for index, item in ipairs(saves) do
     local body = bodyNode(index)
     local overflow = overflowNode(index)
     local hasOverflow = canDelete(item)
     graph[body] = {
-      up = { index == 1 and GLOBAL_NODE or bodyNode(index - 1) },
-      down = { index == count and GLOBAL_NODE or bodyNode(index + 1) },
-      left = { GLOBAL_NODE },
+      up = { index == 1 and firstGlobal or bodyNode(index - 1) },
+      down = { index == count and firstGlobal or bodyNode(index + 1) },
+      left = { firstGlobal },
       right = hasOverflow and { overflow } or {},
     }
     targets[body] = { kind = "save", index = index, lane = "body" }
     if hasOverflow then
       local upCandidates
       if index == 1 then
-        upCandidates = { GLOBAL_NODE }
+        upCandidates = { firstGlobal }
       elseif canDelete(saves[index - 1]) then
         upCandidates = { overflowNode(index - 1), bodyNode(index - 1) }
       else
@@ -221,7 +247,7 @@ local function buildFocusGraph(saves, rememberedSaveId, rememberedLane)
       end
       local downCandidates
       if index == count then
-        downCandidates = { GLOBAL_NODE }
+        downCandidates = { firstGlobal }
       elseif canDelete(saves[index + 1]) then
         downCandidates = { overflowNode(index + 1), bodyNode(index + 1) }
       else
@@ -230,17 +256,6 @@ local function buildFocusGraph(saves, rememberedSaveId, rememberedLane)
       graph[overflow] = { up = upCandidates, down = downCandidates, left = { body }, right = {} }
       targets[overflow] = { kind = "save", index = index, lane = "overflow" }
     end
-  end
-  local rememberedIndex = rememberedSaveId and indexOf(saves, rememberedSaveId) or nil
-  if rememberedIndex ~= nil then
-    local remembered = assert(saves[rememberedIndex])
-    if rememberedLane == "overflow" and canDelete(remembered) then
-      graph[GLOBAL_NODE].right = { overflowNode(rememberedIndex), bodyNode(1) }
-    else
-      graph[GLOBAL_NODE].right = { bodyNode(rememberedIndex), bodyNode(1) }
-    end
-  else
-    graph[GLOBAL_NODE].right = { bodyNode(1) }
   end
   return graph, targets
 end
@@ -262,10 +277,10 @@ function MainMenuController:move(direction)
     end
     return
   end
-  local graph, targets = buildFocusGraph(self.saves, self.rememberedSaveId, self.rememberedLane)
+  local graph, targets = buildFocusGraph(self.globalActions, self.saves, self.rememberedSaveId, self.rememberedLane)
   local current
   if self.focus.region == "global" then
-    current = GLOBAL_NODE
+    current = globalNode(assert(indexOf(self.globalActions, self.focus.actionId)))
   else
     local index = assert(indexOf(self.saves, self.focus.saveId), "Main Menu focus references an unknown save")
     if self.focus.lane == "overflow" and graph[overflowNode(index)] ~= nil then
@@ -277,7 +292,7 @@ function MainMenuController:move(direction)
   local resolved = FocusGraph.move(graph, current, direction)
   local target = assert(targets[resolved], "the focus resolver returned an unknown node")
   if target.kind == "global" then
-    self:focusGlobal(self.globalActions[1].id)
+    self:focusGlobal(target.actionId)
   else
     local item = assert(self.saves[target.index], "the focus resolver returned an unknown save")
     self:focusSave(item.saveId or item.id, target.lane)
@@ -359,7 +374,9 @@ function MainMenuController:activate()
     return nil
   end
   if self.focus.region == "global" then
-    return { kind = "new_game" }
+    local action = assert(self:focusedItem(), "global focus names a known action")
+    assert(action.kind == "new_game" or action.kind == "game_selection", "unknown Main Menu global action")
+    return { kind = action.kind }
   end
   if self.focus.lane == "overflow" then
     if canDelete(self:focusedItem()) then

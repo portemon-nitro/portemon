@@ -523,15 +523,17 @@ function T.decorative_stage_prints_only_flavor_without_progress_copy(scope)
   Assert.isTrue(stringPixels == plainPixels, "a passed string status never paints progress pixels")
 end
 
-function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
+function T.startup_handoff_enters_ready_movie_without_import_dwell(scope)
   local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local LauncherLoadingPresentation = require("app.src.launcher.LauncherLoadingPresentation")
+  local LauncherRenderer = require("app.src.launcher.LauncherRenderer")
   local Movie = require("libs.hgss.src.presentation.HgssOpeningMovie")
   local TitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local staged = {}
   local savedNew, savedScenes = Movie.new, Movie.loadValidatedScenes
   -- This scenario owns the loading/movie handoff, not title asset decoding: the
-  -- title build realizes on its first advance, so movie admission sees the
-  -- realized title it requires and the beat under test stays the loader beat.
+  -- title build realizes on its first advance while the staged opening keeps
+  -- the loader beat under test independent of title preparation.
   local savedTitleBegin = TitleScene.begin
   TitleScene.begin = function()
     local ready = false
@@ -600,28 +602,23 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
       return false, nil
     end,
   }
-  local menu = {
-    draw = function() end,
-    dispose = function() end,
-  }
-  local function build(initialImport)
-    local presentation = Presentation.new({
+  local renderer = LauncherRenderer.new()
+  scope:own({
+    release = function()
+      renderer:dispose()
+    end,
+  })
+  local function build()
+    local presentation = LauncherLoadingPresentation.new({
+      renderer = renderer,
       versionId = "heartgold",
+      label = "HeartGold",
       width = WIDTH,
       height = HEIGHT,
-      pairIndex = 5,
-      random = function()
-        return 0.25
-      end,
+      onCancel = function() end,
     })
-    Assert.isTrue(
-      presentation:adoptGeneratedAssets(startupPairCacheFs("heartgold")),
-      "the chosen pair adopts its two transparent atlases"
-    )
     local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
     local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
-    -- The movie scenes and title build are staged above, so the handoff reads
-    -- no generated payload: an empty fixture view stands in for the epoch.
     local view = GeneratedCacheFixture.resident("heartgold")
     local cacheFs = view.reader
     local decoded = ResidentAssetCache.new({
@@ -638,14 +635,14 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
         GeneratedCacheFixture.close(view)
       end,
     })
-    local state = StartupTitleState.new({
+    return StartupTitleState.new({
       versionId = "heartgold",
       epoch = 7,
       cacheFs = cacheFs,
       assetRuntime = { cacheFs = cacheFs, decoded = decoded, preparationQueue = queue },
       derivedAssets = host,
       stageMenu = function()
-        return menu
+        return { draw = function() end, dispose = function() end }
       end,
       onFinished = function() end,
       isCurrent = function()
@@ -653,7 +650,6 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
       end,
       width = WIDTH,
       height = HEIGHT,
-      initialImport = initialImport,
       loading = presentation,
       audio = {
         openingReady = function()
@@ -661,34 +657,16 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
         end,
       },
     })
-    return state
   end
-  local function renderFrame(state, lines)
-    local originalPrint, originalPrintf = love.graphics.print, love.graphics.printf
-    local pixels
-    local ok, err = xpcall(function()
-      love.graphics.print = function(value, ...)
-        lines[#lines + 1] = tostring(value)
-        return originalPrint(value, ...)
-      end
-      love.graphics.printf = function(value, ...)
-        lines[#lines + 1] = tostring(value)
-        return originalPrintf(value, ...)
-      end
-      local canvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
-      love.graphics.push("all")
-      love.graphics.setCanvas(canvas)
-      love.graphics.clear(0, 0, 0, 0)
-      state:draw()
-      love.graphics.setCanvas()
-      love.graphics.pop()
-      pixels = scope:own(canvas:newImageData()):getString()
-    end, debug.traceback)
-    love.graphics.print, love.graphics.printf = originalPrint, originalPrintf
-    if not ok then
-      error(err, 0)
-    end
-    return pixels
+  local function renderFrame(state)
+    local canvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
+    love.graphics.push("all")
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    state:draw()
+    love.graphics.setCanvas()
+    love.graphics.pop()
+    return scope:own(canvas:newImageData()):getString()
   end
   local blankCanvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
   love.graphics.push("all")
@@ -698,67 +676,22 @@ function T.startup_handoff_enters_warm_at_once_and_keeps_the_cold_beat(scope)
   love.graphics.pop()
   local blank = scope:own(blankCanvas:newImageData()):getString()
   local ok, err = xpcall(function()
-    -- Warm: the adopted pair hands off on the next eligible update with no
-    -- loader beat.
-    local warm = build(nil)
-    warm:update(SourceTick.DT)
-    Assert.equal(#staged, 1, "the warm entry stages the movie behind the loader")
-    warm:update(SourceTick.DT)
-    Assert.equal(warm.phase, "movie", "the warm entry starts the staged movie without a loader beat")
+    local state = build()
+    local loaderPixels = renderFrame(state)
+    Assert.isTrue(loaderPixels ~= blank, "the neutral loader paints before source work completes")
+    state:update(SourceTick.DT)
+    Assert.equal(#staged, 1, "the ready opening stages behind the transferred loader")
+    state:update(SourceTick.DT)
+    Assert.equal(state.phase, "movie", "readiness starts the movie without an import dwell")
     for _ = 1, 2 do
-      warm:update(SourceTick.DT)
+      state:update(SourceTick.DT)
     end
-    local warmLines = {}
-    local warmPixels = renderFrame(warm, warmLines)
+    local moviePixels = renderFrame(state)
     Assert.isTrue(staged[1].draws >= 1, "the entered movie paints its first frame")
-    Assert.isTrue(warmPixels ~= blank, "the transition frame is playable pixels, never an empty stage")
-    warm:dispose()
-    Assert.equal(staged[1].disposed, 1, "leaving releases the staged movie exactly once")
-    -- Cold: a genuinely new import keeps one bounded beat so its freshly
-    -- adopted art stays visible before the same handoff.
-    local state = build(true)
-    local hold = {}
-    for _ = 1, 16 do
-      state:update(SourceTick.DT)
-      local lines = {}
-      hold[#hold + 1] = { bytes = renderFrame(state, lines), lines = lines }
-    end
-    Assert.equal(state.phase, "loading", "the adopted pair stays visible for its beat before the first movie frame")
-    Assert.equal(#staged, 2, "the movie is staged behind the loader while it holds its beat")
-    Assert.equal(staged[2].ticks, 0, "the staged movie holds its source clock at zero during the beat")
-    Assert.equal(staged[2].draws, 0, "no movie frame draws before the handoff")
-    for index, frame in ipairs(hold) do
-      Assert.isTrue(frame.bytes ~= blank, "beat frame " .. index .. " paints the loader, never an empty stage")
-      if index > 1 then
-        Assert.isTrue(
-          frame.bytes ~= hold[index - 1].bytes,
-          "beat frame " .. index .. " keeps animating behind the adopted pair"
-        )
-      end
-      Assert.equal(#frame.lines, 1, "beat frame " .. index .. " prints only its flavor caption")
-      for _, leak in ipairs({ "Preparing", "Waiting", "Loading your game" }) do
-        Assert.isTrue(
-          frame.lines[1]:find(leak, 1, true) == nil,
-          "the holding loader never prints internal copy, found: " .. leak
-        )
-      end
-    end
-    local guard = 0
-    while state.phase ~= "movie" and guard < 50 do
-      state:update(SourceTick.DT)
-      guard = guard + 1
-    end
-    Assert.equal(state.phase, "movie", "the beat hands off to the opening movie")
-    for _ = 1, 2 do
-      state:update(SourceTick.DT)
-    end
-    local firstLines = {}
-    local first = renderFrame(state, firstLines)
-    Assert.isTrue(staged[2].draws >= 1, "the first playable source frame draws at the transition")
-    Assert.isTrue(first ~= blank, "the transition frame is playable pixels, never an empty stage")
-    Assert.isTrue(first ~= hold[#hold].bytes, "the transition swaps directly to movie pixels")
+    Assert.isTrue(moviePixels ~= blank, "the transition frame is playable pixels")
+    Assert.isTrue(moviePixels ~= loaderPixels, "the transition swaps directly from loader to movie")
     state:dispose()
-    Assert.equal(staged[2].disposed, 1, "leaving releases the staged movie exactly once")
+    Assert.equal(staged[1].disposed, 1, "leaving releases the staged movie exactly once")
   end, debug.traceback)
   Movie.new = savedNew
   Movie.loadValidatedScenes = savedScenes
@@ -771,222 +704,6 @@ end
 -- The boot wait paints its animated themed stage from the very first frame,
 -- before the boot-source gate answers: two draws around one update already
 -- differ, and no plaintext preparing headline is ever the first frame.
-function T.boot_wait_paints_the_animated_stage_before_the_gate_answers(scope)
-  local CachePreparationState = require("app.src.launcher.CachePreparationState")
-  local script = { calls = 0 }
-  local service = {}
-  function service:bootSourceStatus(_)
-    script.calls = script.calls + 1
-    return "source-required", { code = "ROM_SOURCE_REQUIRED" }
-  end
-  -- Selected-pair demand seam: the blocked wait requests its pair early
-  -- while the matching-ROM remedy stays visible; the demand never
-  -- transfers, and adoption still waits for admission below.
-  function service:request(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      script.pairDemands = (script.pairDemands or 0) + 1
-      return "walker-request"
-    end
-    return nil
-  end
-  function service:observe()
-    return false, nil
-  end
-  local fired = 0
-  local state = CachePreparationState.new({
-    kind = "boot-source",
-    epoch = 7,
-    service = service,
-    versionId = "soulsilver",
-    pairIndex = 5,
-    -- The themed stage paints before any generated art exists: this epoch's
-    -- base installation is still pending, so the wait keeps its built-in art.
-    getAssetReader = function()
-      return nil
-    end,
-    isCurrent = function()
-      return true
-    end,
-    onReady = function()
-      fired = fired + 1
-    end,
-    onCancel = function() end,
-  })
-  local rendered = {}
-  local lg = love.graphics
-  local savedPrint, savedPrintf = lg.print, lg.printf
-  lg.print = function(value, ...)
-    rendered[#rendered + 1] = tostring(value)
-    return savedPrint(value, ...)
-  end
-  lg.printf = function(value, ...)
-    rendered[#rendered + 1] = tostring(value)
-    return savedPrintf(value, ...)
-  end
-  local first, second
-  local ok, err = xpcall(function()
-    local function render()
-      local canvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
-      love.graphics.push("all")
-      love.graphics.setCanvas(canvas)
-      love.graphics.clear(0, 0, 0, 0)
-      state:draw()
-      love.graphics.setCanvas()
-      love.graphics.pop()
-      return scope:own(canvas:newImageData()):getString()
-    end
-    -- The first visible frame precedes every controller reply.
-    first = render()
-    Assert.equal(script.calls, 0, "the first draw never waits on the boot-source gate")
-    state:update(0.5)
-    second = render()
-  end, debug.traceback)
-  lg.print, lg.printf = savedPrint, savedPrintf
-  state:dispose()
-  if not ok then
-    error(err, 0)
-  end
-  Assert.equal(fired, 0, "a blocked gate never transfers")
-  Assert.isTrue(first ~= second, "the boot stage animates instead of sitting on static text")
-  local copy = table.concat(rendered, "\n")
-  Assert.isTrue(
-    copy:find("Preparing", 1, true) == nil,
-    "no plaintext preparing headline is the first frame, got: " .. copy
-  )
-end
-
-function T.warm_admitted_wait_draws_no_remedy_copy_while_the_pair_is_pending(scope)
-  local CachePreparationState = require("app.src.launcher.CachePreparationState")
-  local service = {}
-  function service:bootSourceStatus(_)
-    return "ready", nil
-  end
-  function service:request(_, _)
-    return "walker-request"
-  end
-  function service:observe(_, _)
-    return false, nil
-  end
-  local state = CachePreparationState.new({
-    kind = "boot-source",
-    epoch = 7,
-    service = service,
-    versionId = "heartgold",
-    pairIndex = 5,
-    -- The pair is still pending, so no generated reader is needed yet.
-    getAssetReader = function()
-      return nil
-    end,
-    isCurrent = function()
-      return true
-    end,
-    onReady = function() end,
-    onCancel = function() end,
-  })
-  local rendered = {}
-  local lg = love.graphics
-  local savedPrint, savedPrintf = lg.print, lg.printf
-  lg.print = function(value, ...)
-    rendered[#rendered + 1] = tostring(value)
-    return savedPrint(value, ...)
-  end
-  lg.printf = function(value, ...)
-    rendered[#rendered + 1] = tostring(value)
-    return savedPrintf(value, ...)
-  end
-  local first, second
-  local ok, err = xpcall(function()
-    local function render()
-      local canvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
-      love.graphics.push("all")
-      love.graphics.setCanvas(canvas)
-      love.graphics.clear(0, 0, 0, 0)
-      state:draw()
-      love.graphics.setCanvas()
-      love.graphics.pop()
-      return scope:own(canvas:newImageData()):getString()
-    end
-    first = render()
-    state:update(0.5)
-    second = render()
-  end, debug.traceback)
-  lg.print, lg.printf = savedPrint, savedPrintf
-  state:dispose()
-  if not ok then
-    error(err, 0)
-  end
-  Assert.isTrue(first ~= second, "the admitted stage keeps animating while the pair is pending")
-  local copy = table.concat(rendered, "\n")
-  for _, leak in ipairs({ "Preparing", "Waiting", "Loading your game", "%" }) do
-    Assert.isTrue(
-      copy:find(leak, 1, true) == nil,
-      "ordinary transitional frames carry no internal copy, found: " .. leak .. " in: " .. copy
-    )
-  end
-end
-
-function T.blocked_wait_keeps_the_matching_rom_remedy_visible(scope)
-  local CachePreparationState = require("app.src.launcher.CachePreparationState")
-  local service = {}
-  function service:bootSourceStatus(_)
-    return "source-required", { code = "ROM_SOURCE_REQUIRED" }
-  end
-  local state = CachePreparationState.new({
-    kind = "boot-source",
-    epoch = 7,
-    service = service,
-    versionId = "soulsilver",
-    pairIndex = 5,
-    -- A blocked boot has no generated art to adopt yet.
-    getAssetReader = function()
-      return nil
-    end,
-    isCurrent = function()
-      return true
-    end,
-    onReady = function() end,
-    onCancel = function() end,
-  })
-  local rendered = {}
-  local lg = love.graphics
-  local savedPrint, savedPrintf = lg.print, lg.printf
-  lg.print = function(value, ...)
-    rendered[#rendered + 1] = tostring(value)
-    return savedPrint(value, ...)
-  end
-  lg.printf = function(value, ...)
-    rendered[#rendered + 1] = tostring(value)
-    return savedPrintf(value, ...)
-  end
-  local pixels
-  local ok, err = xpcall(function()
-    state:update(0.016)
-    local canvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
-    love.graphics.push("all")
-    love.graphics.setCanvas(canvas)
-    love.graphics.clear(0, 0, 0, 0)
-    state:draw()
-    love.graphics.setCanvas()
-    love.graphics.pop()
-    pixels = scope:own(canvas:newImageData()):getString()
-  end, debug.traceback)
-  lg.print, lg.printf = savedPrint, savedPrintf
-  state:dispose()
-  if not ok then
-    error(err, 0)
-  end
-  local copy = table.concat(rendered, "\n"):lower()
-  Assert.isTrue(
-    copy:find("matching", 1, true) ~= nil,
-    "the blocked wait names its matching-ROM remedy, got: " .. table.concat(rendered, "\n")
-  )
-  Assert.isTrue(
-    copy:find("drop", 1, true) ~= nil,
-    "the blocked wait tells the player how to supply the file, got: " .. table.concat(rendered, "\n")
-  )
-  Assert.isTrue(pixels ~= nil, "the blocked wait still paints its animated stage")
-end
-
 function T.failed_pair_adoption_releases_staged_art_without_half_published_sprites(scope)
   local good = startupPairCacheFs("heartgold")
   local followerPath = "assets/generated/startup/loader/subjects/followers/155.png"

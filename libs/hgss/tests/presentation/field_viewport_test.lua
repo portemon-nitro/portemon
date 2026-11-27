@@ -61,6 +61,55 @@ function T.resize_recomputes_rectangles_without_replacing_the_object()
   Assert.equal(viewport.referenceFrame.x, 200)
 end
 
+function T.bounded_world_rectangles_preserve_full_host_dimensions_and_legacy_origins()
+  local bounds = { x = 33, y = 47, width = 500, height = 300 }
+  local expanded = FieldViewport.new(800, 600, { mode = "expanded", x = 13, y = 17 })
+  expanded:resize(800, 600, bounds)
+  Assert.equal(expanded.width, 800)
+  Assert.equal(expanded.height, 600)
+  Assert.equal(expanded.x, 13)
+  Assert.equal(expanded.y, 17)
+  Assert.deepEqual(expanded.worldViewport, bounds)
+  Assert.deepEqual(expanded.referenceFrame, { x = 83, y = 47, width = 400, height = 300 })
+
+  local strict = FieldViewport.new(800, 600, { mode = "strict", x = 13, y = 17 })
+  strict:resize(800, 600, bounds)
+  Assert.equal(strict.width, 800)
+  Assert.equal(strict.height, 600)
+  Assert.deepEqual(strict.worldViewport, { x = 83, y = 47, width = 400, height = 300 })
+  Assert.deepEqual(strict.referenceFrame, strict.worldViewport)
+
+  strict:resize(800, 600)
+  Assert.deepEqual(strict.worldViewport, { x = 13, y = 17, width = 800, height = 600 })
+  Assert.deepEqual(strict.referenceFrame, strict.worldViewport)
+end
+
+function T.bounded_world_rectangles_must_be_positive_finite_and_inside_the_host()
+  local viewport = FieldViewport.new(800, 600, { mode = "expanded", x = 13, y = 17 })
+  local before = FieldViewport.new(800, 600, { mode = "expanded", x = 13, y = 17 })
+  local invalid = {
+    { x = 13, y = 17, width = 0, height = 600 },
+    { x = 13, y = 17, width = 801, height = 600 },
+    { x = 12, y = 17, width = 800, height = 600 },
+    { x = 13, y = 16, width = 800, height = 600 },
+    { x = 14, y = 17, width = 800, height = 600 },
+    { x = 0 / 0, y = 17, width = 800, height = 600 },
+    { x = 13, y = 17, width = math.huge, height = 600 },
+    { x = 13, y = 17, width = 800 },
+  }
+  for _, bounds in ipairs(invalid) do
+    Assert.throws(function()
+      viewport:resize(800, 600, bounds)
+    end)
+    Assert.deepEqual(
+      viewport.worldViewport,
+      before.worldViewport,
+      "failed bounds publication preserves the last good world"
+    )
+    Assert.deepEqual(viewport.referenceFrame, before.referenceFrame)
+  end
+end
+
 function T.invalid_dimensions_and_modes_are_rejected()
   Assert.throws(function()
     FieldViewport.new(0, 100)

@@ -75,6 +75,37 @@ local function popupRect(anchor, width, height, margin, popupHeight)
   return { x = x, y = y, width = boxWidth, height = boxHeight }
 end
 
+local function globalActionRects(actions, x, bottom, width, heightAvailable)
+  local height = heightAvailable < 240 and 32 or BASE_NEW_GAME_HEIGHT
+  local y = bottom - height
+  local rects = {}
+  if #actions == 1 then
+    rects[assert(actions[1]).id] = { x = x, y = y, width = width, height = height }
+  else
+    assert(#actions == 2, "the Main Menu owns exactly two footer actions")
+    local newGame, gameSelection
+    for _, action in ipairs(actions) do
+      if action.id == "new-game" then
+        newGame = action
+      elseif action.id == "game-selection" then
+        gameSelection = action
+      end
+    end
+    assert(newGame ~= nil and gameSelection ~= nil, "the Main Menu footer needs its two known actions")
+    rects[gameSelection.id] = { x = x, y = y, width = height, height = height }
+    rects[newGame.id] = {
+      x = x + height + BASE_REGION_GAP,
+      y = y,
+      width = math.max(1, width - height - BASE_REGION_GAP),
+      height = height,
+    }
+  end
+  for _, rect in pairs(rects) do
+    rect.button = ProductMenuSkin.resolveCard(rect)
+  end
+  return rects
+end
+
 ---@param globalActions table[]
 ---@param saves table[]
 ---@param focus table<string, string>
@@ -108,7 +139,6 @@ function MainMenuLayout.compute(
   local regionGap = BASE_REGION_GAP
   local cardHeight = BASE_CARD_HEIGHT
   local cardGap = BASE_CARD_GAP
-  local newGameHeight = BASE_NEW_GAME_HEIGHT
   local overflowSize = BASE_OVERFLOW_SIZE
   local overflowInset = BASE_OVERFLOW_INSET
   local errorHeight = hasCatalogError and BASE_CATALOG_ERROR_HEIGHT or 0
@@ -117,18 +147,16 @@ function MainMenuLayout.compute(
   local viewport = { x = 0, y = 0, width = width, height = height }
   local contentWidth = math.max(1, math.min(width - margin * 2, BASE_CONTENT_WIDTH))
   local contentX = PixelScale.snapLogical((width - contentWidth) / 2)
-  local newGame = {
-    x = contentX,
-    y = height - margin - newGameHeight,
-    width = contentWidth,
-    height = newGameHeight,
-  }
-  newGame.button = ProductMenuSkin.resolveCard(newGame)
+  local actions = globalActionRects(globalActions, contentX, height - margin, contentWidth, height)
+  local actionsTop = math.huge
+  for _, rect in pairs(actions) do
+    actionsTop = math.min(actionsTop, rect.y)
+  end
   local saveViewport = {
     x = contentX,
     y = margin,
     width = contentWidth,
-    height = math.max(1, newGame.y - regionGap - margin),
+    height = math.max(1, actionsTop - regionGap - margin),
   }
 
   local totalCardsHeight = #saves * cardHeight + math.max(0, #saves - 1) * cardGap
@@ -193,7 +221,7 @@ function MainMenuLayout.compute(
 
   local result = {
     viewport = viewport,
-    global = { region = newGame, actions = { [assert(globalActions[1]).id] = newGame } },
+    global = { region = actions[assert(globalActions[1]).id], actions = actions },
     saves = {
       viewport = saveViewport,
       cards = cards,
@@ -226,28 +254,28 @@ function MainMenuLayout.compute(
     local popupHeight = actionCount > 1 and BASE_POPUP_HEIGHT + 32 or BASE_POPUP_HEIGHT
     local box = popupRect(card.overflow or card.frame, width, height, margin, popupHeight)
     local inset = math.min(BASE_POPUP_INSET, math.floor(math.min(box.width, box.height) / 4))
-    local actions = {}
+    local popupActions = {}
     local actionGap = actionCount > 1 and BASE_POPUP_ACTION_GAP or 0
     local actionHeight = math.max(1, math.floor((box.height - inset * 2 - actionGap) / math.max(1, actionCount)))
     local actionWidth = math.max(1, box.width - inset * 2)
     local y = box.y + inset
     if hasEdit then
-      actions.edit = { x = box.x + inset, y = y, width = actionWidth, height = actionHeight }
+      popupActions.edit = { x = box.x + inset, y = y, width = actionWidth, height = actionHeight }
       y = y + actionHeight + actionGap
     end
     if hasDelete then
-      actions.delete = { x = box.x + inset, y = y, width = actionWidth, height = actionHeight }
+      popupActions.delete = { x = box.x + inset, y = y, width = actionWidth, height = actionHeight }
     end
     box.button = ProductMenuSkin.resolveCard(box)
-    if actions.edit ~= nil then
-      actions.edit.button = ProductMenuSkin.resolveCard(actions.edit)
+    if popupActions.edit ~= nil then
+      popupActions.edit.button = ProductMenuSkin.resolveCard(popupActions.edit)
     end
-    if actions.delete ~= nil then
-      actions.delete.button = ProductMenuSkin.resolveCard(actions.delete)
+    if popupActions.delete ~= nil then
+      popupActions.delete.button = ProductMenuSkin.resolveCard(popupActions.delete)
     end
     result.popup = {
       box = box,
-      actions = actions,
+      actions = popupActions,
     }
   end
   if confirmation then

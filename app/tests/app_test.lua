@@ -7,6 +7,7 @@
 -- over from a previous session.
 
 local Assert = require("tests.support.Assert")
+local FakeCache = require("tests.support.FakeCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local HgssGame = require("game.hgss.src.HgssGame")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
@@ -18,19 +19,15 @@ local defaultAppBackend = ProducerFingerprint.appBackend
 local defaultCheckoutBackend = ProducerFingerprint.checkoutBackend
 
 local App
-local ImportState
-local VersionSelectState
+local GameSelectState
 
 local function loadShellModules()
   local ok, appOrError = pcall(require, "app.src.App")
   Assert.isTrue(ok, "the app shell must provide app.src.App: " .. tostring(appOrError))
   App = appOrError
-  local okImport, importOrError = pcall(require, "app.src.launcher.ImportState")
-  Assert.isTrue(okImport, "the app shell must own its import state: " .. tostring(importOrError))
-  ImportState = importOrError
-  local okVersion, versionOrError = pcall(require, "app.src.launcher.VersionSelectState")
-  Assert.isTrue(okVersion, "the app shell must own its version selector: " .. tostring(versionOrError))
-  VersionSelectState = versionOrError
+  local okSelect, selectOrError = pcall(require, "app.src.launcher.GameSelectState")
+  Assert.isTrue(okSelect, "the app shell must own its game selection state: " .. tostring(selectOrError))
+  GameSelectState = selectOrError
 end
 
 local T = {}
@@ -74,14 +71,39 @@ local function fresh()
     end)
   end
   App.service = nil
+  if App._assetRuntime ~= nil then
+    pcall(App._releaseAssetRuntime, App)
+  end
+  App._assetRuntime = nil
   App.pendingQuiesce = nil
   App.epoch = 0
   App.selectedVersionId = nil
   App._rebindVersionId = nil
   App._bootBlockedVersionId = nil
-  App.drawableWidth = nil
-  App.drawableHeight = nil
-  App.pixelRatio = nil
+  App._startupWarmup = nil
+  App._saveLocationWarmup = nil
+  App._selectedEntryLocation = nil
+  App._bootPending = false
+  App._bootIntro = nil
+  App._finishBootIntro(false)
+  App._releaseIconRecovery()
+  App._releaseLauncherResources()
+  App._importAttempt = nil
+  App._bootSwallowedInputs = {}
+  App._realTouches = {}
+  App._foreground = true
+  App._displayContext = nil
+  App._iconRepairAttempted = {}
+  local width, height = love.graphics.getDimensions()
+  App.drawableWidth, App.drawableHeight, App.pixelRatio = width, height, love.graphics.getDPIScale()
+  App._safeRect = { x = 0, y = 0, width = width, height = height }
+  App._displayContext = App._launcherDisplayContext()
+  App._touchGamepadSuspended = false
+  App._suspendedTouchIds = {}
+  if App._touchGamepad ~= nil then
+    pcall(App._touchGamepad.setTarget, App._touchGamepad, nil)
+    App._touchGamepad = nil
+  end
 end
 
 -- One harness for every App-level seam a test can touch: fresh module state,
@@ -113,17 +135,25 @@ local function withAppHarness(opts, ready, fn)
   local originalIsRegistered = RomImporter.isRegistered
   local CacheArchive = require("romdump.src.build.CacheArchive")
   local originalRecoverable = CacheArchive.recoverableFileName
+  local RomArchive = require("romdump.src.source.RomArchive")
+  local originalManagedPath = RomArchive.recoverablePath
   local originalNew = HgssGame.new
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local originalMenuNew = MainMenuComposition.new
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
+  local LauncherLoadingPresentation = require("app.src.launcher.LauncherLoadingPresentation")
+  local StartupAudioSession = require("app.src.audio.StartupAudioSession")
   local originalTitleNew = HgssTitleScene.new
   local originalTitleBegin = HgssTitleScene.begin
   local originalLoadingNew = HgssLoadingPresentation.new
+  local originalLauncherLoadingNew = LauncherLoadingPresentation.new
+  local originalStartupAudioNew = StartupAudioSession.new
   local graphics = love.graphics
   local originalPrint = graphics.print
   local originalGetDimensions = graphics.getDimensions
   local originalGetDPIScale = graphics.getDPIScale
+  local originalGetOS = love.system.getOS
+  local originalGetSafeArea = love.window.getSafeArea
   local originalQuit = love.event.quit
   -- The harness stands in for the selection flow's chosen walking pair (the
   -- selection flow owns the production assignment): game/editor entry forwards
@@ -154,6 +184,7 @@ local function withAppHarness(opts, ready, fn)
     alreadyRegistered = false,
     firstPlayPublished = {},
     retiredEpochs = {},
+    loaders = {},
   }
   local epoch = 0
   local service = {}
@@ -182,15 +213,6 @@ local function withAppHarness(opts, ready, fn)
     -- below completes and the title adopts without GPU fixtures.
     if selector.requestKind == "opening-scene" then
       return result.startupTitleReady == true, nil
-    end
-    -- Boot gates on the shared walking visuals: the harness models a
-    -- healthy worker by default, while tests set walkerReady to false to
-    -- hold the card on still-pending art.
-    if selector.requestKind == "startup-walker" then
-      if result.walkerReady == false then
-        return nil, nil
-      end
-      return true, nil
     end
     return nil, nil
   end
@@ -298,6 +320,22 @@ local function withAppHarness(opts, ready, fn)
   })
   App.service = service
   RomImporter.isReady = ready
+  RomArchive.recoverablePath = function(sha1)
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local info = require("romdump.src.source.GameVersion").info(versionId)
+      if info ~= nil and info.sha1 == sha1 and ready(versionId) then
+        return "managed/" .. sha1 .. ".zip"
+      end
+    end
+    return nil
+  end
+  App._iconRepairAttempted = {}
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local info = require("romdump.src.source.GameVersion").info(versionId)
+    if info ~= nil then
+      App._iconRepairAttempted[info.sha1] = true
+    end
+  end
   -- Candidate registration is scripted per test: the shared save root may
   -- carry a real snapshot, which must not widen the harness's shelf.
   CacheArchive.recoverableFileName = function(versionId)
@@ -309,7 +347,10 @@ local function withAppHarness(opts, ready, fn)
   end
   HgssGame.new = function(options)
     result.launches[#result.launches + 1] = options
-    return result.state
+    if result.launchFailure ~= nil then
+      error(result.launchFailure, 0)
+    end
+    return result.game or result.state
   end
   MainMenuComposition.new = function(options)
     local menu = countingState()
@@ -345,6 +386,42 @@ local function withAppHarness(opts, ready, fn)
       return true
     end
     return presentation
+  end
+  LauncherLoadingPresentation.new = function(options)
+    local presentation = {
+      versionId = options and options.versionId,
+      draws = 0,
+      disposals = 0,
+    }
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw()
+      self.draws = self.draws + 1
+    end
+    function presentation:dispose()
+      self.disposals = self.disposals + 1
+    end
+    result.loaders[#result.loaders + 1] = presentation
+    return presentation
+  end
+  StartupAudioSession.new = function()
+    local session = { disposals = 0 }
+    function session:bindTitleRecord(record)
+      self.titleRecord = record
+    end
+    function session:beginOpening()
+      return true
+    end
+    function session:beginTitle() end
+    function session:notifySkip() end
+    function session:beginFade() end
+    function session:beginMovieCycle() end
+    function session:playMenuCue() end
+    function session:update() end
+    function session:dispose()
+      self.disposals = self.disposals + 1
+    end
+    return session
   end
   -- The launcher stages the title through its build task, so the harness
   -- stands in there: the title is realized on the first advance and transfers
@@ -421,39 +498,38 @@ local function withAppHarness(opts, ready, fn)
     result.prints = result.prints + 1
   end
   graphics.getDimensions = function()
-    return 800, 600
+    return result.hostWidth or 800, result.hostHeight or 600
   end
   graphics.getDPIScale = function()
-    return 1
+    return result.pixelRatio or 1
   end
-  -- The startup journey admits the movie only behind an acknowledged
-  -- soundtrack: one silent session stands in for the selected edition's audio
-  -- so the title/menu handoff never depends on audio fixtures.
-  local originalStartupAudioNew = StartupAudioSession.new
-  StartupAudioSession.new = function()
-    local session = { disposed = false }
-    function session:beginOpening()
-      return true
-    end
-    function session:beginTitle() end
-    function session:notifySkip() end
-    function session:beginFade() end
-    function session:beginMovieCycle() end
-    function session:playMenuCue() end
-    function session:update() end
-    function session:dispose()
-      self.disposed = true
-    end
-    return session
+  App.drawableWidth, App.drawableHeight = result.hostWidth or 800, result.hostHeight or 600
+  App.pixelRatio = result.pixelRatio or 1
+  App._safeRect = { x = 0, y = 0, width = App.drawableWidth, height = App.drawableHeight }
+  App._displayContext = App._launcherDisplayContext()
+  love.system.getOS = function()
+    return result.osName or originalGetOS()
+  end
+  love.window.getSafeArea = function()
+    result.safeAreaReads = (result.safeAreaReads or 0) + 1
+    local safe = result.safeRect or { 0, 0, result.hostWidth or 800, result.hostHeight or 600 }
+    return safe[1], safe[2], safe[3], safe[4]
   end
   love.event.quit = function(code)
     result.quitCodes[#result.quitCodes + 1] = code
   end
   local ok, err = pcall(fn, result)
+  if App.state ~= nil then
+    App.setState(nil)
+  end
+  if App.provisioner ~= nil then
+    App._retireSelection()
+  end
   App.opts = originalOpts
   RomImporter.isReady = originalIsReady
   RomImporter.isRegistered = originalIsRegistered
   CacheArchive.recoverableFileName = originalRecoverable
+  RomArchive.recoverablePath = originalManagedPath
   HgssGame.new = originalNew
   HgssOpeningMovie.new = originalMovieNew
   StartupAssetCache.loadOpeningScene = originalLoadOpeningScene
@@ -462,11 +538,14 @@ local function withAppHarness(opts, ready, fn)
   HgssTitleScene.new = originalTitleNew
   HgssTitleScene.begin = originalTitleBegin
   HgssLoadingPresentation.new = originalLoadingNew
+  LauncherLoadingPresentation.new = originalLauncherLoadingNew
+  StartupAudioSession.new = originalStartupAudioNew
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
   graphics.getDPIScale = originalGetDPIScale
+  love.system.getOS = originalGetOS
+  love.window.getSafeArea = originalGetSafeArea
   love.event.quit = originalQuit
-  StartupAudioSession.new = originalStartupAudioNew
   App.startupAudioError = nil
   ProducerFingerprint.appBackend = harnessAppBackend
   ProducerFingerprint.checkoutBackend = harnessCheckoutBackend
@@ -596,13 +675,29 @@ local function importerStub(state, busy)
     state = state,
     busy = busy or false,
     filedroppedCalls = 0,
+    queuedDroppedCalls = 0,
   }
   function importer:isBusy()
     return self.busy
   end
+  function importer:status()
+    return {
+      state = self.state,
+      canCancel = self.state ~= RomImporter.STATES.COMPLETE and self.state ~= RomImporter.STATES.ERROR,
+    }
+  end
   function importer:filedropped()
     self.filedroppedCalls = self.filedroppedCalls + 1
   end
+  function importer:queueDroppedFile()
+    self.queuedDroppedCalls = self.queuedDroppedCalls + 1
+    self.state = RomImporter.STATES.READING
+  end
+  function importer:queuePath()
+    self.state = RomImporter.STATES.READING
+  end
+  function importer:update() end
+  function importer:cancelQueued() end
   return importer
 end
 
@@ -624,15 +719,573 @@ local function droppedFile()
   }
 end
 
+local function publishedSave(saveId, versionId)
+  return require("tests.support.PublishedSaveFixture").new(saveId, versionId)
+end
+
+local function recordingGameChild(events)
+  local child = { disposed = 0 }
+  local function record(kind, ...)
+    events[#events + 1] = { kind, ... }
+  end
+  function child:gamepadpressed(joystick, button)
+    record("gamepadpressed", joystick:getID(), button)
+  end
+  function child:gamepadreleased(joystick, button)
+    record("gamepadreleased", joystick:getID(), button)
+  end
+  function child:touchpressed(id, x, y)
+    record("touchpressed", id, x, y)
+  end
+  function child:touchmoved(id, x, y)
+    record("touchmoved", id, x, y)
+  end
+  function child:touchreleased(id, x, y)
+    record("touchreleased", id, x, y)
+  end
+  function child:mousepressed(x, y, button, istouch)
+    record("mousepressed", x, y, button, istouch)
+  end
+  function child:mousemoved(x, y, dx, dy, istouch)
+    record("mousemoved", x, y, dx, dy, istouch)
+  end
+  function child:mousereleased(x, y, button, istouch)
+    record("mousereleased", x, y, button, istouch)
+  end
+  function child:resize(width, height)
+    record("resize", width, height)
+  end
+  function child:focus(focused)
+    record("focus", focused)
+  end
+  function child:dispose()
+    self.disposed = self.disposed + 1
+    record("dispose")
+  end
+  return child
+end
+
+local function installRecordingGame(result)
+  local Game = require("game.src.Game")
+  local events = {}
+  local game = Game.new({ onExit = function() end })
+  game:setState(recordingGameChild(events))
+  result.game = game
+  App._ensureLauncherResources()
+  App._syncDrawableSize()
+  App.selectedVersionId = "heartgold"
+  App.epoch = assert(result.service:select({ versionId = "heartgold" }))
+  App.provisioner = {
+    gameHost = function()
+      return {}
+    end,
+    dispose = function()
+      result.service:retire(App.epoch)
+    end,
+  }
+  local menu = assert(App._stageMenu("heartgold"))
+  App.setState(menu)
+  menu.options.onResult({ kind = "new_game" })
+  Assert.isTrue(App.state == game, "the menu installs the real generic Game returned by the factory")
+  return game, events, assert(result.launches[#result.launches])
+end
+
+local function clearEvents(events)
+  for index = #events, 1, -1 do
+    events[index] = nil
+  end
+end
+
+function T.android_menu_entry_routes_controls_to_the_real_game_and_preserves_native_touch()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    result.pixelRatio = 2
+    App._ensureLauncherResources()
+    App._syncDrawableSize()
+    App.selectedVersionId = "heartgold"
+    App.epoch = assert(result.service:select({ versionId = "heartgold" }))
+    App.provisioner = {
+      gameHost = function()
+        return {}
+      end,
+      dispose = function()
+        result.service:retire(App.epoch)
+      end,
+    }
+    local menu = assert(App._stageMenu("heartgold"))
+    local launcherEvents = {}
+    function menu:touchpressed(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "pressed", id, x, y }
+    end
+    function menu:touchmoved(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "moved", id, x, y }
+    end
+    function menu:touchreleased(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "released", id, x, y }
+    end
+    App.setState(menu)
+    App.touchpressed(90, 100, 100)
+    App.touchpressed(91, 56, 672)
+    Assert.deepEqual(launcherEvents, {
+      { "pressed", 90, 100, 100 },
+      { "pressed", 91, 56, 672 },
+    }, "launcher touch never acquires gamepad chrome, even at a control position")
+
+    local Game = require("game.src.Game")
+    local events = {}
+    local game = Game.new({ onExit = function() end })
+    game:setState(recordingGameChild(events))
+    result.game = game
+    menu.options.onResult({ kind = "new_game" })
+    Assert.isTrue(App.state == game, "the App binds the successful real Game from its existing factory seam")
+    local launch = assert(result.launches[1])
+
+    App.touchpressed(1, 56, 672)
+    App.touchreleased(1, 56, 672)
+    App.touchpressed(2, 328, 720)
+    App.touchreleased(2, 328, 720)
+    App.touchpressed(3, 280, 672)
+    App.touchreleased(3, 280, 672)
+    App.touchpressed(4, 224, 616)
+    App.touchreleased(4, 224, 616)
+    App.touchpressed(9, 180, 500)
+    App.touchmoved(9, 280, 720)
+    App.touchreleased(9, 280, 720)
+    Assert.deepEqual(events, {
+      { "gamepadpressed", -1, "dpup" },
+      { "gamepadreleased", -1, "dpup" },
+      { "gamepadpressed", -1, "a" },
+      { "gamepadreleased", -1, "a" },
+      { "gamepadpressed", -1, "x" },
+      { "gamepadreleased", -1, "x" },
+      { "gamepadpressed", -1, "start" },
+      { "gamepadreleased", -1, "start" },
+      { "touchpressed", 9, 180, 500 },
+      { "touchmoved", 9, 280, 720 },
+      { "touchreleased", 9, 280, 720 },
+    }, "controls use normal gamepad edges while an outside gesture remains native for its lifetime")
+    Assert.equal(type(launch.topologyProvider), "function", "Android publishes reservations before retail presentation")
+    local topology = launch.topologyProvider(360, 800)
+    Assert.deepEqual(topology.surfaces[1].safeRect, { x = 0, y = 0, width = 360, height = 800 })
+    Assert.deepEqual(topology.surfaces[1].occupiedRegions, { { x = 0, y = 584, width = 360, height = 216 } })
+
+    App.touchpressed(5, 224, 616)
+    game:exit({ kind = "main_menu" })
+    clearEvents(events)
+    local selection = assert(App.state)
+    function selection:touchmoved(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "selection moved", id, x, y }
+    end
+    function selection:touchreleased(id, x, y)
+      launcherEvents[#launcherEvents + 1] = { "selection released", id, x, y }
+    end
+    App.touchmoved(5, 280, 720)
+    App.touchreleased(5, 280, 720)
+    Assert.deepEqual(events, {}, "a former control tail cannot release into game selection or its replacement")
+    Assert.equal(#launcherEvents, 2, "the launcher receives no duplicate control gesture")
+  end)
+end
+
+function T.desktop_menu_entry_has_no_virtual_controls_or_reservations()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Linux"
+    result.hostWidth, result.hostHeight = 360, 800
+    local _, events, launch = installRecordingGame(result)
+    Assert.isNil(launch.topologyProvider, "desktop composition retains its existing topology path")
+    App.touchpressed(1, 56, 672)
+    App.touchreleased(1, 56, 672)
+    Assert.deepEqual(events, {
+      { "touchpressed", 1, 56, 672 },
+      { "touchreleased", 1, 56, 672 },
+    }, "desktop receives only the original native pointer callbacks")
+  end)
+end
+
+function T.android_safe_area_only_change_cancels_once_before_one_resize()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    result.safeRect = { 0, 0, 360, 800 }
+    local _, events = installRecordingGame(result)
+    App.touchpressed(1, 56, 672)
+    clearEvents(events)
+    result.safeRect = { 12, 20, 336, 780 }
+    result.safeAreaReads = 0
+    App.update(1 / 60)
+    App.update(1 / 60)
+    Assert.equal(
+      result.safeAreaReads,
+      2,
+      "safe-area-only invalidation is observed through the ordinary App update path"
+    )
+    Assert.deepEqual(events, {
+      { "gamepadreleased", -1, "dpup" },
+      { "focus", false },
+      { "resize", 360, 800 },
+      { "focus", true },
+    }, "same-size inset changes cancel before exactly one structural resize")
+    clearEvents(events)
+    App.touchpressed(2, 68, 672)
+    App.touchreleased(2, 68, 672)
+    Assert.deepEqual(events, {
+      { "gamepadpressed", -1, "dpup" },
+      { "gamepadreleased", -1, "dpup" },
+    }, "fresh input uses the newly published safe-area plan")
+  end)
+end
+
+function T.android_focus_loss_cancels_before_the_live_child_and_swallows_touch_mouse_companions()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    local _, events = installRecordingGame(result)
+    App.touchpressed(1, 328, 720)
+    clearEvents(events)
+    App.focus(false)
+    Assert.deepEqual(events, {
+      { "gamepadreleased", -1, "a" },
+      { "focus", false },
+    }, "virtual cancellation precedes live child focus loss")
+    App.focus(true)
+    clearEvents(events)
+    App.touchmoved(1, 328, 720)
+    App.touchreleased(1, 328, 720)
+    App.mousepressed(280, 720, 1, true)
+    App.mousemoved(281, 720, 1, 0, true)
+    App.mousereleased(281, 720, 1, true)
+    Assert.deepEqual(events, {}, "stale control tails and touch-generated mouse companions are inert")
+    App.mousepressed(20, 100, 1, false)
+    Assert.deepEqual(
+      events,
+      { { "mousepressed", 20, 100, 1, false } },
+      "genuine mouse input retains its existing route"
+    )
+  end)
+end
+
+function T.android_nonpresentable_interval_releases_without_a_zero_resize_and_recovers()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    local _, events = installRecordingGame(result)
+    App.touchpressed(1, 56, 672)
+    clearEvents(events)
+    result.hostWidth, result.hostHeight = 0, 0
+    App.update(1 / 60)
+    Assert.deepEqual(
+      events,
+      { { "gamepadreleased", -1, "dpup" }, { "focus", false } },
+      "a nonpresentable host releases holds without resizing to zero"
+    )
+    clearEvents(events)
+    App.touchpressed(2, 180, 500)
+    App.touchmoved(2, 280, 720)
+    Assert.deepEqual(events, {}, "touches first seen while nonpresentable establish no live input")
+    clearEvents(events)
+    result.hostWidth, result.hostHeight = 360, 800
+    App.update(1 / 60)
+    Assert.deepEqual(
+      events,
+      { { "focus", false }, { "resize", 360, 800 }, { "focus", true } },
+      "positive dimensions resume geometry publication once"
+    )
+    App.touchmoved(2, 280, 720)
+    App.touchreleased(2, 280, 720)
+    Assert.deepEqual(
+      events,
+      { { "focus", false }, { "resize", 360, 800 }, { "focus", true } },
+      "the suspended touch tail stays consumed after geometry resumes"
+    )
+    clearEvents(events)
+    App.touchpressed(2, 56, 672)
+    App.touchreleased(2, 56, 672)
+    Assert.deepEqual(events, {
+      { "gamepadpressed", -1, "dpup" },
+      { "gamepadreleased", -1, "dpup" },
+    }, "a fresh down after resume starts a new lifetime even when the host reuses the ID")
+  end)
+end
+
+function T.android_detach_releases_the_live_game_before_disposal()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    local game, events = installRecordingGame(result)
+    App.touchpressed(1, 328, 720)
+    clearEvents(events)
+    App.setState(nil)
+    Assert.deepEqual(events, {
+      { "gamepadreleased", -1, "a" },
+      { "dispose" },
+    }, "ordinary App detach cancels through the live child before Game disposal")
+    Assert.isTrue(game.terminal)
+    clearEvents(events)
+    App.touchreleased(1, 328, 720)
+    Assert.deepEqual(events, {}, "the detached gesture tail cannot reach a later App state")
+  end)
+end
+
+function T.android_quit_cancels_before_game_and_renderer_teardown()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    local _, events = installRecordingGame(result)
+    App.touchpressed(1, 328, 720)
+    clearEvents(events)
+    App.quit()
+    Assert.deepEqual(events, {
+      { "gamepadreleased", -1, "a" },
+      { "dispose" },
+    }, "quit releases virtual holds before disposing the live Game")
+    Assert.isNil(App.launcherRenderer, "renderer disposal remains owned by App")
+    Assert.isNil(App.state)
+  end)
+end
+
+function T.quit_from_a_retained_terminal_import_error_joins_before_teardown()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    local alive = true
+    local waits = 0
+    local thread = {}
+    function thread:isRunning()
+      return alive
+    end
+    function thread:wait()
+      waits = waits + 1
+      alive = false
+    end
+    local cancelCalls = 0
+    local importer = { state = RomImporter.STATES.ERROR }
+    function importer:status()
+      return { state = RomImporter.STATES.ERROR, canCancel = false }
+    end
+    function importer:cancelQueued()
+      cancelCalls = cancelCalls + 1
+    end
+    function importer:update()
+      error("shutdown must not pump a completion", 0)
+    end
+    local originalDrain = RomImporter.shutdownProcessLease
+    local drains = 0
+    local order = {}
+    RomImporter.shutdownProcessLease = function()
+      drains = drains + 1
+      thread:wait()
+      order[#order + 1] = "join"
+      return true
+    end
+    local originalShutdown = result.service.shutdown
+    function result.service:shutdown()
+      order[#order + 1] = "service"
+      return originalShutdown(self)
+    end
+    local originalSetState = App.setState
+    local constructed = 0
+    local state = countingState()
+    originalSetState(state)
+    function App.setState(nextState)
+      if nextState ~= nil then
+        constructed = constructed + 1
+      end
+      return originalSetState(nextState)
+    end
+    App._importAttempt = {
+      attemptId = {},
+      expectedVersionId = "heartgold",
+      mode = "error",
+      started = true,
+      error = "synthetic terminal failure",
+      canCancel = false,
+      elapsed = 0,
+    }
+    App.importer = importer
+    local ok, quitOrError = pcall(App.quit)
+    App.setState = originalSetState
+    RomImporter.shutdownProcessLease = originalDrain
+    result.service.shutdown = originalShutdown
+    assert(ok, quitOrError)
+    Assert.isNil(quitOrError, "a terminal error screen still permits final quit")
+    Assert.equal(cancelCalls, 1, "quit cancels the retained owner even though it is not cancellable")
+    Assert.equal(drains, 1, "quit always drains the module-level process lease")
+    Assert.equal(waits, 1, "the live worker is joined at the shutdown boundary")
+    Assert.isFalse(alive, "the worker terminated before teardown")
+    Assert.deepEqual(order, { "join", "service" }, "the join precedes resource teardown")
+    Assert.equal(constructed, 0, "shutdown constructs no replacement selector")
+    Assert.isNil(App.importer, "the retained importer is cleared by its owner")
+    Assert.isNil(App._importAttempt, "the terminal attempt is cleared by its owner")
+    Assert.isNil(App.state, "quit retires the live state without a replacement")
+    Assert.equal(state.disposed, 1, "the live state is disposed exactly once")
+  end)
+end
+
+function T.quit_honors_a_failed_process_lease_join()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    local importer = { state = RomImporter.STATES.ERROR }
+    function importer:status()
+      return { state = RomImporter.STATES.ERROR, canCancel = false }
+    end
+    function importer:cancelQueued() end
+    function importer:update()
+      error("shutdown must not pump a completion", 0)
+    end
+    local originalDrain = RomImporter.shutdownProcessLease
+    RomImporter.shutdownProcessLease = function()
+      return false
+    end
+    local shutdowns = 0
+    local originalShutdown = result.service.shutdown
+    function result.service:shutdown()
+      shutdowns = shutdowns + 1
+      return originalShutdown(self)
+    end
+    App.setState(countingState())
+    App._importAttempt = {
+      attemptId = {},
+      expectedVersionId = "heartgold",
+      mode = "error",
+      started = true,
+      error = "synthetic terminal failure",
+      canCancel = false,
+      elapsed = 0,
+    }
+    App.importer = importer
+    local ok, vetoed = pcall(App.quit)
+    RomImporter.shutdownProcessLease = originalDrain
+    result.service.shutdown = originalShutdown
+    assert(ok, vetoed)
+    Assert.isTrue(vetoed == true, "an unjoined lease vetoes quit")
+    Assert.equal(shutdowns, 0, "teardown never runs as if the lease were freed")
+    Assert.isTrue(App.importer == importer, "the retained owner survives the vetoed quit")
+    Assert.notNil(App._importAttempt, "the terminal attempt survives the vetoed quit")
+    Assert.notNil(App.service, "the process service survives the vetoed quit")
+  end)
+end
+
+function T.android_failed_game_construction_leaves_no_control_target()
+  withAppHarness({ dev = false }, function()
+    return false
+  end, function(result)
+    result.osName = "Android"
+    result.hostWidth, result.hostHeight = 360, 800
+    App._ensureLauncherResources()
+    App._syncDrawableSize()
+    App.selectedVersionId = "heartgold"
+    App.epoch = assert(result.service:select({ versionId = "heartgold" }))
+    App.provisioner = {
+      gameHost = function()
+        return {}
+      end,
+      dispose = function() end,
+    }
+    local menu = assert(App._stageMenu("heartgold"))
+    App.setState(menu)
+    result.launchFailure = "synthetic construction failure"
+    local ok = pcall(function()
+      menu.options.onResult({ kind = "new_game" })
+    end)
+    Assert.isFalse(ok, "the existing construction error remains authoritative")
+    local selection = assert(App.state)
+    local touches = 0
+    local originalTouch = selection.touchpressed
+    function selection:touchpressed(...)
+      touches = touches + 1
+      return originalTouch(self, ...)
+    end
+    App.touchpressed(1, 56, 672)
+    Assert.equal(touches, 1, "a failed construction leaves the selection as the native touch owner")
+  end)
+end
+
+local function completedSyntheticImporter(versionId)
+  local NdsBuilder = require("tests.support.NdsBuilder")
+  local DumpFixture = require("tests.support.DumpFixture")
+  local RomSource = require("romdump.src.source.RomSource")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local data = NdsBuilder.build(DumpFixture.spec())
+  local sha1 = RomSource.fromString(data):sha1()
+  local info = {
+    id = versionId,
+    label = versionId == "heartgold" and "HeartGold" or "SoulSilver",
+    displayName = versionId == "heartgold" and "Pokemon HeartGold" or "Pokemon SoulSilver",
+    sha1 = sha1,
+    gameCode = "IPKE",
+    expectedSize = #data,
+    cachePrefix = versionId .. "/",
+  }
+  local versions = {
+    info = function(id)
+      return id == info.id and info or nil
+    end,
+    forSha1 = function(value)
+      return value == sha1 and info or nil
+    end,
+    forGameCode = function(value)
+      return value == info.gameCode and info or nil
+    end,
+  }
+  local backend = FakeCache.new()
+  local importer = RomImporter.new({
+    versions = versions,
+    now = function()
+      return 0
+    end,
+    cacheFactory = function(id)
+      return CacheFs.forVersion(id, backend)
+    end,
+  })
+  importer:startSource(RomSource.fromString(data, versionId .. ".nds"))
+  for _ = 1, 10000 do
+    importer:update()
+    if importer.state == RomImporter.STATES.COMPLETE or importer.state == RomImporter.STATES.ERROR then
+      break
+    end
+  end
+  Assert.equal(importer.state, RomImporter.STATES.COMPLETE, "the real importer validates the synthetic source")
+  return importer
+end
+
+local function withPublishedSaves(backend, fn)
+  local SaveFs = require("libs.storage.src.SaveFs")
+  local originalGlobal = SaveFs.global
+  SaveFs.global = function()
+    return originalGlobal(backend)
+  end
+  local ok, err = xpcall(fn, debug.traceback)
+  SaveFs.global = originalGlobal
+  if not ok then
+    error(err, 0)
+  end
+end
+
 function T.starting_an_import_disposes_the_active_field_state()
   fresh()
   local field = countingState()
   App.setState(field)
   App.saveDir = nil
-  App._startImport()
+  App._beginImportPath("fixture.nds")
   Assert.equal(field.disposed, 1)
-  Assert.equal(getmetatable(App.state).__index, ImportState)
+  Assert.equal(getmetatable(App.state).__index, GameSelectState)
   Assert.notNil(App.importer)
+  Assert.notNil(App._importAttempt)
 end
 
 -- LÖVE keeps the draw color across frames: a state that last drew with a
@@ -713,8 +1366,8 @@ function T.ratio_only_display_change_invalidates_once_before_update()
     App.update(1 / 60)
     graphics.getDimensions = originalGetDimensions
     graphics.getDPIScale = originalGetDPIScale
-    Assert.equal(reads, 2, "each update samples dimensions once")
-    Assert.equal(dpiReads, 2, "each update samples DPI once")
+    Assert.equal(reads, 4, "each coherent update samples dimensions before and after the native query")
+    Assert.equal(dpiReads, 4, "each coherent update samples DPI before and after the native query")
     Assert.deepEqual(events, {
       { "resize", 800, 600 },
       { "update" },
@@ -754,11 +1407,11 @@ function T.display_sync_reads_once_and_draw_and_explicit_resize_do_not_duplicate
     }
 
     App.update(1 / 60)
-    Assert.equal(dimensionReads, 1)
-    Assert.equal(dpiReads, 1)
+    Assert.equal(dimensionReads, 2)
+    Assert.equal(dpiReads, 2)
     App.draw()
-    Assert.equal(dimensionReads, 1, "draw does not sample dimensions")
-    Assert.equal(dpiReads, 1, "draw does not sample DPI")
+    Assert.equal(dimensionReads, 2, "a presentable draw does not resample native dimensions")
+    Assert.equal(dpiReads, 2, "a presentable draw does not resample DPI")
 
     pixelRatio = 2
     App.resize(width, height)
@@ -767,9 +1420,9 @@ function T.display_sync_reads_once_and_draw_and_explicit_resize_do_not_duplicate
     graphics.getDimensions = originalGetDimensions
     graphics.getDPIScale = originalGetDPIScale
 
-    Assert.equal(dpiReadsAfterResize, 2, "explicit resize refreshes the retained DPI")
-    Assert.equal(dimensionReads, 2, "each sync samples dimensions once")
-    Assert.equal(dpiReads, 3, "each sync samples DPI once")
+    Assert.equal(dpiReadsAfterResize, 4, "explicit resize takes one coherent two-read native sample")
+    Assert.equal(dimensionReads, 6, "update and resize each take one coherent native sample")
+    Assert.equal(dpiReads, 6, "each coherent sample reads DPI twice")
     Assert.deepEqual(events, {
       { "resize", width, height },
       { "update" },
@@ -795,8 +1448,8 @@ function T.drop_after_a_finished_import_starts_a_fresh_session()
     Assert.equal(stale.filedroppedCalls, 0, "the stale importer must not be invoked")
     Assert.isFalse(App.importer == stale, "a finished import session must not be reused")
     Assert.notNil(App.importer)
-    Assert.equal(getmetatable(App.state).__index, ImportState)
-    Assert.equal(App.state.importer, App.importer)
+    Assert.equal(getmetatable(App.state).__index, GameSelectState)
+    Assert.notNil(App.state:view().import, "the fresh session owns a visible import attempt")
   end
 end
 
@@ -853,15 +1506,9 @@ function T.non_editor_lua_drop_keeps_the_existing_rom_import_route()
   end, function()
     App.service = nil
     local originalImporterNew = RomImporter.new
-    local originalImportStateNew = ImportState.new
     local importer = importerStub("idle")
-    local importState = countingState()
     RomImporter.new = function()
       return importer
-    end
-    ImportState.new = function(received)
-      Assert.equal(received, importer, "the existing importer is passed to ImportState")
-      return importState
     end
     local ok, err = pcall(function()
       App.filedropped({
@@ -869,184 +1516,227 @@ function T.non_editor_lua_drop_keeps_the_existing_rom_import_route()
           return "ordinary.lua"
         end,
       })
-      Assert.equal(importer.filedroppedCalls, 1, "a non-editor Lua drop follows ROM import routing")
-      Assert.equal(App.state, importState, "the normal import state owns the non-editor drop")
+      App.draw()
+      App.update(1 / 60)
+      Assert.equal(importer.queuedDroppedCalls, 1, "a non-editor Lua drop follows queued ROM import routing")
+      Assert.equal(getmetatable(App.state).__index, GameSelectState, "game selection owns the import variant")
+      Assert.equal(App.importer, importer)
     end)
     RomImporter.new = originalImporterNew
-    ImportState.new = originalImportStateNew
     if not ok then
       error(err, 0)
     end
   end)
 end
 
--- A failed import leaves no importer behind: the next update clears it, so a
--- stale reference can never survive the session. The import screen holds its
--- own reference and is unaffected.
-function T.failed_import_is_cleared_on_the_next_update()
+-- A terminal importer error remains owned while its borrowed modal is visible.
+-- Dropping it in App.update would erase the actionable cause before the player
+-- can dismiss it; replacement or dismissal remains the cleanup boundary.
+function T.pending_import_worker_lease_is_pumped_and_blocks_a_second_import()
   fresh()
-  App.importer = importerStub("error")
+  local importer = {
+    state = RomImporter.STATES.IDLE,
+    updates = 0,
+    isBusy = function()
+      return false
+    end,
+    status = function()
+      return { state = RomImporter.STATES.IDLE, canCancel = true }
+    end,
+    update = function(self)
+      self.updates = self.updates + 1
+    end,
+  }
+  App.importer = importer
+  App.state = {}
+  App.update(1 / 60)
+  Assert.equal(importer.updates, 1, "a pending worker lease still advances on the App frame")
+  App.filedropped({
+    getFilename = function()
+      return "second.nds"
+    end,
+  })
+  Assert.isTrue(App.importer == importer, "a pending lease cannot be replaced by a second import")
+end
+
+function T.failed_import_is_retained_until_its_error_view_is_dismissed()
+  fresh()
+  local failure = completedSyntheticImporter("heartgold")
+  failure:filedropped({
+    getFilename = function()
+      return "notes.txt"
+    end,
+  })
+  Assert.equal(failure.state, RomImporter.STATES.ERROR, "the real importer rejects the unsupported file")
   local state = { update = function() end }
+  App.importer = failure
   App.setState(state)
   App.update(0.016)
-  Assert.isNil(App.importer, "a failed import session must not linger")
-  Assert.equal(App.state, state, "clearing the importer must not disturb the import screen")
+  Assert.isTrue(App.importer == failure, "the terminal error stays available to its visible modal")
+  Assert.equal(App.state, state, "polling does not replace the borrowed error view")
 end
 
--- The boot decision when no ROM was supplied: zero ready versions enter the
--- import state, one launches HGSS, and several offer the version selector.
+-- The boot decision with no ROM or save candidate shows the empty library.
 
-function T.boot_existing_with_no_ready_version_starts_an_import()
+function T.boot_existing_with_no_ready_version_shows_empty_selection()
   withAppHarness({}, function()
     return false
+  end, function()
+    withPublishedSaves(FakeCache.new(), function()
+      App._bootExisting()
+      Assert.isNil(App.importer, "an empty library starts no importer until the player asks")
+      Assert.equal(getmetatable(App.state).__index, GameSelectState)
+      Assert.deepEqual(App.state:view().games, {
+        { versionId = "heartgold", label = "Pokémon HeartGold", installed = false },
+        { versionId = "soulsilver", label = "Pokémon SoulSilver", installed = false },
+      }, "first boot always exposes both missing editions")
+    end)
+  end)
+end
+function T.boot_uses_the_newest_published_payload_time_without_loading_a_save()
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold" or versionId == "soulsilver"
   end, function(result)
-    -- Nothing is installed or bound: no current attestation anywhere.
-    result.firstPlayReady = false
-    App._bootExisting()
-    Assert.notNil(App.importer)
-    Assert.equal(getmetatable(App.state).__index, ImportState)
+    local backend = FakeCache.new()
+    local modtimes = {}
+    local originalGetInfo = backend.getInfo
+    function backend:getInfo(path)
+      local info = originalGetInfo(self, path)
+      if info ~= nil and info.type == "file" then
+        info.modtime = modtimes[path]
+      end
+      return info
+    end
+    withPublishedSaves(backend, function()
+      local Store = require("libs.hgss.src.save.GameSaveStore")
+      local store = Store.new(require("libs.storage.src.SaveFs").global())
+      local heartgoldId = store:reserve()
+      local soulsilverId = store:reserve()
+      store:publishFirst(publishedSave(heartgoldId, "heartgold"))
+      store:publishFirst(publishedSave(soulsilverId, "soulsilver"))
+      modtimes["saves/games/" .. heartgoldId .. ".lua"] = 1700000000
+      modtimes["saves/games/" .. soulsilverId .. ".lua"] = 1700000100
+      modtimes["saves/catalog.lua"] = 1900000000
+
+      local originalList, originalLoad = Store.listMetadata, Store.load
+      local listings, loads = 0, 0
+      Store.listMetadata = function(...)
+        listings = listings + 1
+        return originalList(...)
+      end
+      Store.load = function(...)
+        loads = loads + 1
+        return originalLoad(...)
+      end
+      local ok, err = xpcall(function()
+        App._bootExisting()
+        Assert.equal(App.selectedVersionId, "soulsilver", "the newest published save chooses only its game")
+        Assert.equal(listings, 1, "one boot decision reads one metadata snapshot")
+        App.update(0.016)
+        App.update(0.016)
+        Assert.equal(loads, 0, "automatic boot never loads or restores the save")
+        Assert.equal(#result.launches, 0, "automatic boot never constructs gameplay")
+        Assert.equal(
+          getmetatable(App.state).__index,
+          require("app.src.launcher.StartupTitleState"),
+          "the normal startup still owns the route"
+        )
+        Assert.isTrue(App.state ~= result.menus[1], "a staged menu is not installed before the movie and title")
+      end, debug.traceback)
+      Store.listMetadata, Store.load = originalList, originalLoad
+      if not ok then
+        error(err, 0)
+      end
+    end)
   end)
 end
 
-function T.boot_existing_selects_the_persisted_last_played_edition()
-  local preferencePath = "app-edition.lua"
-  withAppHarness({ dev = false }, function()
-    return true
-  end, function()
-    local wrote, err = love.filesystem.write(preferencePath, 'return { schema = 1, versionId = "soulsilver" }\n')
-    Assert.isTrue(wrote, tostring(err))
-    App._bootExisting()
-    Assert.equal(App.selectedVersionId, "soulsilver", "last-played edition boots without a preview screen")
-  end)
-end
+function T.boot_without_a_known_candidate_or_with_a_missing_winner_stays_in_selection()
+  local function runCase(modtimes, ready)
+    withAppHarness({ dev = false }, ready, function()
+      local backend = FakeCache.new()
+      local originalGetInfo = backend.getInfo
+      function backend:getInfo(path)
+        local info = originalGetInfo(self, path)
+        if info ~= nil and info.type == "file" then
+          info.modtime = modtimes[path]
+        end
+        return info
+      end
+      withPublishedSaves(backend, function()
+        local Store = require("libs.hgss.src.save.GameSaveStore")
+        local store = Store.new(require("libs.storage.src.SaveFs").global())
+        local heartgoldId = store:reserve()
+        local soulsilverId = store:reserve()
+        store:publishFirst(publishedSave(heartgoldId, "heartgold"))
+        store:publishFirst(publishedSave(soulsilverId, "soulsilver"))
+        App._bootExisting()
+        Assert.isNil(App.selectedVersionId, "an unavailable automatic candidate selects no game")
+        Assert.isNil(App.provisioner, "selection owns no retired source epoch")
+        Assert.notNil(App.state, "the library remains the visible product state")
+        Assert.equal(type(App.state.view), "function", "the library publishes its resolved semantic view")
+        if modtimes["saves/games/" .. soulsilverId .. ".lua"] ~= nil then
+          Assert.equal(
+            App.state:view().focusedId,
+            "soulsilver",
+            "the missing winning game stays focused instead of launching an older game"
+          )
+        end
+      end)
+    end)
+  end
 
-function T.boot_falls_back_when_the_persisted_edition_is_not_ready()
-  withAppHarness({ dev = false }, function(versionId)
+  runCase({}, function(versionId)
+    return versionId == "heartgold" or versionId == "soulsilver"
+  end)
+  runCase({ ["saves/games/save-00000002.lua"] = 1700000100 }, function(versionId)
     return versionId == "heartgold"
-  end, function()
-    local wrote = love.filesystem.write("app-edition.lua", 'return { schema = 1, versionId = "soulsilver" }\n')
-    Assert.isTrue(wrote)
-    App._bootExisting()
-    Assert.equal(App.selectedVersionId, "heartgold", "an unavailable preference falls back to the first ready edition")
   end)
 end
 
-function T.native_picker_path_waits_for_quiescence_before_importing()
-  local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
-  local originalAvailable = NativeRomPicker.available
-  local originalOpen = NativeRomPicker.openSingle
-  local originalNew = RomImporter.new
-  local starts = { path = 0, drop = 0 }
-  NativeRomPicker.available = function()
-    return true
-  end
-  NativeRomPicker.openSingle = function()
-    return { kind = "path", path = "/user/heartgold.nds" }
-  end
-  RomImporter.new = function()
-    local importer = { state = "idle" }
-    function importer:isBusy()
-      return false
-    end
-    function importer:startPath(path)
-      Assert.equal(path, "/user/heartgold.nds")
-      starts.path = starts.path + 1
-    end
-    function importer:filedropped(_)
-      starts.drop = starts.drop + 1
-    end
-    function importer:update() end
-    function importer:status()
-      return { state = self.state }
-    end
-    return importer
-  end
-  local ok, failure = pcall(function()
-    withAppHarness({}, function()
-      return false
-    end, function(result)
-      result.firstPlayReady = false
+function T.boot_catalog_failure_stays_in_selection_instead_of_guessing_a_game()
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold" or versionId == "soulsilver"
+  end, function()
+    local backend = FakeCache.new()
+    backend.files["saves/catalog.lua"] = "return { schema = 'broken-catalog' }"
+    withPublishedSaves(backend, function()
       App._bootExisting()
-      result.service.barrierStatus = function()
-        return "ready"
+      Assert.isNil(App.selectedVersionId, "a catalog failure never guesses an automatic game")
+      Assert.isNil(App.provisioner, "the library owns no selected source epoch")
+      Assert.equal(type(App.state.view), "function", "catalog failure leaves a usable selection surface")
+    end)
+  end)
+end
+
+function T.boot_time_tie_chooses_either_supported_game_without_loading()
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold" or versionId == "soulsilver"
+  end, function(result)
+    local backend = FakeCache.new()
+    local originalGetInfo = backend.getInfo
+    function backend:getInfo(path)
+      local info = originalGetInfo(self, path)
+      if info ~= nil and info.type == "file" and path:match("^saves/games/") then
+        info.modtime = 1700000000
       end
-      result.service.importSource = function()
-        result.importAuthorized = (result.importAuthorized or 0) + 1
-        return true
-      end
-      App.state:mousepressed(400, 300, 1)
-      Assert.equal(result.importAuthorized, nil, "path import waits for barrier polling")
+      return info
+    end
+    withPublishedSaves(backend, function()
+      local Store = require("libs.hgss.src.save.GameSaveStore")
+      local store = Store.new(require("libs.storage.src.SaveFs").global())
+      local heartgoldId = store:reserve()
+      local soulsilverId = store:reserve()
+      store:publishFirst(publishedSave(heartgoldId, "heartgold"))
+      store:publishFirst(publishedSave(soulsilverId, "soulsilver"))
+      App._bootExisting()
+      Assert.isTrue(
+        App.selectedVersionId == "heartgold" or App.selectedVersionId == "soulsilver",
+        "a timestamp tie may choose either supported game"
+      )
       App.update(0.016)
-      Assert.equal(result.importAuthorized, 1, "source ownership is authorized after quiescence")
-      Assert.equal(starts.path, 1, "picker path enters the importer exactly once")
-      Assert.equal(starts.drop, 0, "native selection does not masquerade as a dropped file")
+      Assert.equal(#result.launches, 0, "a tie never starts gameplay automatically")
     end)
-  end)
-  NativeRomPicker.available = originalAvailable
-  NativeRomPicker.openSingle = originalOpen
-  RomImporter.new = originalNew
-  if not ok then
-    error(failure, 0)
-  end
-end
-
-function T.picker_cancel_does_not_start_a_barrier_or_import()
-  local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
-  local originalAvailable = NativeRomPicker.available
-  local originalOpen = NativeRomPicker.openSingle
-  NativeRomPicker.available = function()
-    return true
-  end
-  NativeRomPicker.openSingle = function()
-    return { kind = "cancel" }
-  end
-  local ok, failure = pcall(function()
-    withAppHarness({}, function()
-      return false
-    end, function(result)
-      result.firstPlayReady = false
-      App._bootExisting()
-      App.state:mousepressed(400, 300, 1)
-      Assert.equal(App.state.onImportAttempt, nil)
-      Assert.equal(App.pendingQuiesce, nil, "cancel does not authorize source replacement")
-      Assert.equal(App.importer.state, "idle", "cancel leaves the importer idle")
-    end)
-  end)
-  NativeRomPicker.available = originalAvailable
-  NativeRomPicker.openSingle = originalOpen
-  if not ok then
-    error(failure, 0)
-  end
-end
-
-function T.last_played_preference_changes_only_after_successful_game_install()
-  local EditionPreference = require("app.src.launcher.EditionPreference")
-  withAppHarness({ dev = false }, function(versionId)
-    return versionId == "heartgold"
-  end, function()
-    App._bootExisting()
-    App.update(0.016)
-    Assert.isNil(EditionPreference.read(), "selecting the installed edition is only a preview")
-    App._launchGameWithProvisioner("heartgold", { kind = "new_game" })
-    Assert.equal(EditionPreference.read(), "heartgold", "successful game-state installation records play")
-  end)
-end
-
-function T.failed_game_composition_does_not_change_last_played_preference()
-  local EditionPreference = require("app.src.launcher.EditionPreference")
-  withAppHarness({ dev = false }, function(versionId)
-    return versionId == "heartgold"
-  end, function()
-    App._bootExisting()
-    App.update(0.016)
-    local originalNew = HgssGame.new
-    HgssGame.new = function()
-      error("injected game composition failure")
-    end
-    local ok = pcall(App._launchGameWithProvisioner, "heartgold", { kind = "new_game" })
-    HgssGame.new = originalNew
-    Assert.isFalse(ok, "composition failure remains visible to the caller")
-    Assert.isNil(EditionPreference.read(), "failed game construction does not record play")
   end)
 end
 
@@ -1055,7 +1745,7 @@ function T.boot_existing_with_one_ready_version_stages_the_menu_under_startup_ti
     return id == "heartgold"
   end, function(result)
     -- Only heartgold is installed and current; the sibling stays out.
-    App._bootExisting()
+    App._selectVersion("heartgold")
     -- The boot gate answers first; startup then stages the menu behind its title.
     App.update(0.016)
     App.update(0.016)
@@ -1063,7 +1753,7 @@ function T.boot_existing_with_one_ready_version_stages_the_menu_under_startup_ti
     Assert.equal(App.state.phase, "loading", "missing title assets keep the loading presentation visible")
     Assert.equal(App.state.stagedMenu, result.menus[1], "bootstrap constructs the product menu under title ownership")
     Assert.equal(result.provisionerDisposals, 0, "staging does not dispose its selected provisioner")
-    Assert.equal(result.warmups, 1, "the title entry authorizes background completion before readiness")
+    Assert.equal(result.warmups, 0, "optional warmup waits for actual movie entry")
   end)
 end
 
@@ -1092,7 +1782,7 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
     end
 
     local ok, err = pcall(function()
-      App._bootExisting()
+      App._selectVersion("heartgold")
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
       finishStartupTitle(result)
@@ -1150,48 +1840,34 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
   end)
 end
 
-function T.boot_existing_with_two_ready_versions_uses_the_deterministic_first_edition()
-  withAppHarness({ dev = true }, function(id)
-    return id == "heartgold" or id == "soulsilver"
+function T.start_menu_return_retires_the_selected_epoch_without_replaying_boot()
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold"
   end, function(result)
-    App._bootExisting()
-    Assert.equal(App.selectedVersionId, "heartgold")
-    -- The boot gate answers first: readiness continues into the menu.
-    App.update(0.016)
-    finishStartupTitle(result)
-    Assert.equal(#result.launches, 0, "selecting a version installs the product menu")
-    Assert.equal(result.menus[1].options.versionId, "heartgold")
-    Assert.equal(App.state, result.menus[1])
-  end)
-end
-
-function T.completed_import_launches_the_imported_version_through_the_hgss_entry()
-  withAppHarness({ dev = false }, function(id)
-    return id == "heartgold"
-  end, function(result)
-    -- A fresh import completes first-play preparation before installing the app menu.
-    local original = HgssGame.newFirstPlayCachePreparation
-    HgssGame.newFirstPlayCachePreparation = function(_)
-      local preparation = {}
-      function preparation:poll()
-        return true, nil
-      end
-      function preparation:dispose() end
-      return preparation
-    end
-    local ok, err = pcall(function()
-      App._onImported("heartgold")
-      -- The boot gate answers first, then the ready closure installs the menu.
-      App.update(0.016)
-      App.update(0.016)
-      Assert.equal(#result.launches, 0, "import completion installs the product menu only")
-      Assert.equal(result.menus[1].options.versionId, "heartgold")
-      finishStartupTitle(result)
-    end)
-    HgssGame.newFirstPlayCachePreparation = original
-    if not ok then
-      error(err, 0)
-    end
+    App.selectedVersionId = "heartgold"
+    App.epoch = assert(result.service:select({ versionId = "heartgold" }))
+    local disposals = 0
+    App.provisioner = {
+      gameHost = function()
+        return {}
+      end,
+      dispose = function()
+        disposals = disposals + 1
+        result.service:retire(App.epoch)
+      end,
+    }
+    local menu = assert(App._stageMenu("heartgold"), "the real menu composition exposes its result handler")
+    App.setState(menu)
+    local epoch = App.epoch
+    menu.options.onResult({ kind = "game_selection" })
+    Assert.isTrue(App.state ~= menu, "the return action replaces the selected start menu")
+    Assert.isNil(App.selectedVersionId, "return leaves no selected game")
+    Assert.isNil(App.provisioner, "return retires the selected source owner")
+    Assert.equal(disposals, 1, "the selected epoch retires exactly once")
+    Assert.isTrue(result.retiredEpochs[epoch], "the exact selected epoch is revoked")
+    Assert.equal(#result.selectOptions, 1, "return does not mint a replacement game epoch")
+    Assert.equal(#result.launches, 0, "return never constructs gameplay")
+    Assert.equal(type(App.state.view), "function", "return installs the library, not another boot intro")
   end)
 end
 
@@ -1233,7 +1909,7 @@ function T.release_startup_passes_the_release_counter_without_reading_producer_s
       return id == "heartgold"
     end, function(result)
       -- Only heartgold is installed and current; the sibling stays out.
-      App._bootExisting()
+      App._selectVersion("heartgold")
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
       finishStartupTitle(result)
@@ -1265,7 +1941,7 @@ function T.release_startup_selects_the_per_game_release_counter()
       return id == "soulsilver"
     end, function(result)
       -- Only soulsilver is installed and current; the sibling stays out.
-      App._bootExisting()
+      App._selectVersion("soulsilver")
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
       finishStartupTitle(result)
@@ -1309,8 +1985,21 @@ function T.development_startup_passes_frozen_checkout_selectors_without_scanning
       withAppHarness({ dev = true }, function(id)
         return id == "heartgold"
       end, function(result)
+        App.launcherRenderer = {
+          gameIcons = {},
+          refreshGameIcon = function()
+            return false
+          end,
+          dropGameIcon = function() end,
+          draw = function() end,
+          drawDual = function() end,
+          drawButton = function() end,
+          dispose = function() end,
+        }
+        App.launcherAudio =
+          { play = function() end, fadeBoot = function() end, update = function() end, dispose = function() end }
         -- Only heartgold is installed and current; the sibling stays out.
-        App._bootExisting()
+        App._selectVersion("heartgold")
         -- The boot gate answers first: readiness continues into the menu.
         App.update(0.016)
         local first = assert(result.selectOptions[1])
@@ -1404,74 +2093,6 @@ end
 
 -- A fresh import stages the menu under the startup title; optional near
 -- work is deferred until the title assets become ready.
-function T.fresh_import_authorizes_sweep_at_title_entry()
-  withAppHarness({ dev = false }, function(id)
-    return id == "heartgold"
-  end, function(result)
-    App._onImported("heartgold")
-    App.update(0.016)
-    assertStagedStartupMenu(result)
-    Assert.isTrue(App.state.initialImport, "the title knows this selection came from import")
-    Assert.equal(result.warmups, 1, "the title entry authorizes background completion before the menu")
-    result.startupTitleReady = true
-    App.update(0.016)
-    Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
-    Assert.equal(#result.launches, 0, "title readiness does not launch retail")
-  end)
-end
-
--- A cold first import holds its boot card while the selected pair is still
--- pending, then transfers the exact owned presentation and the same pair
--- index to the startup owner without reselecting.
-function T.cold_import_startup_hold_transfers_the_adopted_presenter()
-  withAppHarness({ dev = false }, function(id)
-    return id == "heartgold"
-  end, function(result)
-    result.firstPlayReady = false
-    result.walkerReady = false
-    App._onImported("heartgold")
-    local wait = assert(App.state, "the cold import waits visibly")
-    Assert.equal(getmetatable(wait).__index, CachePreparationState, "the pending pair keeps the boot wait installed")
-    Assert.isTrue(wait.freshImport, "the fresh import holds its card")
-    local chosen = assert(App.pairIndex, "the selection chooses one walking pair")
-    Assert.isTrue(
-      chosen >= 1 and chosen <= HgssLoadingPresentation.walkerPairCount(),
-      "the chosen pair index names one of the stage's walking pairs"
-    )
-    App.update(0.016)
-    Assert.equal(App.state, wait, "the admitted gate alone never leaves the cold card")
-    Assert.isNil(wait.artFailure, "a pending pair is not a failure")
-    result.walkerReady = true
-    local StartupTitleState = require("app.src.launcher.StartupTitleState")
-    local originalNew = StartupTitleState.new
-    local seen = {}
-    StartupTitleState.new = function(options)
-      seen.loading = options.loading
-      seen.pairIndex = options.pairIndex
-      return originalNew(options)
-    end
-    local ok, err = pcall(App.update, 0.016)
-    StartupTitleState.new = originalNew
-    if not ok then
-      error(err, 0)
-    end
-    Assert.equal(
-      getmetatable(App.state).__index,
-      StartupTitleState,
-      "the adopted pair continues into the startup owner"
-    )
-    Assert.isTrue(App.state.initialImport, "the title knows this selection came from import")
-    Assert.notNil(seen.loading, "the transfer hands over the owned presentation")
-    Assert.isTrue(seen.loading == wait.loading, "the transfer hands over the exact owned presentation")
-    Assert.equal(seen.pairIndex, chosen, "the transfer forwards the same selected pair")
-    for _ = 1, 3 do
-      App.update(0.016)
-    end
-    Assert.equal(App.pairIndex, chosen, "later updates never reselect the pair")
-  end)
-end
-
--- Existing selection opens the title before its optional near coordinator.
 function T.existing_selection_with_no_completion_stages_the_menu_under_title()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
@@ -1480,7 +2101,7 @@ function T.existing_selection_with_no_completion_stages_the_menu_under_title()
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
-      App._bootExisting()
+      App._selectVersion("heartgold")
       -- The boot gate answers first; title readiness has not arrived yet.
       App.update(0.016)
       assertStagedStartupMenu(result)
@@ -1509,7 +2130,7 @@ function T.existing_selection_without_an_installed_completion_stages_before_warm
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
-      App._bootExisting()
+      App._selectVersion("heartgold")
       -- The boot gate answers first while title assets remain pending.
       App.update(0.016)
       assertStagedStartupMenu(result)
@@ -1542,7 +2163,7 @@ function T.current_completion_waits_for_title_without_duplicate_warmup()
       end
     end
     local ok, err = pcall(function()
-      App._bootExisting()
+      App._selectVersion("heartgold")
       -- The boot gate answers first while title assets remain pending.
       App.update(0.016)
       assertStagedStartupMenu(result)
@@ -1566,15 +2187,15 @@ function T.cancelled_title_retires_selection_without_publishing()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    App._bootExisting()
+    App._selectVersion("heartgold")
     App.update(0.016)
     App.update(0.016)
     assertStagedStartupMenu(result)
     App.keypressed("escape")
     Assert.equal(#result.firstPlayPublished, 0, "cancellation never publishes the completion")
     local selector = App.state
-    Assert.equal(getmetatable(selector).__index, VersionSelectState, "cancellation returns to the version selector")
-    selector.onPick("heartgold")
+    Assert.equal(getmetatable(selector).__index, GameSelectState, "cancellation returns to game selection")
+    App._selectVersion("heartgold")
     App.update(0.016)
     assertStagedStartupMenu(result)
     Assert.equal(#result.firstPlayPublished, 0, "reselection alone publishes nothing")
@@ -1617,7 +2238,7 @@ function T.selected_epoch_owns_one_shared_asset_runtime_that_drains_before_retir
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    App._bootExisting()
+    App._selectVersion("heartgold")
     App.update(0.016)
     finishStartupTitle(result)
     local epoch = assert(App.epoch, "the selection installed an epoch")
@@ -1698,39 +2319,40 @@ function T.a_broken_package_selection_publishes_no_runtime()
     local ModPackages = require("app.src.ModPackages")
     local originalOpen = ModPackages.open
     ModPackages.open = function()
-      local raised, failure = pcall(Errors.raise, "MOD_PACKAGE_INCOMPATIBLE", "one.zip was built for another game", {
-        package = "one.zip",
-      })
-      Assert.isFalse(raised, "the stub raises one typed selection failure")
-      error(failure, 0)
+      Errors.raise("MOD_PACKAGE_INCOMPATIBLE", "one.zip was built for another game", { package = "one.zip" })
     end
-    App._bootExisting()
-    App.update(0.016)
-    local blockedEpoch = assert(App.epoch, "the selection installed an epoch")
-    Assert.notNil(App.state and App.state.error, "the boot wait reports the broken selection")
-    Assert.isTrue(
-      tostring(App.state.error):find("another game", 1, true) ~= nil,
-      "the boot failure names its package: " .. tostring(App.state.error)
-    )
-    Assert.equal(#result.menus, 0, "a broken selection never reaches the menu")
-    local againOk, againError = pcall(App._ensureAssetRuntime, blockedEpoch)
-    ModPackages.open = originalOpen
-    Assert.isFalse(againOk, "no partial runtime survives to be reused")
-    Assert.isTrue(Errors.is(againError), "the same selection keeps reporting its typed cause")
-    Assert.isNil(result.overlayPackages, "the broken attempt never composed an overlay")
+    local ok, err = pcall(function()
+      App._selectVersion("heartgold")
+      App.update(0.016)
+      Assert.isNil(App.provisioner, "a broken composition retires its selected epoch")
+      Assert.equal(type(App.state.view), "function", "recovery returns to game selection")
+      local view = App.state:view()
+      Assert.isTrue(
+        tostring(view.import.error.message or view.import.error.code):find("another game", 1, true) ~= nil,
+        "the selection error view preserves the typed package cause"
+      )
+      Assert.equal(#result.menus, 0, "a broken selection never reaches the menu")
+      Assert.isNil(result.overlayPackages, "the broken attempt never composed an overlay")
+      Assert.equal(#result.loaders, 1, "the failed wait owned one neutral loader")
+      Assert.equal(result.loaders[1].disposals, 1, "recovery releases that loader exactly once")
 
-    App._bootExisting()
-    App.update(0.016)
-    finishStartupTitle(result)
-    local epoch = assert(App.epoch, "the repaired selection installed its epoch")
-    local record = App._ensureAssetRuntime(epoch)
-    Assert.notNil(record, "a selection that opens composes its runtime")
-    Assert.isTrue(record.cacheFs == result.selectedView, "the composed runtime reads the selection's overlay")
+      ModPackages.open = originalOpen
+      App.state:keypressed("escape")
+      Assert.equal(App.state:view().mode, "selection", "the failed edition can be dismissed before reselection")
+      App._selectVersion("heartgold")
+      App.update(0.016)
+      finishStartupTitle(result)
+      local epoch = assert(App.epoch, "the repaired selection installed its epoch")
+      local record = App._ensureAssetRuntime(epoch)
+      Assert.notNil(record, "a selection that opens composes its runtime")
+      Assert.isTrue(record.cacheFs == result.selectedView, "the composed runtime reads the selection's overlay")
+    end)
+    ModPackages.open = originalOpen
+    if not ok then
+      error(err, 0)
+    end
   end)
 end
-
--- The optional near coordinator publishes only after its complete result;
--- the title remains usable while the coordinator is pending.
 function T.first_play_near_completion_publishes_only_on_success()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
@@ -1739,7 +2361,7 @@ function T.first_play_near_completion_publishes_only_on_success()
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
-      App._bootExisting()
+      App._selectVersion("heartgold")
       App.update(0.016)
       assertStagedStartupMenu(result)
       Assert.equal(script.constructions, nil, "near preparation waits until title readiness")
@@ -1792,21 +2414,24 @@ function T.unknown_generation_never_fabricates_first_play()
       return baseRequest(_, epoch, selector)
     end
     local ok, err = pcall(function()
-      App._bootExisting()
+      App._selectVersion("heartgold")
       App.update(0.016)
       assertStagedStartupMenu(result)
       Assert.equal(#result.launches, 0, "title startup does not launch retail")
       local entryNames, entryUrgencies = requestedMilestones(requests)
-      Assert.deepEqual(
-        entryNames,
-        { "field-planning", "field-runtime", "new-game-intro" },
-        "title entry issues the speculative intro and field closures without waiting on the generation"
-      )
-      for _, name in ipairs(entryNames) do
-        Assert.equal(entryUrgencies[name], "near", "title entry demand stays speculative for " .. name)
-      end
+      Assert.deepEqual(entryNames, {}, "optional entry preparation waits for actual movie entry")
       result.startupTitleReady = true
       App.update(0.016)
+      App.update(0.016)
+      local movieEntryNames, movieEntryUrgencies = requestedMilestones(requests)
+      Assert.deepEqual(
+        movieEntryNames,
+        { "field-planning", "field-runtime", "new-game-intro" },
+        "movie entry issues the speculative intro and field closures without waiting on the generation"
+      )
+      for _, name in ipairs(movieEntryNames) do
+        Assert.equal(movieEntryUrgencies[name], "near", "movie entry demand stays speculative for " .. name)
+      end
       Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
       Assert.equal(script.constructions, 1, "the near coordinator runs while the generation is unknown")
       Assert.equal(#result.firstPlayPublished, 0, "an unknown generation proves no first play")
@@ -1859,7 +2484,7 @@ function T.failed_first_play_warmup_does_not_block_title()
     local script = { ready = false, failure = "intro milestone failed in the fixture" }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
-      App._bootExisting()
+      App._selectVersion("heartgold")
       App.update(0.016)
       assertStagedStartupMenu(result)
       result.startupTitleReady = true
@@ -1877,110 +2502,6 @@ function T.failed_first_play_warmup_does_not_block_title()
   end)
 end
 
--- The staged menu and near coordinator share the selected provisioner
--- epoch, which the menu passes to the game launch.
-function T.fresh_import_menu_reuses_the_near_warmup_epoch()
-  withAppHarness({ dev = false }, function(id)
-    return id == "heartgold"
-  end, function(result)
-    result.firstPlayReady = false
-    local script = { ready = false }
-    local original = installFirstPlayFactory(script)
-    local ok, err = pcall(function()
-      App._onImported("heartgold")
-      App.update(0.016)
-      assertStagedStartupMenu(result)
-      local epoch = assert(App.epoch, "fresh import borrows a controller epoch")
-      local selections = #result.selectOptions
-      Assert.equal(script.constructions, nil, "near preparation waits for title readiness")
-      result.startupTitleReady = true
-      App.update(0.016)
-      Assert.equal(script.constructions, 1, "title readiness starts the coordinator")
-      finishStartupTitle(result)
-      Assert.equal(#result.menus, 1)
-      result.menus[1].options.onResult({ kind = "new_game" })
-      local launch = assert(result.launches[1], "the menu routes New Game to an explicit retail entry")
-      Assert.equal(launch.entry.kind, "new_game")
-      Assert.equal(#result.selectOptions, selections, "the launch reuses the preparation epoch without reselection")
-      Assert.equal(result.provisionerDisposals, 0, "nothing disposes between preparation and launch")
-      Assert.equal(App.epoch, epoch, "the epoch is stable across the handoff")
-      Assert.equal(
-        launch.derivedAssets,
-        script.captured.derivedAssets,
-        "the game inherits the same selected derived host"
-      )
-      Assert.equal(script.captured.versionId, "heartgold", "near preparation serves the imported version")
-    end)
-    HgssGame.newFirstPlayCachePreparation = original
-    if not ok then
-      error(err, 0)
-    end
-  end)
-end
-
--- The title starts near work only after readiness; the title entry starts
--- the one-time corpus sweep.
-function T.fresh_import_defers_near_work_until_title_and_sweeps_from_title_entry()
-  withAppHarness({ dev = false }, function(id)
-    return id == "heartgold"
-  end, function(result)
-    result.firstPlayReady = false
-    local requests = recordServiceRequests(result)
-    local script = { ready = false }
-    local original = installFirstPlayFactory(script)
-    local ok, err = pcall(function()
-      App._onImported("heartgold")
-      App.update(0.016)
-      assertStagedStartupMenu(result)
-      Assert.equal(script.constructions, nil, "near coordinator waits for title readiness")
-      Assert.equal(result.warmups, 1, "the title entry authorizes background completion")
-      for _, selector in ipairs(requests) do
-        Assert.isFalse(
-          selector.requestKind == "complete",
-          "mandatory import preparation never requests whole-corpus scope"
-        )
-      end
-      result.startupTitleReady = true
-      App.update(0.016)
-      Assert.equal(script.constructions, 1, "title readiness starts near preparation")
-      Assert.equal(#result.launches, 0, "title readiness does not launch retail")
-      Assert.equal(result.warmups, 1, "near preparation adds no second sweep authorization")
-      finishStartupTitle(result)
-      Assert.equal(#result.menus, 1)
-      Assert.equal(result.warmups, 1, "menu handoff authorizes background completion exactly once")
-      App.update(0.016)
-      Assert.equal(result.warmups, 1, "sweep authorization never repeats")
-    end)
-    HgssGame.newFirstPlayCachePreparation = original
-    if not ok then
-      error(err, 0)
-    end
-  end)
-end
-
--- A fresh import uses the title loading surface until its title assets are
--- available, with the product menu already staged underneath.
-function T.fresh_import_title_loading_keeps_the_staged_menu()
-  withAppHarness({ dev = false }, function(id)
-    return id == "heartgold"
-  end, function(result)
-    App.saveDir = "test-save-root"
-    App.importer = {
-      status = function()
-        return { state = "complete", sourceName = "dropped.nds", displayName = "HeartGold" }
-      end,
-    }
-    App._onImported("heartgold")
-    Assert.isTrue(App.importer == nil, "the completed importer is released at handoff")
-    App.update(0.016)
-    assertStagedStartupMenu(result)
-    Assert.isTrue(App.state.initialImport, "the startup title retains the import context")
-    Assert.equal(App.state.phase, "loading", "title readiness keeps the loading surface visible")
-    Assert.equal(#result.launches, 0, "the title never launches retail")
-    finishStartupTitle(result)
-  end)
-end
-
 -- The execution policy follows the actual presentation: the boot wait and the
 -- startup loader report loader throughput for the selected epoch, and the
 -- title/menu journey reports ordinary interactive use again. A retired epoch is
@@ -1989,26 +2510,41 @@ function T.loader_presentations_report_loader_throughput_and_the_menu_does_not()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    App._bootExisting()
-    App.update(0.016)
-    local first = assert(result.executionPolicies and result.executionPolicies[1], "the boot wait reports its policy")
-    Assert.equal(first.epoch, App.epoch, "the policy belongs to the selected epoch")
-    Assert.isTrue(first.loading, "the boot wait reports loader throughput")
-    local runtime = assert(App._assetRuntime, "the selection owns its CPU runtime")
-    Assert.equal(
-      runtime.preparationQueue:workerSlotBudget(),
-      2,
-      "the loader presentation raises the runtime preparation executor to two slots"
-    )
-    finishStartupTitle(result)
-    local last = assert(result.executionPolicies[#result.executionPolicies], "the journey reports a final policy")
-    Assert.isFalse(last.loading, "the title and menu never report loader throughput")
-    Assert.equal(
-      runtime.preparationQueue:workerSlotBudget(),
-      1,
-      "the menu returns the preparation executor to its single interactive slot"
-    )
-    Assert.equal(App.state, result.menus[1], "the ordinary interactive policy follows the installed menu")
+    local backend = FakeCache.new()
+    local originalGetInfo = backend.getInfo
+    function backend:getInfo(path)
+      local info = originalGetInfo(self, path)
+      if info ~= nil and info.type == "file" and path:match("^saves/games/") then
+        info.modtime = 1700000000
+      end
+      return info
+    end
+    withPublishedSaves(backend, function()
+      local Store = require("libs.hgss.src.save.GameSaveStore")
+      local store = Store.new(require("libs.storage.src.SaveFs").global())
+      local saveId = store:reserve()
+      store:publishFirst(publishedSave(saveId, "heartgold"))
+      App._bootExisting()
+      App.update(0.016)
+      local first = assert(result.executionPolicies and result.executionPolicies[1], "the boot wait reports its policy")
+      Assert.equal(first.epoch, App.epoch, "the policy belongs to the selected epoch")
+      Assert.isTrue(first.loading, "the boot wait reports loader throughput")
+      local runtime = assert(App._assetRuntime, "the selection owns its CPU runtime")
+      Assert.equal(
+        runtime.preparationQueue:workerSlotBudget(),
+        2,
+        "the loader presentation raises the runtime preparation executor to two slots"
+      )
+      finishStartupTitle(result)
+      local last = assert(result.executionPolicies[#result.executionPolicies], "the journey reports a final policy")
+      Assert.isFalse(last.loading, "the title and menu never report loader throughput")
+      Assert.equal(
+        runtime.preparationQueue:workerSlotBudget(),
+        1,
+        "the menu returns the preparation executor to its single interactive slot"
+      )
+      Assert.equal(App.state, result.menus[1], "the ordinary interactive policy follows the installed menu")
+    end)
   end)
 end
 
@@ -2032,7 +2568,9 @@ function T.retail_entry_loaders_report_loader_throughput_through_the_game_host()
       return game, child
     end
 
-    App._bootExisting()
+    -- Explicit selection owns the loader policy without depending on ambient
+    -- published saves: the automatic boot path needs a real save fixture.
+    App._selectVersion("heartgold")
     App.update(0.016)
     finishStartupTitle(result)
     local runtime = assert(App._assetRuntime, "the selection owns its CPU runtime")
@@ -2096,7 +2634,9 @@ function T.a_late_installed_runtime_is_created_under_the_live_loader_budget()
       return installedView(_, epoch)
     end
 
-    App._bootExisting()
+    -- Explicit selection owns the loader policy without depending on ambient
+    -- published saves.
+    App._selectVersion("heartgold")
     App.update(0.016)
     Assert.isNil(App._assetRuntime, "the boot wait reports policy before the reader exists")
     Assert.isTrue(
@@ -2127,7 +2667,7 @@ function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
   end, function(result)
     -- Only heartgold is installed and current; the sibling stays out.
     local requests = recordServiceRequests(result)
-    App._bootExisting()
+    App._selectVersion("heartgold")
     -- The boot gate answers first: readiness continues into the menu.
     App.update(0.016)
     finishStartupTitle(result)
@@ -2159,7 +2699,7 @@ end
 -- the archive makes it a boot candidate, the controller decides the route, a
 -- moved or missing source file never blocks an installed game, and the
 -- startup path performs zero ROM file activity.
-function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
+function T.current_cache_without_source_selects_without_rom_activity()
   local RomFs = require("romdump.src.source.RomFs")
   local RomSource = require("romdump.src.source.RomSource")
   local realOpen = RomFs.open
@@ -2177,17 +2717,24 @@ function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
     withAppHarness({ dev = false }, function(_)
       return false
     end, function(result)
-      -- The scenario covers one installed version: only heartgold carries a
-      -- snapshot, so the sibling stays off the shelf and boot selects exactly
-      -- one candidate without source work.
-      result.snapshotVersions = { heartgold = true }
-      App._bootExisting()
-      -- The boot gate answers first: readiness continues into the menu.
-      App.update(0.016)
-      Assert.isNil(App.importer, "a current derived cache never prompts for its ROM")
-      assertStagedStartupMenu(result)
-      Assert.equal(result.warmups, 1, "the title entry authorizes background completion before readiness")
-      Assert.equal(#result.launches, 0, "selecting a version installs the menu without starting retail")
+      withPublishedSaves(FakeCache.new(), function()
+        result.snapshotVersions = { heartgold = true }
+        App._bootExisting()
+        Assert.isNil(App.importer, "a library candidate starts no import")
+        Assert.equal(#App.state:view().games, 2, "cache-only availability still exposes both edition controls")
+        Assert.isFalse(App.state:view().games[1].installed, "a derived cache is not a managed source")
+        Assert.isFalse(App.state:view().games[2].installed, "the missing sibling remains actionable")
+        Assert.equal(App.state:view().focusedId, "heartgold")
+        Assert.isNil(App.provisioner, "selection owns no source epoch until an installed cartridge is activated")
+        App.state:keypressed("return")
+        Assert.equal(
+          App.state:view().mode,
+          "choose",
+          "a cache-only edition opens targeted import instead of source admission"
+        )
+        Assert.equal(App.state:view().import.expectedVersionId, "heartgold")
+        Assert.isNil(App.provisioner)
+      end)
     end)
   end)
   RomFs.open = realOpen
@@ -2198,270 +2745,44 @@ function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
   Assert.equal(romOpens, 0, "booting a current cache opens no ROM source")
   Assert.equal(pathOpens, 0, "booting a current cache reads no ROM file")
 end
-
--- Stubs the native bridge for one import-screen construction: `available`
--- answers the capability probe and `openSingle` answers the dialog.
--- Restores both entrypoints on every path so no test leaks stubs.
----@param available boolean scripted capability answer
----@param openResult table|fun(): table scripted dialog answer
----@param fn fun(opens: fun(): integer)
-local function withNativeBridge(available, openResult, fn)
-  local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
-  local originalAvailable = NativeRomPicker.available
-  local originalOpen = NativeRomPicker.openSingle
-  NativeRomPicker.available = function()
-    return available
-  end
-  local opens = 0
-  NativeRomPicker.openSingle = function()
-    opens = opens + 1
-    if type(openResult) == "function" then
-      return openResult()
-    end
-    return openResult
-  end
-  local ok, err = pcall(fn, function()
-    return opens
-  end)
-  NativeRomPicker.available = originalAvailable
-  NativeRomPicker.openSingle = originalOpen
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- Boots the pristine first-import card: no ready version, no current
--- attestation anywhere.
----@param fn fun(result: table)
-local function withPristineImport(fn)
+function T.queued_import_failure_returns_to_an_actionable_error_modal()
   withAppHarness({}, function()
     return false
-  end, function(result)
-    result.firstPlayReady = false
-    App._bootExisting()
-    Assert.equal(getmetatable(App.state).__index, ImportState, "an empty shelf boots into the import card")
-    fn(result)
-  end)
-end
-
--- The first import preselects no edition: the importer session carries no
--- targeted expectation, so any supported ROM is acceptable.
-function T.pristine_import_accepts_any_supported_edition()
-  local captured = {}
-  local originalNew = RomImporter.new
-  RomImporter.new = function(options)
-    captured = options or {}
-    return originalNew(options)
-  end
-  local ok, err = pcall(function()
-    withPristineImport(function(_) end)
-  end)
-  RomImporter.new = originalNew
-  if not ok then
-    error(err, 0)
-  end
-  Assert.isNil(captured.expectedVersionId, "the first import preselects no edition")
-end
-
--- A targeted rebind still carries its expected edition into the importer
--- session, so a wrong ROM cannot satisfy it.
-function T.targeted_rebind_carries_its_expected_edition()
-  local captured = {}
-  local originalNew = RomImporter.new
-  RomImporter.new = function(options)
-    captured = options or {}
-    return originalNew(options)
-  end
-  local ok, err = pcall(function()
-    withAppHarness({}, function()
-      return false
-    end, function(_)
-      App._startImport("soulsilver")
-    end)
-  end)
-  RomImporter.new = originalNew
-  if not ok then
-    error(err, 0)
-  end
-  Assert.equal(captured.expectedVersionId, "soulsilver", "a targeted import keeps its expected edition")
-end
-
--- Without a usable native bridge the first card shows no picker banner,
--- and gestures never invoke the bridge.
-function T.pristine_import_without_a_bridge_has_no_dead_action()
-  withNativeBridge(false, { kind = "cancel" }, function(opens)
-    withPristineImport(function(_)
-      Assert.isNil(App.importPickerError, "booting the first card sets no picker banner")
-      App.state:mousepressed(400, 300, 1)
-      App.state:touchpressed("touch", 400, 300, 0, 0, 1)
-      App.state:keypressed("return")
-      App.state:keypressed("space")
-      Assert.equal(opens(), 0, "an unavailable bridge is never invoked")
-      Assert.isNil(App.importPickerError, "inert gestures leave no banner behind")
-      Assert.isNil(App.state.pickerError, "inert gestures leave no card banner behind")
-    end)
-  end)
-end
-
--- With a usable bridge each card gesture opens exactly one dialog, a
--- corner outside the card opens nothing, and cancel leaves the session
--- idle without any banner.
-function T.available_picker_opens_once_per_card_gesture_until_cancel()
-  withNativeBridge(true, { kind = "cancel" }, function(opens)
-    withPristineImport(function(_)
-      App.state:mousepressed(400, 300, 1)
-      Assert.equal(opens(), 1, "one pointer gesture opens one dialog")
-      App.state:touchpressed("touch", 400, 300, 0, 0, 1)
-      Assert.equal(opens(), 2, "one touch gesture opens one dialog")
-      App.state:mousepressed(16, 16, 1)
-      Assert.equal(opens(), 2, "a gesture outside the card opens nothing")
-      Assert.isNil(App.importPickerError, "cancel leaves no banner behind")
-      Assert.equal(App.importer:status().state, "idle", "cancel leaves the importer idle")
-    end)
-  end)
-end
-
--- A dialog failure after an available preflight is recoverable: no
--- persistent banner is written and the import card stays usable.
-function T.picker_dialog_failure_leaves_no_banner_and_keeps_the_card()
-  withNativeBridge(true, { kind = "error", message = "native bridge exploded" }, function(opens)
-    withPristineImport(function(_)
-      App.state:mousepressed(400, 300, 1)
-      Assert.equal(opens(), 1, "the available bridge is tried once")
-      Assert.isNil(App.importPickerError, "a dialog failure leaves no shell banner")
-      Assert.isNil(App.state.pickerError, "a dialog failure leaves no card banner")
-      Assert.equal(getmetatable(App.state).__index, ImportState, "the import card stays usable")
-      Assert.equal(App.importer:status().state, "idle", "a dialog failure starts no import")
-    end)
-  end)
-end
-
--- A picker path with an unsupported extension is rejected without
--- starting an import, and the card stays behind for a retry.
-function T.unsupported_picker_extension_rejects_without_starting_import()
-  withNativeBridge(true, { kind = "path", path = "/tmp/not-a-rom.exe" }, function(opens)
-    withPristineImport(function(_)
-      App.state:mousepressed(400, 300, 1)
-      Assert.equal(opens(), 1, "the available bridge is tried once")
-      Assert.equal(getmetatable(App.state).__index, ImportState, "the import card stays behind for a retry")
-      Assert.isNil(App.selectedVersionId, "an unsupported extension admits no verified source")
-    end)
-  end)
-end
-
--- A fresh import hands its verified bytes to the controller ahead of the
--- boot gate and continues directly into the startup title: no intermediate
--- preparation wait, no display snapshot on the selection handoff. A wrong
--- ROM against a blocked boot keeps the expected version waiting with its
--- mismatch instead of switching the selection.
-function T.fresh_import_reaches_title_through_the_boot_gate_without_an_intermediate_wait()
-  withAppHarness({ dev = false }, function(id)
-    return id == "heartgold"
-  end, function(result)
-    result.firstPlayReady = false
-    local GameVersion = require("romdump.src.source.GameVersion")
-    local StartupTitleState = require("app.src.launcher.StartupTitleState")
-    local controlOps = {}
-    local offeredBytes, offeredSha1 = nil, nil
-    local baseOffer = result.service.offerSource
-    result.service.offerSource = function(self, epoch, bytes, identity)
-      controlOps[#controlOps + 1] = "offer-source"
-      offeredBytes = bytes
-      offeredSha1 = identity and identity.romSha1 or nil
-      return baseOffer(self, epoch, bytes, identity)
-    end
-    local baseGate = result.service.requestBootSource
-    result.service.requestBootSource = function(self, epoch)
-      controlOps[#controlOps + 1] = "check-boot-source"
-      return baseGate(self, epoch)
-    end
-    local originalSelect = App._selectVersion
-    local selections = {}
-    App._selectVersion = function(versionId, options)
-      selections[#selections + 1] = { versionId = versionId, options = options }
-      return originalSelect(versionId, options)
+  end, function()
+    App.service = nil
+    local Errors = require("libs.errors.src.Errors")
+    local originalNew = RomImporter.new
+    local importer = {
+      state = RomImporter.STATES.IDLE,
+      isBusy = function()
+        return false
+      end,
+      status = function()
+        return { state = RomImporter.STATES.IDLE, canCancel = false }
+      end,
+      queuePath = function()
+        error(Errors.new("IMPORT_WORKER_UNAVAILABLE", "background import could not start", {}), 0)
+      end,
+      queueDroppedFile = function() end,
+      update = function() end,
+    }
+    RomImporter.new = function()
+      return importer
     end
     local ok, err = pcall(function()
-      local buffer = love.data.newByteData("synthetic-fresh-import-bytes")
-      local released = 0
-      App.importer = {
-        status = function()
-          return {
-            state = "complete",
-            versionId = "heartgold",
-            displayName = "HeartGold",
-            sourceName = "fresh.nds",
-            progress = 1,
-          }
-        end,
-        takeVerifiedSource = function()
-          return {
-            byteData = function()
-              return buffer
-            end,
-            release = function()
-              released = released + 1
-            end,
-          }
-        end,
-      }
-      App._onImported("heartgold")
-      Assert.isNil(App.importer, "the completed importer is released at the handoff")
-      Assert.equal(released, 1, "the handoff releases the verified-source wrapper exactly once")
-      Assert.deepEqual(
-        controlOps,
-        { "offer-source", "check-boot-source" },
-        "the fresh offer waits behind selection and ahead of the boot gate"
-      )
-      Assert.isTrue(offeredBytes == buffer, "the offer hands the identical buffer by reference")
-      Assert.equal(offeredSha1, GameVersion.info("heartgold").sha1, "the offer carries the canonical ROM identity")
-      local fresh = assert(selections[1])
-      Assert.equal(fresh.versionId, "heartgold")
-      Assert.isTrue(fresh.options.freshImport, "the fresh import marks its selection")
-      Assert.isTrue(fresh.options.sourceOffer == buffer, "the selection carries the offered bytes")
-      Assert.isNil(fresh.options.importContinuation, "the selection handoff carries no display-only snapshot")
-      local waiting = assert(App.state)
-      Assert.equal(getmetatable(waiting).__index, CachePreparationState, "a fresh import waits visibly")
-      Assert.equal(waiting.kind, "boot-source", "a fresh import waits on its source gate, never an intermediate wait")
-      App.update(0.016)
+      App._beginImportPath("/user/heartgold.nds")
+      App.draw()
+      App.update(1 / 60)
+      Assert.equal(type(App.state.view), "function", "a rejected queue keeps the library usable")
       Assert.equal(
-        getmetatable(App.state).__index,
-        StartupTitleState,
-        "the authorized boot gate continues directly into the title"
+        App.state:view().import.error.message,
+        "background import could not start",
+        "the typed queue failure reaches the shared error view"
       )
-      assertStagedStartupMenu(result)
-      result.bootStatus = "source-required"
-      result.bootDetail = { code = "ROM_SOURCE_REQUIRED", message = "synthetic heartgold missing" }
-      App._selectVersion("heartgold")
-      App.update(0.016)
-      Assert.equal(App.state.kind, "boot-source", "the missing source keeps the boot wait alive")
-      App.importer = {
-        status = function()
-          return {
-            state = "complete",
-            versionId = "soulsilver",
-            displayName = "SoulSilver",
-            sourceName = "wrong.nds",
-            progress = 1,
-          }
-        end,
-        takeVerifiedSource = function()
-          return {
-            byteData = function()
-              return love.data.newByteData("synthetic-wrong-version-bytes")
-            end,
-            release = function() end,
-          }
-        end,
-      }
-      App._onImported("soulsilver")
-      Assert.equal(App.selectedVersionId, "heartgold", "a wrong ROM never switches the blocked selection")
-      Assert.equal(App.state.kind, "boot-source", "the wrong ROM keeps the original boot blocked")
-      Assert.notNil(App.state.mismatch, "the blocked boot surfaces its version mismatch")
-      Assert.equal(#result.menus, 1, "the wrong ROM installs no menu")
-      Assert.equal(#result.launches, 0, "the wrong ROM starts no retail")
+      Assert.isNil(App.importer, "a rejected queue is not retried silently")
+      Assert.equal(App._importAttempt.mode, "error", "the failed attempt remains visible until dismissed")
     end)
-    App._selectVersion = originalSelect
+    RomImporter.new = originalNew
     if not ok then
       error(err, 0)
     end
@@ -2538,7 +2859,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
       fresh()
       App.service = nil
       App.pendingQuiesce = nil
-      App._importReceipt = nil
+      App._importAttempt = nil
       local shellRoot = assert(io.popen("mktemp -d"))
       local tmpDir = ((shellRoot:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", ""))
       assert(shellRoot:close(), "mktemp -d did not exit successfully")
@@ -2563,6 +2884,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
           "the first painted frame names the receipt, got: " .. copy
         )
         Assert.isTrue(copy:find(".nds", 1, true) ~= nil, "the painted receipt keeps the file kind, got: " .. copy)
+        Assert.isTrue(App._importAttempt.painted, "the real receipt draw acknowledges the current attempt")
         for _, premature in ipairs({ "verified", "complete" }) do
           Assert.isTrue(
             copy:lower():find(premature, 1, true) == nil,
@@ -2573,7 +2895,8 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
         Assert.equal(#calls, 0, "the render thread never reads the picked ROM")
         Assert.isTrue(
           App.importer ~= nil and App.importer.state ~= RomImporter.STATES.IDLE,
-          "the painted pick starts its import only after the first draw"
+          "the painted pick starts its import only after the first draw; state="
+            .. tostring(App.importer and App.importer.state)
         )
         receiptImporter = App.importer
         local session = receiptImporter ~= nil and receiptImporter._queued or nil
@@ -2606,7 +2929,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
       fresh()
       App.service = nil
       App.pendingQuiesce = nil
-      App._importReceipt = nil
+      App._importAttempt = nil
       calls = {}
       App.filedropped({
         getFilename = function()
@@ -2631,6 +2954,7 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
         copy:find("soulsilver.nds", 1, true) ~= nil,
         "the painted receipt names the dropped file, got: " .. copy
       )
+      Assert.isTrue(App._importAttempt.painted, "the real drop receipt draw acknowledges the current attempt")
       App.update(0.016)
       Assert.equal(#calls, 0, "the render thread never reads the dropped file")
       Assert.isTrue(
@@ -2668,209 +2992,6 @@ function T.receipt_draw_precedes_any_source_open_for_both_entry_kinds()
   end
 end
 
-function T.superseded_import_completion_never_replaces_the_current_selection()
-  fresh()
-  local originalSelect = App._selectVersion
-  local selections = {}
-  App._selectVersion = function(versionId, options)
-    selections[#selections + 1] = { versionId = versionId, options = options }
-  end
-  local function captureCopy(draw)
-    local lg = love.graphics
-    local saved = {
-      getDimensions = lg.getDimensions,
-      setColor = lg.setColor,
-      rectangle = lg.rectangle,
-      print = lg.print,
-      printf = lg.printf,
-    }
-    local copy = {}
-    lg.getDimensions = function()
-      return 800, 600
-    end
-    lg.setColor = function() end
-    lg.rectangle = function() end
-    lg.print = function(value)
-      copy[#copy + 1] = tostring(value)
-    end
-    lg.printf = function(value)
-      copy[#copy + 1] = tostring(value)
-    end
-    local ok, err = xpcall(draw, debug.traceback)
-    lg.getDimensions = saved.getDimensions
-    lg.setColor = saved.setColor
-    lg.rectangle = saved.rectangle
-    lg.print = saved.print
-    lg.printf = saved.printf
-    if not ok then
-      error(err, 0)
-    end
-    return table.concat(copy, "\n")
-  end
-  local ok, err = xpcall(function()
-    App._importReceipt = nil
-    App._startImport("soulsilver")
-    local currentImporter = assert(App.importer, "the current session owns its importer")
-    Assert.equal(App.state.targetVersion, "soulsilver", "the current card targets its edition")
-    App._onImported("heartgold")
-    Assert.equal(#selections, 0, "a superseded completion never selects its stale version")
-    Assert.isTrue(App.importer == currentImporter, "a superseded completion never releases the current importer")
-    currentImporter:filedropped({
-      getFilename = function()
-        return "photo.png"
-      end,
-    })
-    Assert.equal(currentImporter.state, RomImporter.STATES.ERROR, "the bad file fails the current session")
-    Assert.equal(#selections, 0, "a failed current import still selects nothing")
-    local shown = captureCopy(function()
-      App.draw()
-    end)
-    Assert.isTrue(shown:find("photo.png", 1, true) ~= nil, "the current failure names its file, got: " .. shown)
-    Assert.isTrue(shown:find("File received", 1, true) == nil, "a rejected file is never acknowledged as received")
-  end, debug.traceback)
-  App._selectVersion = originalSelect
-  fresh()
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- A repeated completion for an already registered ROM stays on the themed
--- warm loader even without the launch-path rebind flag, while a genuinely
--- new ROM keeps its cold artwork card. Classification follows the verified
--- prior binding, never the filename or the entry route alone.
-function T.registered_reimport_stays_warm_while_true_first_import_stays_cold()
-  local RomBinding = require("romdump.src.source.RomBinding")
-  local originalRead = RomBinding.read
-  local function completeImporter(versionId)
-    return {
-      state = "complete",
-      status = function()
-        return {
-          state = "complete",
-          progress = 1,
-          versionId = versionId,
-          displayName = versionId,
-          sourceName = versionId .. ".nds",
-        }
-      end,
-      takeVerifiedSource = function()
-        return {
-          byteData = function()
-            return nil
-          end,
-          release = function() end,
-        }
-      end,
-    }
-  end
-  local function captureCopy(draw)
-    local graphics = love.graphics
-    local saved = {
-      getDimensions = graphics.getDimensions,
-      getWidth = graphics.getWidth,
-      setColor = graphics.setColor,
-      rectangle = graphics.rectangle,
-      print = graphics.print,
-      printf = graphics.printf,
-    }
-    local copy = {}
-    graphics.getDimensions = function()
-      return 800, 600
-    end
-    graphics.getWidth = function()
-      return 800
-    end
-    graphics.setColor = function() end
-    graphics.rectangle = function() end
-    graphics.print = function(value)
-      copy[#copy + 1] = tostring(value)
-    end
-    graphics.printf = function(value)
-      copy[#copy + 1] = tostring(value)
-    end
-    local ok, err = xpcall(draw, debug.traceback)
-    graphics.getDimensions = saved.getDimensions
-    graphics.getWidth = saved.getWidth
-    graphics.setColor = saved.setColor
-    graphics.rectangle = saved.rectangle
-    graphics.print = saved.print
-    graphics.printf = saved.printf
-    if not ok then
-      error(err, 0)
-    end
-    return table.concat(copy, "\n")
-  end
-  RomBinding.read = function(_, versionId)
-    if versionId == "soulsilver" then
-      return { versionId = "soulsilver", romSha1 = "synthetic-same-sha1" }
-    end
-    return nil, "synthetic missing registration"
-  end
-  local ok, err = xpcall(function()
-    withAppHarness({ dev = false }, function(id)
-      return id == "soulsilver"
-    end, function(result)
-      result.alreadyRegistered = true
-      result.firstPlayReady = true
-      App._rebindVersionId = nil
-      App.importer = completeImporter("soulsilver")
-      App._onImported("soulsilver")
-      Assert.equal(
-        getmetatable(App.state).__index,
-        CachePreparationState,
-        "the repeated registered completion waits visibly instead of launching retail"
-      )
-      Assert.isFalse(App.state.freshImport, "a registered reimport is never a first import")
-      local copy = captureCopy(function()
-        App.state:draw()
-      end)
-      Assert.isTrue(
-        copy:find("Preparing", 1, true) == nil,
-        "the warm loader never shows the cold artwork card, got: " .. copy
-      )
-      App.update(0.016)
-      Assert.equal(
-        getmetatable(App.state).__index,
-        require("app.src.launcher.StartupTitleState"),
-        "the ready pair completes the warm handoff"
-      )
-      Assert.isFalse(App.state.initialImport, "the warm title knows this selection was not imported fresh")
-    end)
-    withAppHarness({ dev = false }, function()
-      return false
-    end, function(result)
-      result.firstPlayReady = false
-      App.importer = completeImporter("heartgold")
-      App._onImported("heartgold")
-      Assert.equal(getmetatable(App.state).__index, CachePreparationState, "the first import holds its card")
-      Assert.isTrue(App.state.freshImport, "a genuinely new ROM takes the first-import path")
-      local copy = captureCopy(function()
-        App.state:draw()
-      end)
-      Assert.isTrue(
-        copy:find("Preparing walking sprites", 1, true) ~= nil,
-        "the true first import keeps its truthful artwork progress, got: " .. copy
-      )
-      App.update(0.016)
-      Assert.equal(
-        getmetatable(App.state).__index,
-        require("app.src.launcher.StartupTitleState"),
-        "the drawable pair completes the cold handoff"
-      )
-      Assert.isTrue(App.state.initialImport, "the cold title keeps its bounded beat")
-    end)
-  end, debug.traceback)
-  RomBinding.read = originalRead
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- A selected pair survives the title handoff, retail entry, menu return,
--- and the save editor without reselecting, a new selection draws again,
--- and the title never demands its own loader milestone: boot already owns
--- the one shared demand.
 function T.selected_pair_survives_title_menu_game_editor_and_rerolls_on_reselect()
   local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
   local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
@@ -3004,6 +3125,541 @@ function T.failed_asset_runtime_teardown_keeps_the_owner_for_retry()
   if not ok then
     error(err, 0)
   end
+end
+
+local function attachImportAttempt(importer)
+  local attempt = App._newImportAttempt(nil)
+  attempt.mode, attempt.started = "importing", true
+  App._importAttempt = attempt
+  App.importer = importer
+end
+
+function T.successful_import_returns_to_focused_selection_without_starting_a_game()
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold"
+  end, function(result)
+    local importer = completedSyntheticImporter("heartgold")
+    attachImportAttempt(importer)
+    App._onImported("heartgold", importer)
+    Assert.isNil(importer:takeVerifiedSource(), "the library route consumes the real one-shot verified source")
+    Assert.isNil(App.importer, "the completed importer is disposed after its handoff is released")
+    Assert.isNil(App.selectedVersionId, "import completion does not select a provisioner")
+    Assert.isNil(App.provisioner, "idle selection retains no source controller")
+    Assert.equal(#result.selectOptions, 0, "import completion never requests boot-source admission")
+    Assert.equal(#result.menus, 0, "import completion constructs no start menu")
+    Assert.equal(#result.launches, 0, "import completion never constructs gameplay")
+    Assert.equal(type(App.state.view), "function", "completion returns to the interactive library")
+    Assert.equal(App.state:view().focusedId, "heartgold", "the detected game is focused")
+  end)
+end
+
+function T.stale_import_callback_cannot_consume_a_newer_complete_importer()
+  fresh()
+  App.opts = { dev = false }
+  local current = completedSyntheticImporter("soulsilver")
+  local originalNew = RomImporter.new
+  local staleCallback
+  RomImporter.new = function(options)
+    staleCallback = options.onComplete
+    return originalNew(options)
+  end
+  local attempt = App._newImportAttempt(nil)
+  App._importAttempt = attempt
+  App._ensureAttemptImporter(attempt)
+  App.importer = current
+  local state = countingState()
+  App.setState(state)
+  local ok, err = pcall(function()
+    staleCallback("heartgold")
+    local untouched = current:takeVerifiedSource()
+    Assert.notNil(untouched, "a stale completion never takes the newer importer's verified source")
+    untouched:release()
+    Assert.isTrue(App.importer == current, "the newer importer remains current")
+    Assert.equal(App.state, state, "a stale completion never navigates")
+  end)
+  RomImporter.new = originalNew
+  fresh()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.typed_runtime_failure_keeps_the_loader_owned_until_selection_recovery()
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold"
+  end, function(result)
+    local Errors = require("libs.errors.src.Errors")
+    local Loading = require("app.src.launcher.LauncherLoadingPresentation")
+    local harnessNew = Loading.new
+    local loader = { disposals = 0 }
+    function loader:update() end
+    function loader:resize() end
+    function loader:draw() end
+    function loader:adoptGeneratedAssets()
+      return true
+    end
+    function loader:dispose()
+      self.disposals = self.disposals + 1
+    end
+    Loading.new = function()
+      return loader
+    end
+    result.generatedView.withPackages = function()
+      error(Errors.new("MOD_PACKAGE_INCOMPATIBLE", "selected package belongs to another game"), 0)
+    end
+    local ok, err = xpcall(function()
+      App._selectVersion("heartgold")
+      App.update(0.016)
+      Assert.isNil(App.selectedVersionId, "a typed composition failure returns to game selection")
+      Assert.isNil(App.provisioner, "the failed selected epoch is retired")
+      Assert.equal(type(App.state.view), "function", "selection owns the recovery surface")
+      Assert.equal(loader.disposals, 1, "the wait releases its loader exactly once on recovery")
+      Assert.isTrue(
+        tostring(App.state:view().import.error.message or App.state:view().import.error.code):find(
+          "another game",
+          1,
+          true
+        ) ~= nil,
+        "the original typed cause reaches the actionable error view"
+      )
+    end, debug.traceback)
+    result.generatedView.withPackages = nil
+    Loading.new = harnessNew
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+function T.receiving_startup_constructor_failure_disposes_the_detached_loader_once()
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold"
+  end, function()
+    local Loading = require("app.src.launcher.LauncherLoadingPresentation")
+    local StartupTitleState = require("app.src.launcher.StartupTitleState")
+    local harnessLoadingNew = Loading.new
+    local originalStartupNew = StartupTitleState.new
+    local loader = { disposals = 0 }
+    function loader:update() end
+    function loader:resize() end
+    function loader:draw() end
+    function loader:adoptGeneratedAssets()
+      return true
+    end
+    function loader:dispose()
+      self.disposals = self.disposals + 1
+    end
+    Loading.new = function()
+      return loader
+    end
+    StartupTitleState.new = function()
+      error("synthetic receiving constructor failure", 0)
+    end
+    local ok, failure = xpcall(function()
+      App._selectVersion("heartgold")
+      App.update(0.016)
+    end, debug.traceback)
+    Loading.new = harnessLoadingNew
+    StartupTitleState.new = originalStartupNew
+    Assert.isFalse(ok, "a receiving constructor failure remains visible to its caller")
+    Assert.isTrue(tostring(failure):find("receiving constructor failure", 1, true) ~= nil)
+    Assert.equal(loader.disposals, 1, "the caller releases the detached loader exactly once")
+  end)
+end
+
+local function withNativePickerImportHost(fixture, fn)
+  loadShellModules()
+  fresh()
+  App.opts = { dev = false }
+  local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
+  local original = {
+    available = NativeRomPicker.available,
+    openSingle = NativeRomPicker.openSingle,
+    poll = NativeRomPicker.poll,
+    newImporter = RomImporter.new,
+    renderer = App.launcherRenderer,
+    audio = App.launcherAudio,
+  }
+  local host = { opens = 0, polls = 0, results = {}, openBusy = false, lastView = nil }
+  function host:complete(result)
+    self.results[#self.results + 1] = result
+  end
+  NativeRomPicker.available = function()
+    return true
+  end
+  NativeRomPicker.openSingle = function()
+    host.opens = host.opens + 1
+    if host.openBusy then
+      return { kind = "error", message = "the previous picker operation is still finishing" }
+    end
+    return { kind = "pending", requestId = host.requestId }
+  end
+  NativeRomPicker.poll = function(_)
+    host.polls = host.polls + 1
+    return table.remove(host.results, 1)
+  end
+  RomImporter.new = function(options)
+    return fixture.host:importer(fixture.cart, options and options.onComplete)
+  end
+  App.launcherRenderer = {
+    gameIcons = {},
+    refreshGameIcon = function()
+      return false
+    end,
+    dropGameIcon = function() end,
+    draw = function(_, view)
+      host.lastView = view
+      if view.receipt ~= nil then
+        return view.import and view.import.attemptId or nil
+      end
+    end,
+    drawDual = function(_, view)
+      host.lastView = view
+      if view.receipt ~= nil then
+        return view.import and view.import.attemptId or nil
+      end
+    end,
+    drawButton = function() end,
+    dispose = function() end,
+  }
+  App.launcherAudio = {
+    play = function() end,
+    fadeBoot = function() end,
+    update = function() end,
+    dispose = function() end,
+  }
+  App.service = nil
+  App.pendingQuiesce = nil
+  App._importAttempt = nil
+  App._iconRepairAttempted = {}
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local info = require("romdump.src.source.GameVersion").info(versionId)
+    if info ~= nil then
+      App._iconRepairAttempted[info.sha1] = true
+    end
+  end
+  App._showGameSelection(nil)
+  local ok, err = xpcall(function()
+    fn(host)
+  end, debug.traceback)
+  App._cancelImport()
+  App.setState(nil)
+  NativeRomPicker.available = original.available
+  NativeRomPicker.openSingle = original.openSingle
+  NativeRomPicker.poll = original.poll
+  RomImporter.new = original.newImporter
+  App.launcherRenderer = original.renderer
+  App.launcherAudio = original.audio
+  fresh()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function touchCancel(state)
+  local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+  local view = assert(state:view(), "touch Cancel needs the published selection view")
+  local targetId = view.layout.graph.targets.cancel ~= nil and "cancel" or "back"
+  local target = assert(view.layout.graph.targets[targetId], "touch Cancel needs a current operation target")
+  local placement = assert(view.presentation.panes[1].placement, "touch Cancel needs resolved geometry")
+  local x, y = LayoutGeometry.logicalToHost(
+    placement,
+    target.rect.x + target.rect.width / 2,
+    target.rect.y + target.rect.height / 2
+  )
+  App.touchpressed("cancel-finger", x, y)
+  App.touchreleased("cancel-finger", x, y)
+end
+
+function T.native_picker_receipt_precedes_real_queued_temporary_import_and_cancel_closes_first()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "123e4567-e89b-12d3-a456-426614174000"
+    local stage = fixture:writePickerTemporary(requestId)
+    fixture.host.holdValidation = true
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(host.opens, 1, "Choose ROM opens one asynchronous picker")
+      Assert.isNil(App.importer, "pending native copy creates no importer reader")
+      Assert.equal(App.state:view().import.mode, "picker")
+      Assert.notNil(App.state:view().import.statusText, "the operation shows native picker progress")
+      App.update(1 / 60)
+      Assert.isNil(App.importer, "native copy still pending performs no queued source work")
+
+      host:complete({
+        requestId = requestId,
+        kind = "path",
+        relativePath = stage,
+        displayName = "My game.NDS",
+      })
+      App.update(1 / 60)
+      Assert.notNil(App.importer, "a matching completed copy enters the ordinary import card")
+      Assert.isNil(App.importer._queued, "the receipt is latched before any worker starts")
+      Assert.notNil(love.filesystem.getInfo(stage), "the unopened stage remains App-owned before queue acceptance")
+      Assert.equal(App.state:view().import.mode, "receipt", "native pending clears before importer receipt")
+
+      App.draw()
+      Assert.equal(host.lastView.import.receipt, "My game.NDS", "the first frame names the received file")
+      Assert.isNil(App.importer._queued, "drawing the receipt alone starts no source work")
+      Assert.notNil(love.filesystem.getInfo(stage), "the receipt frame does not consume the stage")
+      App.update(1 / 60)
+      Assert.notNil(App.importer._queued, "the painted receipt hands the stage to the real queued importer")
+      Assert.equal(
+        App._importAttempt.descriptor.kind,
+        "temporary",
+        "temporary input uses the importer ownership-transfer queue"
+      )
+      Assert.equal(
+        App._importAttempt.descriptor.requestId,
+        requestId,
+        "the queued request keeps its native correlation token"
+      )
+      Assert.notNil(love.filesystem.getInfo(stage), "accepted input persists while the importer worker owns it")
+
+      local session = fixture.host:validationGate(App.importer)
+      Assert.notNil(love.filesystem.getInfo(stage), "App never deletes an accepted stage at the validation gate")
+      touchCancel(App.state)
+      session.outbox:discardValidation()
+      local thread = session.thread
+      fixture.host:waitFor(function()
+        return not thread:isRunning() and love.filesystem.getInfo(stage) == nil
+      end, "accepted stage cleanup after physical worker exit")
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "precommit cancellation publishes no managed ROM")
+      Assert.isTrue(fixture:originalExists(), "temporary import cleanup never deletes the user original")
+      Assert.isNil(App.provisioner, "import work never creates a selected game epoch")
+      Assert.isNil(App.selectedVersionId, "import completion never selects gameplay")
+    end)
+  end)
+end
+
+function T.native_picker_cancel_busy_retry_and_stale_completion_never_navigate()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "223e4567-e89b-12d3-a456-426614174000"
+    local stage = fixture:writePickerTemporary(requestId)
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(App.state:view().import.mode, "picker", "the pending native request owns the operation view")
+      local pending = App.state
+      touchCancel(pending)
+      Assert.equal(host.opens, 1, "cancelling the App request does not reopen the chooser")
+      Assert.isTrue(pending._disposed, "cancellation retires the pending operation state")
+      Assert.equal(App.state:view().mode, "selection", "cancellation restores ordinary selection")
+
+      host.openBusy = true
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(host.opens, 2, "an immediate retry reaches the native busy boundary once")
+      local failure = App.state:view().import.error
+      Assert.notNil(failure, "a busy reattempt uses the recoverable picker error view")
+      Assert.isTrue(tostring(failure.message):find("still finishing", 1, true) ~= nil)
+      Assert.isNil(App.importer, "a busy reattempt creates no second importer")
+      App.state:keypressed("escape")
+      Assert.equal(App.state:view().mode, "selection", "Back dismisses the picker error")
+
+      local running = countingState()
+      App.setState(running)
+      host:complete({
+        requestId = requestId,
+        kind = "path",
+        relativePath = stage,
+        displayName = "late copy.nds",
+      })
+      App.update(1 / 60)
+      Assert.isNil(love.filesystem.getInfo(stage), "a stale completed copy is drained after screen retirement")
+      Assert.isNil(App.importer, "a stale result starts no import")
+      Assert.equal(App.state, running, "a stale result never navigates or replaces the running state")
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "a stale result publishes no managed ROM")
+    end)
+  end)
+end
+
+function T.native_picker_enqueue_rejection_keeps_unaccepted_stage_with_app()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "323e4567-e89b-12d3-a456-426614174000"
+    local stage = fixture:writePickerTemporary(requestId)
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(App.state:view().import.mode, "picker", "the pending native request owns the operation view")
+      host:complete({
+        requestId = requestId,
+        kind = "path",
+        relativePath = stage,
+        displayName = "lost copy.nds",
+      })
+      App.update(1 / 60)
+      App.draw()
+      Assert.isTrue(love.filesystem.remove(stage), "simulate loss of the completed native stage before admission")
+      App.update(1 / 60)
+      Assert.equal(
+        #fixture.host.threads,
+        0,
+        "typed pre-admission rejection starts no worker; got " .. #fixture.host.threads
+      )
+      Assert.isNil(App._importAttempt.descriptor, "a rejected temporary enqueue is not retried")
+      Assert.equal(
+        App.state:view().import.error.code,
+        "ROM_OPEN_FAILED",
+        "the typed queue rejection reaches the shared error view"
+      )
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "rejection publishes no managed ROM")
+      Assert.isTrue(fixture:originalExists(), "rejection never reaches the user original")
+    end)
+  end)
+end
+
+function T.native_picker_worker_start_failure_leaves_accepted_stage_with_importer()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "423e4567-e89b-12d3-a456-426614174000"
+    local stage = fixture:writePickerTemporary(requestId)
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(App.state:view().import.mode, "picker", "the pending native request owns the operation view")
+      host:complete({
+        requestId = requestId,
+        kind = "path",
+        relativePath = stage,
+        displayName = "startup failure.nds",
+      })
+      App.update(1 / 60)
+      App.draw()
+      fixture.host.failNextStart = true
+      local removals = 0
+      local originalRemove = love.filesystem.remove
+      love.filesystem.remove = function(path)
+        if path == stage then
+          removals = removals + 1
+        end
+        return originalRemove(path)
+      end
+      local ok, err = pcall(function()
+        App.update(1 / 60)
+      end)
+      love.filesystem.remove = originalRemove
+      if not ok then
+        error(err, 0)
+      end
+      Assert.equal(App.importer.state, RomImporter.STATES.ERROR, "accepted startup failure belongs to importer status")
+      Assert.equal(removals, 1, "only the importer removes its accepted stage after true ownership transfer")
+      Assert.isNil(love.filesystem.getInfo(stage), "the importer completes accepted-stage cleanup")
+      Assert.isNil(App._importAttempt.descriptor, "an immediate importer failure does not re-arm App admission")
+      Assert.equal(App._importAttempt.mode, "error", "the terminal failure remains visible")
+      local errorState = App.state
+      App.update(1 / 60)
+      Assert.equal(App.state, errorState, "later polling does not reconstruct the terminal error view")
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "startup failure publishes no managed ROM")
+    end)
+  end)
+end
+
+function T.retry_after_a_queued_worker_failure_starts_a_fresh_attempt_and_worker()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local firstRequestId = "623e4567-e89b-12d3-a456-426614174000"
+    local secondRequestId = "723e4567-e89b-12d3-a456-426614174000"
+    local firstStage = fixture:writePickerTemporary(firstRequestId)
+    local secondStage = fixture:writePickerTemporary(secondRequestId)
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = firstRequestId
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      host:complete({
+        requestId = firstRequestId,
+        kind = "path",
+        relativePath = firstStage,
+        displayName = "failed.nds",
+      })
+      App.update(1 / 60)
+      App.draw()
+      fixture.host.failNextStart = true
+      App.update(1 / 60)
+      local failedAttempt = App._importAttempt
+      local failedImporter = App.importer
+      Assert.notNil(failedAttempt, "the failed queue keeps its terminal attempt visible")
+      Assert.equal(failedAttempt.mode, "error", "the failed worker leaves a terminal attempt")
+      Assert.equal(failedImporter.state, RomImporter.STATES.ERROR, "the committed importer owns the failure")
+      Assert.equal(#fixture.host.threads, 0, "a worker that never started occupies no physical slot")
+
+      App.state:keypressed("down", "down", false)
+      App.state:keypressed("return", "return", false)
+      App.update(1 / 60)
+      Assert.equal(App.state:view().import.mode, "choose", "the retry stays in choose after a frame")
+      Assert.isFalse(
+        App._importAttempt.attemptId == failedAttempt.attemptId,
+        "the fresh attempt identity survives that frame"
+      )
+      Assert.equal(App.state:view().import.mode, "choose", "Retry returns to the file chooser")
+      Assert.notNil(App._importAttempt, "Retry owns an attempt")
+      Assert.isFalse(App._importAttempt == failedAttempt, "Retry never revives the terminal attempt")
+      Assert.isFalse(App._importAttempt.attemptId == failedAttempt.attemptId, "Retry issues a new attempt identity")
+      Assert.equal(App._importAttempt.expectedVersionId, "soulsilver", "the retry keeps its targeted edition")
+      Assert.equal(failedAttempt.mode, "error", "the retired attempt stays terminal")
+      Assert.isNil(App.state:view().import.error, "the retry clears the visible failure")
+
+      host.requestId = secondRequestId
+      App._requestNativePicker()
+      Assert.equal(host.opens, 2, "the retry opens the chooser exactly once")
+      host:complete({
+        requestId = secondRequestId,
+        kind = "path",
+        relativePath = secondStage,
+        displayName = "retried.nds",
+      })
+      App.update(1 / 60)
+      Assert.equal(App.state:view().import.mode, "receipt", "the chosen file enters the ordinary receipt")
+      local retriedAttempt = App._importAttempt
+      Assert.isFalse(retriedAttempt == failedAttempt, "the receipt belongs to the fresh attempt")
+      Assert.notNil(App.importer, "the receipt owns a new importer")
+      Assert.isFalse(App.importer == failedImporter, "the terminal importer is not reused for the retry")
+      Assert.isNil(App.importer._queued, "no worker starts before the receipt is painted")
+      App.draw()
+      Assert.isTrue(App._importAttempt.painted, "the real receipt draw acknowledges the retried attempt")
+      Assert.equal(
+        host.lastView.import.attemptId,
+        retriedAttempt.attemptId,
+        "the drawn receipt names the fresh attempt"
+      )
+      App.update(1 / 60)
+      Assert.equal(#fixture.host.threads, 1, "the acknowledged receipt starts exactly one queued worker")
+      Assert.notNil(App.importer._queued, "the fresh importer owns the queued session")
+      Assert.equal(App._importAttempt.mode, "importing", "the fresh attempt owns the running import")
+      App.update(1 / 60)
+      Assert.equal(#fixture.host.threads, 1, "later updates do not start a second worker")
+      Assert.equal(failedAttempt.mode, "error", "the old attempt remains terminal after the retry starts")
+    end)
+  end)
+end
+
+function T.native_picker_copy_error_uses_the_recoverable_error_view_without_import()
+  local Fixture = require("tests.support.ManagedRomFixture")
+  Fixture.with(function(fixture)
+    local requestId = "523e4567-e89b-12d3-a456-426614174000"
+    withNativePickerImportHost(fixture, function(host)
+      host.requestId = requestId
+      App._openImportChoose("soulsilver")
+      App._requestNativePicker()
+      Assert.equal(App.state:view().import.mode, "picker", "the pending native request owns the operation view")
+      host:complete({ requestId = requestId, kind = "error", message = "the document could not be copied" })
+      App.update(1 / 60)
+      local view = App.state:view()
+      Assert.isNil(App.importer, "a native copy failure creates no importer")
+      Assert.equal(view.import.error.code, "ROM_PICKER_FAILED", "copy errors use the typed picker failure path")
+      Assert.isTrue(tostring(view.import.error.message):find("could not be copied", 1, true) ~= nil)
+      Assert.equal(view.focusedId, "soulsilver", "a recoverable copy error preserves its targeted edition")
+      Assert.isNil(view.import.statusText, "native pending clears when the error view takes over")
+      Assert.isNil(love.filesystem.getInfo(fixture.canonical), "copy failure publishes no managed ROM")
+    end)
+  end)
 end
 
 return { tests = T }

@@ -1,0 +1,306 @@
+--- a/love/src/main/java/org/love2d/android/GameActivity.java
++++ b/love/src/main/java/org/love2d/android/GameActivity.java
+@@ -135,6 +135,8 @@
+ 
+         super.onCreate(savedInstanceState);
+         metrics = getResources().getDisplayMetrics();
++        RomPicker.restore(this, savedInstanceState);
++        RomPicker.attach(this);
+ 
+         // Set low-latency audio values
+         nativeSetDefaultStreamValues(getAudioFreq(), getAudioSMP());
+@@ -268,6 +270,30 @@
+     }
+ 
+     @Override
++    protected void onSaveInstanceState(Bundle state) {
++        super.onSaveInstanceState(state);
++        RomPicker.saveState(state);
++    }
++
++    @Override
++    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
++        if (requestCode == 0x5041) {
++            RomPicker.onActivityResult(requestCode, resultCode, data);
++        }
++        super.onActivityResult(requestCode, resultCode, data);
++    }
++
++    @Keep
++    public String[] openRomPicker(String saveDirectory) {
++        return RomPicker.open(this, saveDirectory);
++    }
++
++    @Keep
++    public String[] pollRomPicker() {
++        return RomPicker.poll();
++    }
++
++    @Override
+     protected void onDestroy() {
+         if (vibrator != null) {
+             Log.d("GameActivity", "Cancelling vibration");
+--- a/love/src/jni/love/src/common/android.h
++++ b/love/src/jni/love/src/common/android.h
+@@ -57,6 +57,18 @@
+ 
+ bool openURL(const std::string &url);
+ 
++struct RomPickerResult
++{
++	std::string requestId;
++	std::string kind;
++	std::string relativePath;
++	std::string displayName;
++	std::string message;
++};
++
++bool openRomPicker(const char *saveDirectory, std::string &requestId, std::string &message);
++bool pollRomPicker(RomPickerResult &result);
++
+ void vibrate(double seconds);
+ 
+ /*
+--- a/love/src/jni/love/src/common/android.cpp
++++ b/love/src/jni/love/src/common/android.cpp
+@@ -23,6 +23,7 @@
+ #ifdef LOVE_ANDROID
+ 
+ #include <cerrno>
++#include <stdexcept>
+ #include <unordered_map>
+ 
+ #include <SDL.h>
+@@ -42,6 +43,68 @@
+ namespace android
+ {
+ 
++namespace
++{
++
++void checkJni(JNIEnv *env)
++{
++	if (env->ExceptionCheck())
++	{
++		env->ExceptionClear();
++		throw std::runtime_error("Android ROM picker JNI call failed");
++	}
++}
++
++std::string fromJavaString(JNIEnv *env, jstring value)
++{
++	if (value == nullptr)
++		return {};
++	jclass stringClass = env->FindClass("java/lang/String");
++	checkJni(env);
++	jclass charsetClass = env->FindClass("java/nio/charset/StandardCharsets");
++	checkJni(env);
++	jmethodID utf8 = env->GetStaticMethodID(charsetClass, "UTF_8", "()Ljava/nio/charset/Charset;");
++	checkJni(env);
++	jobject charset = env->CallStaticObjectMethod(charsetClass, utf8);
++	checkJni(env);
++	jmethodID getBytes = env->GetMethodID(stringClass, "getBytes", "(Ljava/nio/charset/Charset;)[B");
++	checkJni(env);
++	jbyteArray bytes = (jbyteArray) env->CallObjectMethod(value, getBytes, charset);
++	checkJni(env);
++	std::string result;
++	if (bytes != nullptr)
++	{
++		jsize length = env->GetArrayLength(bytes);
++		result.resize(length);
++		if (length > 0)
++			env->GetByteArrayRegion(bytes, 0, length, (jbyte *) &result[0]);
++		checkJni(env);
++		env->DeleteLocalRef(bytes);
++	}
++	env->DeleteLocalRef(charset);
++	env->DeleteLocalRef(charsetClass);
++	env->DeleteLocalRef(stringClass);
++	env->DeleteLocalRef(value);
++	return result;
++}
++
++std::string arrayField(JNIEnv *env, jobjectArray array, jsize index)
++{
++	jstring value = (jstring) env->GetObjectArrayElement(array, index);
++	checkJni(env);
++	return fromJavaString(env, value);
++}
++
++jobject currentActivity(JNIEnv *env)
++{
++	jobject activity = (jobject) SDL_AndroidGetActivity(); // Borrowed from SDL.
++	if (activity == nullptr)
++		throw std::runtimeError("Android ROM picker has no current Activity");
++	return activity;
++}
++
++} // anonymous namespace
++
+ void setImmersive(bool immersive_active)
+ {
+ 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+@@ -150,6 +213,80 @@
+ 	return path;
+ }
+ 
++bool openRomPicker(const char *saveDirectory, std::string &requestId, std::string &message)
++{
++	JNIEnv *env = (JNIEnv *) SDL_AndroidGetJNIEnv();
++	jobject activity = currentActivity(env);
++	jclass clazz = env->GetObjectClass(activity);
++	checkJni(env);
++	jmethodID method = env->GetMethodID(clazz, "openRomPicker", "(Ljava/lang/String;)[Ljava/lang/String;");
++	checkJni(env);
++	jstring directory = env->NewStringUTF(saveDirectory);
++	checkJni(env);
++	jobjectArray values = (jobjectArray) env->CallObjectMethod(activity, method, directory);
++	checkJni(env);
++	jsize count = values == nullptr ? 0 : env->GetArrayLength(values);
++	if (count == 1)
++	{
++		requestId = arrayField(env, values, 0);
++		if (requestId.empty())
++			throw std::runtime_error("Android ROM picker returned an empty request token");
++	}
++	else if (count == 2)
++	{
++		requestId = arrayField(env, values, 0);
++		message = arrayField(env, values, 1);
++		if (!requestId.empty() || message.empty())
++			throw std::runtime_error("Android ROM picker returned a malformed open result");
++	}
++	else
++		throw std::runtime_error("Android ROM picker returned a malformed open result");
++
++	env->DeleteLocalRef(values);
++	env->DeleteLocalRef(directory);
++	env->DeleteLocalRef(clazz);
++	return !requestId.empty();
++}
++
++bool pollRomPicker(RomPickerResult &result)
++{
++	JNIEnv *env = (JNIEnv *) SDL_AndroidGetJNIEnv();
++	jobject activity = currentActivity(env);
++	jclass clazz = env->GetObjectClass(activity);
++	checkJni(env);
++	jmethodID method = env->GetMethodID(clazz, "pollRomPicker", "()[Ljava/lang/String;");
++	checkJni(env);
++	jobjectArray values = (jobjectArray) env->CallObjectMethod(activity, method);
++	checkJni(env);
++	if (values == nullptr)
++	{
++		env->DeleteLocalRef(clazz);
++		return false;
++	}
++	if (env->GetArrayLength(values) != 5)
++		throw std::runtime_error("Android ROM picker returned a malformed terminal result");
++	result.requestId = arrayField(env, values, 0);
++	result.kind = arrayField(env, values, 1);
++	result.relativePath = arrayField(env, values, 2);
++	result.displayName = arrayField(env, values, 3);
++	result.message = arrayField(env, values, 4);
++	bool valid = !result.requestId.empty();
++	if (result.kind == "path")
++		valid = valid && !result.relativePath.empty() && !result.displayName.empty() && result.message.empty();
++	else if (result.kind == "cancel")
++		valid = valid && result.relativePath.empty() && result.displayName.empty() && result.message.empty();
++	else if (result.kind == "error")
++		valid = valid && result.relativePath.empty() && result.displayName.empty() && !result.message.empty();
++	else
++		valid = false;
++	if (!valid)
++		throw std::runtime_error("Android ROM picker returned a malformed terminal result");
++
++	env->DeleteLocalRef(values);
++	env->DeleteLocalRef(clazz);
++	return true;
++}
++
+ bool openURL(const std::string &url)
+ {
+ 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+--- a/love/src/jni/love/src/modules/system/wrap_System.cpp
++++ b/love/src/jni/love/src/modules/system/wrap_System.cpp
+@@ -22,6 +22,11 @@
+ #include "wrap_System.h"
+ #include "sdl/System.h"
+ 
++#ifdef LOVE_ANDROID
++#include "common/android.h"
++#include "filesystem/physfs/Filesystem.h"
++#endif
++
+ namespace love
+ {
+ namespace system
+@@ -101,6 +106,57 @@
+ 	return 1;
+ }
+ 
++#ifdef LOVE_ANDROID
++int w_openRomPicker(lua_State *L)
++{
++	auto filesystem = Module::getInstance<filesystem::Filesystem>(Module::M_FILESYSTEM);
++	std::string requestId, message;
++	luax_catchexcept(L, [&]() {
++		love::android::openRomPicker(filesystem->getSaveDirectory().c_str(), requestId, message);
++	});
++	if (requestId.empty())
++	{
++		lua_pushnil(L);
++		luax_pushstring(L, message);
++	}
++	else
++	{
++		luax_pushstring(L, requestId);
++	}
++	return requestId.empty() ? 2 : 1;
++}
++
++int w_pollRomPicker(lua_State *L)
++{
++	love::android::RomPickerResult result;
++	bool available = false;
++	luax_catchexcept(L, [&]() { available = love::android::pollRomPicker(result); });
++	if (!available)
++	{
++		lua_pushnil(L);
++		return 1;
++	}
++	lua_newtable(L);
++	lua_pushstring(L, result.requestId.c_str());
++	lua_setfield(L, -2, "requestId");
++	lua_pushstring(L, result.kind.c_str());
++	lua_setfield(L, -2, "kind");
++	if (result.kind == "path")
++	{
++		lua_pushstring(L, result.relativePath.c_str());
++		lua_setfield(L, -2, "relativePath");
++		lua_pushstring(L, result.displayName.c_str());
++		lua_setfield(L, -2, "displayName");
++	}
++	else if (result.kind == "error")
++	{
++		lua_pushstring(L, result.message.c_str());
++		lua_setfield(L, -2, "message");
++	}
++	return 1;
++}
++#endif
++
+ static const luaL_Reg functions[] =
+ {
+ 	{ "getOS", w_getOS },
+@@ -111,6 +167,10 @@
+ 	{ "openURL", w_openURL },
+ 	{ "vibrate", w_vibrate },
+ 	{ "hasBackgroundMusic", w_hasBackgroundMusic },
++#ifdef LOVE_ANDROID
++	{ "openRomPicker", w_openRomPicker },
++	{ "pollRomPicker", w_pollRomPicker },
++#endif
+ 	{ 0, 0 }
+ };
+ 

@@ -241,9 +241,10 @@ function T.a_partial_snapshot_hydrates_only_its_covered_work()
   end)
 end
 
--- Every material kind of damage rejects the whole candidate with a typed cause
--- and exposes no partial hydration; restoring the saved bytes makes the same
--- root boot again, so the rejection belongs to the damage and not the scenario.
+-- Every structural, read, size, and generation fault rejects the whole
+-- candidate with a typed cause and exposes no partial hydration; restoring the
+-- saved bytes makes the same root boot again. A same-length payload in a valid
+-- ZIP is ordinary cache data, not a semantic family-audit failure.
 function T.a_damaged_snapshot_yields_no_candidate()
   local root = rootFor("damaged")
   local identity = SnapshotBootFixture.identity()
@@ -256,40 +257,62 @@ function T.a_damaged_snapshot_yields_no_candidate()
 
     ---@param label string
     ---@param damaged string
-    local function assertRejected(label, damaged)
+    ---@param expectedCode string
+    local function assertRejected(label, damaged, expectedCode)
       Assert.isTrue(damaged ~= goodBytes, label .. ": the damaged archive differs from the saved one")
       SnapshotBootFixture.writeCanonical(root, damaged)
       local candidate, failure = SnapshotBootFixture.open(root, identity)
       Assert.isNil(candidate, label .. ": a damaged snapshot installs nothing")
       Assert.equal(type(failure), "table", label .. ": the rejection carries a typed cause")
       local reason = assert(failure)
-      Assert.isTrue(
-        type(reason.code) == "string" and reason.code ~= "",
-        label .. ": the rejection names its cause code"
-      )
+      Assert.equal(reason.code, expectedCode, label .. ": the rejection carries its exact cause code")
       Assert.isTrue(
         type(reason.message) == "string" and reason.message ~= "",
         label .. ": the rejection carries a readable message"
       )
-      SnapshotBootFixture.writeCanonical(root, goodBytes)
-      Assert.notNil(
-        SnapshotBootFixture.open(root, identity),
-        label .. ": the same root boots again once its saved bytes are restored"
+      Assert.equal(
+        love.filesystem.read(root .. "/cache.zip"),
+        damaged,
+        label .. ": rejection never rotates or promotes the candidate"
       )
+      SnapshotBootFixture.writeCanonical(root, goodBytes)
+      local restored = SnapshotBootFixture.open(root, identity)
+      Assert.notNil(restored, label .. ": the same root boots again once its saved bytes are restored")
+      for _, entry in ipairs(assert(restored).entries) do
+        entry.data:release()
+      end
     end
 
     ---@param mutate fun(parsed: table): nil
+    ---@param options table?
     ---@return string rebuilt archive bytes carrying the mutated manifest
-    local function rebuild(mutate)
+    local function rebuild(mutate, options)
+      options = options or {}
       local parsed = SnapshotArchive.parseIndex(assert(rawIndex))
       mutate(parsed)
-      local files = { { name = "cache-index.lua", data = assert(LuaWriter.encode(parsed)) } }
+      local files = {
+        {
+          name = "cache-index.lua",
+          data = options.indexText or assert(LuaWriter.encode(parsed)),
+        },
+      }
+      local emitted = {}
       for _, entry in ipairs(parsed.entries) do
         -- A manifest row whose member is absent stays absent: index validity is
         -- what this rebuild changes, and rejection must happen before payload
-        -- buffers are allocated.
-        if members[entry.path] ~= nil then
-          files[#files + 1] = { name = entry.path, data = members[entry.path] }
+        -- buffers are allocated. Physical member names stay unique even when
+        -- the manifest deliberately repeats a row, because the native ZIP host
+        -- rejects duplicate names before manifest validation can run.
+        if
+          members[entry.path] ~= nil
+          and not (options.omit and options.omit[entry.path])
+          and not emitted[entry.path]
+        then
+          emitted[entry.path] = true
+          files[#files + 1] = {
+            name = entry.path,
+            data = (options.replacements and options.replacements[entry.path]) or members[entry.path],
+          }
         end
       end
       return ZipBuilder.build(files)
@@ -301,9 +324,23 @@ function T.a_damaged_snapshot_yields_no_candidate()
       end)
     end
 
-    -- One member's stored bytes no longer match its recorded checksum.
-    local at = assert(goodBytes:find(ATLAS_BYTES, 1, true), "the stored png payload is addressable in the archive")
-    assertRejected("flipped member byte", goodBytes:sub(1, at + 4) .. "X" .. goodBytes:sub(at + 6))
+    -- Native ZIP checksums still protect the container. Ordinary hydration
+    -- does not reject a same-length payload merely because the manifest's
+    -- redundant CRC metadata was not recomputed in Lua.
+    local alteredAtlas = ATLAS_BYTES:sub(1, -2) .. "X"
+    local trustedBytes = rebuild(function() end, { replacements = { [ATLAS_PATH] = alteredAtlas } })
+    SnapshotBootFixture.writeCanonical(root, trustedBytes)
+    local trusted = SnapshotBootFixture.open(root, identity)
+    Assert.notNil(trusted, "a valid ZIP with same-length member bytes hydrates without a Lua CRC rewalk")
+    Assert.equal(
+      SnapshotBootFixture.bytes(assert(trusted))[ATLAS_PATH],
+      alteredAtlas,
+      "ordinary hydration returns the bytes the native mount read"
+    )
+    for _, entry in ipairs(assert(trusted).entries) do
+      entry.data:release()
+    end
+    SnapshotBootFixture.writeCanonical(root, goodBytes)
 
     -- One manifest row declares a size the member does not have.
     assertRejected(
@@ -316,7 +353,22 @@ function T.a_damaged_snapshot_yields_no_candidate()
           end
         end
         error("the manifest lists the scene member")
-      end)
+      end),
+      "CACHE_ARCHIVE_UNREADABLE"
+    )
+
+    -- A declared member that the native mount cannot provide rejects the
+    -- candidate after any earlier members were acquired.
+    assertRejected(
+      "missing member",
+      rebuild(function() end, { omit = { [SCENE_PATH] = true } }),
+      "CACHE_ARCHIVE_UNREADABLE"
+    )
+
+    assertRejected(
+      "malformed manifest",
+      rebuild(function() end, { indexText = "return {" }),
+      "CACHE_ARCHIVE_SCHEMA_INVALID"
     )
 
     -- The manifest lists the same logical path twice.
@@ -329,7 +381,8 @@ function T.a_damaged_snapshot_yields_no_candidate()
           unsignedCrc32 = parsed.entries[1].unsignedCrc32,
         }
         sortEntries(parsed)
-      end)
+      end),
+      "CACHE_ARCHIVE_SCHEMA_INVALID"
     )
 
     -- The manifest names a path outside the generated roots.
@@ -342,18 +395,21 @@ function T.a_damaged_snapshot_yields_no_candidate()
           unsignedCrc32 = 0,
         }
         sortEntries(parsed)
-      end)
+      end),
+      "CACHE_ARCHIVE_SCHEMA_INVALID"
     )
 
-    -- The container itself is truncated.
-    assertRejected("truncated central directory", goodBytes:sub(1, #goodBytes - 40))
+    -- The container itself is malformed or truncated.
+    assertRejected("invalid zip directory", "not a zip archive", "CACHE_ARCHIVE_UNREADABLE")
+    assertRejected("truncated central directory", goodBytes:sub(1, #goodBytes - 40), "CACHE_ARCHIVE_UNREADABLE")
 
     -- The manifest describes another generation.
     assertRejected(
       "stale generation identity",
       rebuild(function(parsed)
         parsed.identity.romSha1 = string.rep("d", 40)
-      end)
+      end),
+      "CACHE_ARCHIVE_SCHEMA_INVALID"
     )
   end)
 end

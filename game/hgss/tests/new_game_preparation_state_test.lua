@@ -203,6 +203,44 @@ function T.escape_cancels_back_to_menu_without_a_later_transfer()
   Assert.equal(cancelCalls, 1, "a second escape never cancels twice")
 end
 
+function T.gamepad_b_cancels_pending_new_game_once_without_a_later_transfer()
+  local host = pendingHost()
+  local readyCalls, cancelCalls = 0, 0
+  local state = NewGamePreparationState.new(entryOptions(host, {
+    onReady = function()
+      readyCalls = readyCalls + 1
+    end,
+    onCancel = function()
+      cancelCalls = cancelCalls + 1
+    end,
+  }))
+  local Game = require("game.src.Game")
+  local game = Game.new({ onExit = function() end })
+  game:setState(state)
+  state:update(0)
+  local joystick = {
+    getID = function()
+      return -1
+    end,
+  }
+  game:gamepadpressed(joystick, "start")
+  Assert.equal(cancelCalls, 0, "unrelated gamepad buttons do not cancel preparation")
+  game:gamepadpressed(joystick, "b")
+  Assert.equal(cancelCalls, 1, "B invokes the existing Escape cancellation path")
+  Assert.isNil(state.loading, "B releases the pending entry stage")
+  game:gamepadpressed(joystick, "b")
+  state:keypressed("escape")
+  Assert.equal(cancelCalls, 1, "duplicate B and Escape remain no-ops")
+  host.requestMilestone = function()
+    return true
+  end
+  state:update(0)
+  state:draw()
+  state:update(0)
+  Assert.equal(readyCalls, 0, "a B-cancelled preparation never publishes a late candidate")
+  game:dispose()
+end
+
 function T.disposed_preparation_never_transfers()
   local host = pendingHost()
   local readyCalls = 0

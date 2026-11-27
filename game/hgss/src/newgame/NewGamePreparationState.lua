@@ -65,7 +65,7 @@ function NewGamePreparationState.new(options)
   if options.onCancel ~= nil then
     assert(type(options.onCancel) == "function", "New Game preparation cancellation must be a function")
   end
-  return setmetatable({
+  local self = setmetatable({
     versionId = options.versionId,
     cacheFs = options.cacheFs,
     startupPairIndex = options.startupPairIndex,
@@ -87,6 +87,23 @@ function NewGamePreparationState.new(options)
     loaderArtFailure = nil,
     drawObserved = false,
   }, NewGamePreparationState)
+  -- The themed stage is painted from the first frame, so its walking
+  -- sprites are enrolled with it: the shared worker starts compiling the
+  -- walker catalog before the loader's first draw instead of after it.
+  -- Adoption still polls on update, so a pending demand stays retryable
+  -- and failures stay cosmetic.
+  self:_enrollLoaderArt()
+  return self
+end
+
+-- One fire-and-forget enrollment of the shared walking visuals behind the
+-- themed stage. The outcome is deliberately unobserved here: the first
+-- update polls, latches, and adopts exactly as before.
+function NewGamePreparationState:_enrollLoaderArt()
+  if self.loading == nil then
+    return
+  end
+  pcall(self.derivedAssets.requestStartupWalker, "near")
 end
 
 function NewGamePreparationState:_releaseLoading()
@@ -244,6 +261,12 @@ function NewGamePreparationState:keypressed(key, _, _)
     if self.onCancel then
       self.onCancel()
     end
+  end
+end
+
+function NewGamePreparationState:gamepadpressed(_, button)
+  if button == "b" then
+    self:keypressed("escape")
   end
 end
 

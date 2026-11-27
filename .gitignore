@@ -16,6 +16,10 @@ luac.out
 # luarocks build files
 *.src.rock
 *.zip
+*.love
+*.apk
+*.AppImage
+SHA256SUMS
 *.tar.gz
 
 # Object files
@@ -58,5 +62,6 @@ opencode.json
 
 # Agent worktrees
 .agents/worktrees/
+.agents/tmp/portemon-android/
 .worktrees
 .DS_Store

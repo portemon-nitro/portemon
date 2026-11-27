@@ -1,1270 +1,210 @@
--- Retained source-control waits for the app shell. CachePreparationState
--- covers exactly the two pre-title barriers: the boot-source gate, which
--- holds selection until the verified source is admitted, and the
--- quiescence wait, which holds reselection until source readers drain.
--- Both transfer exactly once, latch failure visibly, and never fire after
--- cancellation or epoch retirement.
+-- Source-control waits own one transferable loader. Ordinary pre-movie input is
+-- routed by App; quiescence remains a real operation with its own cancellation.
 
 local Assert = require("tests.support.Assert")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 
 local T = {}
 
--- A scripted process cache service answering the boot-source gate.
----@param script table { ready: boolean?, failure: unknown?, detail: unknown? }
 local function bootService(script)
+  script.calls = 0
+  script.requests = {}
   local service = {}
-  function service:bootSourceStatus(epoch)
-    script.calls = (script.calls or 0) + 1
-    script.epochs = script.epochs or {}
-    script.epochs[#script.epochs + 1] = epoch
-    if script.failure ~= nil then
-      return "failed", script.failure
+  function service:bootSourceStatus(_)
+    script.calls = script.calls + 1
+    if script.bootFailure ~= nil then
+      return "failed", script.bootFailure
     end
-    if script.ready then
+    if script.bootReady then
       return "ready"
     end
-    return "source-required", script.detail
+    if script.pending then
+      return "pending"
+    end
+    return "source-required", script.sourceDetail
   end
-  -- Shared-visual demand seam: the wait requests the catalog early, even
-  -- while the source gate is still blocked, and only observes readiness
-  -- once the gate admits. Fixtures answer through script.walkerReady.
   function service:request(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      script.pairDemands = (script.pairDemands or 0) + 1
-      script.pairIndexes = script.pairIndexes or {}
-      script.pairIndexes[#script.pairIndexes + 1] = selector.pairIndex
-      return "walker-request"
-    end
-    return nil
-  end
-  function service:observe(_, selector)
-    if type(selector) == "table" and selector.requestKind == "startup-walker" then
-      return script.walkerReady == true, nil
-    end
-    return false, nil
-  end
-  -- The epoch's installed generated view: these cases stub every generated
-  -- consumer, so a shared empty reader stands in for the installed bytes.
-  -- script.noGeneratedView models an epoch that installed nothing yet.
-  local generatedView = { versionId = "heartgold" }
-  function generatedView:resolveAsset(_)
-    return nil
-  end
-  function generatedView:loadLua(_)
-    return nil, "the preparation harness carries no generated payloads"
-  end
-  function service:getCacheFs(_)
-    if script.noGeneratedView == true then
-      return nil
-    end
-    return generatedView
+    script.requests[#script.requests + 1] = selector
   end
   return service
 end
 
--- A scripted process cache service answering one quiescence barrier token.
----@param script table { status: string? }
-local function quiescenceService(script)
-  local service = {}
-  function service:barrierStatus(epoch, barrier)
-    script.calls = (script.calls or 0) + 1
-    script.seenEpoch = epoch
-    script.seenBarrier = barrier
-    return script.status or "pending"
+local function fakeLoading()
+  local presentation = { draws = 0, updates = 0, disposals = 0, resizes = {} }
+  function presentation:update(dt)
+    self.updates = self.updates + 1
+    self.lastDt = dt
   end
-  return service
-end
-
----@param script table counter record for the transfer callbacks
----@param options table constructor options
-local function onTransfer(script, options)
-  script.fired = 0
-  script.cancelled = 0
-  options.isCurrent = options.isCurrent or function()
-    return true
+  function presentation:resize(...)
+    self.resizes[#self.resizes + 1] = { ... }
   end
-  options.onReady = function()
-    script.fired = script.fired + 1
+  function presentation:draw(status)
+    self.draws = self.draws + 1
+    self.status = status
   end
-  options.onCancel = function()
-    script.cancelled = script.cancelled + 1
-  end
-  return options
-end
-
-local LOADING_MODULE = "libs.hgss.src.ui.HgssLoadingPresentation"
-
-local function fakeAdopter()
-  local presentation = { adoptions = 0, disposals = 0, adoptResult = true }
-  function presentation:update() end
-  function presentation:resize() end
-  function presentation:draw() end
   function presentation:dispose()
     self.disposals = self.disposals + 1
-  end
-  function presentation:adoptGeneratedAssets()
-    self.adoptions = self.adoptions + 1
-    if self.adoptResult then
-      return true
-    end
-    return false, "synthetic adoption failure"
   end
   return presentation
 end
 
--- The production composition supplies the selected epoch's generated reader
--- through this callback; the fixture asks the installed view the same way, so an
--- epoch that installed nothing keeps its built-in art.
----@param service table
----@param epoch integer
----@return fun(): table<string, unknown>?
-local function installedReader(service, epoch)
-  return function()
-    return service:getCacheFs(epoch)
-  end
-end
-
----@param script table
----@param overrides table?
----@return CachePreparationState
-local function bootWait(script, overrides)
-  local service = bootService(script)
-  local options = onTransfer(script, {
+local function bootWait(script, loading, overrides)
+  local options = {
     kind = "boot-source",
     epoch = 7,
-    service = service,
+    service = bootService(script),
     versionId = "heartgold",
-    getAssetReader = installedReader(service, 7),
-  })
+    label = "HeartGold",
+    loading = loading,
+    isCurrent = function()
+      return true
+    end,
+    onReady = function()
+      script.fired = (script.fired or 0) + 1
+    end,
+    onFailure = function(detail)
+      script.failures = script.failures or {}
+      script.failures[#script.failures + 1] = detail
+    end,
+    onCancel = function()
+      script.cancelled = (script.cancelled or 0) + 1
+    end,
+  }
   for key, value in pairs(overrides or {}) do
     options[key] = value
   end
   return CachePreparationState.new(options)
 end
 
----@param script table
----@param overrides table?
----@return CachePreparationState
-local function quiescenceWait(script, overrides)
-  local options = onTransfer(script, {
+function T.only_live_initial_boot_source_wait_reports_pre_opening()
+  local script = { pending = true }
+  local loading = fakeLoading()
+  local state = bootWait(script, loading)
+  Assert.equal(type(state.isAwaitingOpening), "function")
+  Assert.isTrue(state:isAwaitingOpening())
+  state:update(1 / 60)
+  Assert.isTrue(state:isAwaitingOpening())
+  state:resize(385, 287, { x = 18, y = 24, width = 349, height = 239 }, 3)
+  Assert.deepEqual(loading.resizes[1], { 385, 287, { x = 18, y = 24, width = 349, height = 239 }, 3 })
+  state:dispose()
+  Assert.isFalse(state:isAwaitingOpening())
+
+  local readyScript = { bootReady = true }
+  local readyLoading = fakeLoading()
+  local ready = bootWait(readyScript, readyLoading)
+  ready:update(1 / 60)
+  Assert.equal(readyScript.fired, 1)
+  Assert.isFalse(ready:isAwaitingOpening(), "source readiness ends the pre-opening wait")
+  Assert.isTrue(ready:takeLoading() == readyLoading)
+  ready:dispose()
+  Assert.equal(readyLoading.disposals, 0, "the receiving startup owner keeps the transferred loader")
+  readyLoading:dispose()
+
+  local retiredScript = { pending = true }
+  local retired = bootWait(retiredScript, fakeLoading(), {
+    isCurrent = function()
+      return false
+    end,
+  })
+  Assert.isFalse(retired:isAwaitingOpening())
+  retired:update(1 / 60)
+  Assert.equal(retiredScript.calls, 0)
+  retired:dispose()
+end
+
+function T.neutral_loader_paints_without_polling_or_adding_decorative_demand()
+  local script = { pending = true }
+  local loading = fakeLoading()
+  local state = bootWait(script, loading)
+  state:draw()
+  Assert.equal(loading.draws, 1)
+  Assert.equal(script.calls, 0, "draw never polls the source gate")
+  state:update(1 / 60)
+  Assert.equal(loading.updates, 1)
+  Assert.deepEqual(script.requests, {})
+  Assert.isNil(loading.status, "pending work exposes no internal provisioning copy")
+  state:dispose()
+  Assert.equal(loading.disposals, 1)
+end
+
+function T.ordinary_pre_opening_input_is_not_a_leaf_cancel_action()
+  local script = { pending = true }
+  local state = bootWait(script, fakeLoading())
+  state:keypressed("escape")
+  state:keypressed("return")
+  state:gamepadpressed({}, "a")
+  Assert.equal(script.cancelled or 0, 0, "App owns the shared manual-selection route")
+  Assert.isTrue(state:isAwaitingOpening())
+  state:dispose()
+end
+
+function T.blocked_or_failed_source_returns_one_copied_failure_without_transfer()
+  for _, status in ipairs({ "source-required", "failed" }) do
+    local detail =
+      { code = "ROM_SOURCE_REQUIRED", message = "managed source needs repair", context = { path = "managed" } }
+    local script = { sourceDetail = detail, bootFailure = detail }
+    local loading = fakeLoading()
+    local state = bootWait(script, loading)
+    state:update(1 / 60)
+    detail.message = "mutated"
+    detail.context.path = "mutated"
+    state:update(1 / 60)
+    Assert.equal(script.fired or 0, 0)
+    Assert.equal(#script.failures, 1)
+    Assert.equal(script.failures[1].message, "managed source needs repair")
+    Assert.equal(script.failures[1].context.path, "managed")
+    Assert.isFalse(state:isAwaitingOpening(), "terminal failure is no longer an interruptible pre-opening wait")
+    state:dispose()
+    Assert.equal(loading.disposals, 1)
+  end
+end
+
+function T.quiescence_is_an_operation_and_keeps_its_exact_barrier_identity()
+  local script = { calls = 0, status = "pending", cancelled = 0 }
+  local service = {}
+  function service:barrierStatus(epoch, barrier)
+    script.calls = script.calls + 1
+    script.epoch, script.barrier = epoch, barrier
+    return script.status
+  end
+  local font = {}
+  function font:getWidth(text)
+    return #tostring(text) * 6
+  end
+  function font:getHeight()
+    return 12
+  end
+  local renderer =
+    { fonts = { body = font, bold = font }, drawButton = function() end, drawLoadingSquares = function() end }
+  local state = CachePreparationState.new({
     kind = "quiescence",
     epoch = 7,
-    service = quiescenceService(script),
     barrier = 3,
-  })
-  for key, value in pairs(overrides or {}) do
-    options[key] = value
-  end
-  return CachePreparationState.new(options)
-end
-
-function T.boot_source_wait_transfers_exactly_once_on_readiness()
-  local script = { ready = true }
-  local state = bootWait(script)
-  state:update(0.016)
-  Assert.equal(script.fired, 1, "boot readiness transfers")
-  state:update(0.016)
-  state:update(0.016)
-  Assert.equal(script.fired, 1, "the transfer fires exactly once")
-  Assert.equal(script.cancelled, 0, "readiness never cancels")
-end
-
-function T.boot_source_wait_stays_blocked_while_the_source_is_required()
-  local Loading = require("libs.hgss.src.ui.HgssLoadingPresentation")
-  local savedNew = Loading.new
-  local loading = fakeAdopter()
-  Loading.new = function()
-    return loading
-  end
-  local ok, err = xpcall(function()
-    local script = { detail = { code = "ROM_SOURCE_REQUIRED", message = "the original file is missing" } }
-    local state = bootWait(
-      script,
-      { mismatch = "Dropped SoulSilver does not match the expected HeartGold version.", pairIndex = 5 }
-    )
-    state:update(0.016)
-    state:update(0.016)
-    Assert.equal(script.fired or 0, 0, "a missing source never transfers")
-    Assert.isTrue((script.pairDemands or 0) >= 1, "the blocked wait still demands the selected pair early")
-    Assert.isNil(state.error, "a missing source is a block, not a failure")
-    Assert.equal(state.sourceDetail, script.detail, "the typed source reason stays visible on the wait")
-    Assert.notNil(state.mismatch, "the wrong-version diagnostic stays on the blocked wait")
-    script.ready = true
-    script.walkerReady = true
-    state:update(0.016)
-    Assert.equal(script.fired, 1, "the admitted source transfers on the same wait")
-  end, debug.traceback)
-  Loading.new = savedNew
-  if not ok then
-    error(err, 0)
-  end
-end
-
-function T.boot_source_failure_latches_without_transfer()
-  local script = { failure = "cache boot failed in the fixture" }
-  local state = bootWait(script)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a failed boot never transfers")
-  Assert.notNil(state.error, "the boot failure surfaces on the wait")
-  script.ready = true
-  script.failure = nil
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a latched failure never recovers into a transfer")
-end
-
-function T.boot_source_cancel_never_publishes_a_stale_transfer()
-  local Loading = require("libs.hgss.src.ui.HgssLoadingPresentation")
-  local savedNew = Loading.new
-  local loading = fakeAdopter()
-  Loading.new = function()
-    return loading
-  end
-  local ok, err = xpcall(function()
-    local script = {}
-    local state = bootWait(script, { pairIndex = 5 })
-    state:update(0.016)
-    Assert.equal(script.fired or 0, 0, "the pending gate transfers nothing yet")
-    Assert.isTrue((script.pairDemands or 0) >= 1, "the pending wait still demands the selected pair early")
-    state:keypressed("escape")
-    Assert.equal(script.cancelled, 1, "escape returns to the owning selection exactly once")
-    state:keypressed("escape")
-    Assert.equal(script.cancelled, 1, "a second escape never cancels twice")
-    script.ready = true
-    script.walkerReady = true
-    state:update(0.016)
-    Assert.equal(script.fired or 0, 0, "a cancelled wait never transfers even when the gate answers")
-    state:dispose()
-    state:update(0.016)
-    Assert.equal(script.fired or 0, 0, "a disposed wait stays silent")
-    Assert.equal(script.cancelled, 1, "disposal never re-cancels")
-  end, debug.traceback)
-  Loading.new = savedNew
-  if not ok then
-    error(err, 0)
-  end
-end
-
-function T.stale_wait_never_polls_or_transfers()
-  local script = { ready = true }
-  local state = bootWait(script, {
+    service = service,
+    renderer = renderer,
+    width = 390,
+    height = 844,
     isCurrent = function()
-      return false
+      return true
+    end,
+    onReady = function()
+      script.ready = true
+    end,
+    onCancel = function()
+      script.cancelled = script.cancelled + 1
     end,
   })
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a retired epoch never transfers")
-  Assert.equal(script.calls or 0, 0, "a retired epoch never polls the gate")
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a retired epoch stays silent")
-end
-
-function T.quiescence_wait_holds_until_the_exact_barrier_acknowledges()
-  local script = {}
-  local state = quiescenceWait(script)
-  state:update(0.016)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "an unacknowledged barrier never transfers")
-  Assert.equal(script.seenEpoch, 7, "the wait polls its exact selecting epoch")
-  Assert.equal(script.seenBarrier, 3, "the wait polls its exact barrier token")
-  script.status = "ready"
-  state:update(0.016)
-  Assert.equal(script.fired, 1, "the acknowledged barrier transfers")
-  state:update(0.016)
-  Assert.equal(script.fired, 1, "the transfer fires exactly once")
-end
-
-function T.quiescence_failure_latches_without_transfer()
-  local script = { status = "failed" }
-  local state = quiescenceWait(script)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a failed source closure never transfers")
-  Assert.notNil(state.error, "the closure failure surfaces on the wait")
-  script.status = "ready"
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a latched closure failure never recovers into a transfer")
-end
-
-function T.quiescence_cancel_returns_without_transfer()
-  local script = {}
-  local state = quiescenceWait(script)
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "the draining wait transfers nothing yet")
+  Assert.isFalse(state:isAwaitingOpening())
+  state:update(1 / 60)
+  Assert.equal(script.epoch, 7)
+  Assert.equal(script.barrier, 3)
+  Assert.isNil(script.ready)
   state:keypressed("escape")
-  Assert.equal(script.cancelled, 1, "escape returns to the owning selection exactly once")
+  Assert.equal(script.cancelled, 1, "a real operation retains its admissible Cancel route")
   script.status = "ready"
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a cancelled wait never transfers even when the barrier answers")
+  state:update(1 / 60)
+  Assert.isNil(script.ready, "canceled view cannot transfer a late barrier acknowledgement")
   state:dispose()
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a disposed wait stays silent")
-end
-
-function T.stale_quiescence_wait_never_polls_or_transfers()
-  local script = { status = "ready" }
-  local state = quiescenceWait(script, {
-    isCurrent = function()
-      return false
-    end,
-  })
-  state:update(0.016)
-  Assert.equal(script.fired or 0, 0, "a retired epoch never transfers")
-  Assert.equal(script.calls or 0, 0, "a retired epoch never polls the barrier")
-end
-
--- The launcher keeps exactly the two source-control waits above: any other
--- preparation kind is rejected at construction.
-function T.retired_wait_kinds_are_rejected_at_construction()
-  local function preparationStub()
-    local preparation = {}
-    function preparation:poll()
-      return nil, nil
-    end
-    function preparation:dispose() end
-    return preparation
-  end
-  local provisionerStub = {
-    status = function()
-      return {}
-    end,
-  }
-  Assert.throws(function()
-    CachePreparationState.new({
-      kind = "bootstrap",
-      epoch = 7,
-      provisioner = provisionerStub,
-      isCurrent = function()
-        return true
-      end,
-      onReady = function() end,
-      onCancel = function() end,
-    })
-  end, "bootstrap preparation is not a launcher wait")
-  Assert.throws(function()
-    CachePreparationState.new({
-      kind = "first-play",
-      epoch = 7,
-      provisioner = provisionerStub,
-      preparation = preparationStub(),
-      isCurrent = function()
-        return true
-      end,
-      onReady = function() end,
-      onCancel = function() end,
-    })
-  end, "first-play preparation is not a launcher wait")
-end
-
-local function newChannelHost()
-  local channels = {}
-  local function newChannel()
-    local queue = {}
-    local channel = { log = {} }
-    function channel:push(value)
-      queue[#queue + 1] = value
-      channel.log[#channel.log + 1] = value
-      return true
-    end
-    function channel:pop()
-      if #queue == 0 then
-        return nil
-      end
-      return table.remove(queue, 1)
-    end
-    function channel:demand(_)
-      if #queue == 0 then
-        return nil
-      end
-      return table.remove(queue, 1)
-    end
-    function channel:getCount()
-      return #queue
-    end
-    channels[#channels + 1] = channel
-    return channel
-  end
-  local function newThread(_)
-    local thread = { starts = 0 }
-    function thread:start()
-      self.starts = self.starts + 1
-      return true
-    end
-    function thread:wait()
-      return true
-    end
-    function thread:isRunning()
-      return true
-    end
-    function thread:getError()
-      return nil
-    end
-    return thread
-  end
-  return { newChannel = newChannel, newThread = newThread, channels = channels }
-end
-
-local function walkerCommandId(host, epoch)
-  local found = nil
-  for _, packet in ipairs(host.channels[1].log) do
-    if type(packet) == "table" and packet.op == "request" and packet.epoch == epoch then
-      if packet.requestKind == "startup-walker" then
-        found = packet.requestId
-      end
-    end
-  end
-  return found
-end
-
-local function captureWarmCopy(draw)
-  local lg = love.graphics
-  local savedDimensions, savedWidth = lg.getDimensions, lg.getWidth
-  local savedColor, savedRect = lg.setColor, lg.rectangle
-  local savedPrint, savedPrintf = lg.print, lg.printf
-  local copy = {}
-  lg.getDimensions = function()
-    return 800, 600
-  end
-  lg.getWidth = function()
-    return 800
-  end
-  lg.setColor = function() end
-  lg.rectangle = function() end
-  lg.print = function(value)
-    copy[#copy + 1] = tostring(value)
-  end
-  lg.printf = function(value)
-    copy[#copy + 1] = tostring(value)
-  end
-  local ok, err = xpcall(draw, debug.traceback)
-  lg.getDimensions, lg.getWidth = savedDimensions, savedWidth
-  lg.setColor, lg.rectangle = savedColor, savedRect
-  lg.print, lg.printf = savedPrint, savedPrintf
-  if not ok then
-    error(err, 0)
-  end
-  return table.concat(copy, "\n")
-end
-
-function T.terminal_worker_failure_is_escape_only_until_a_fresh_selection()
-  local CacheService = require("app.src.CacheService")
-  local Loading = require(LOADING_MODULE)
-  local savedNew = Loading.new
-  local loading = fakeAdopter()
-  Loading.new = function()
-    return loading
-  end
-  local ok, err = xpcall(function()
-    local host = newChannelHost()
-    local service = CacheService.new({ thread = host })
-    local epoch = assert(service:select({ versionId = "heartgold" }))
-    assert(service:requestBootSource(epoch))
-    service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
-    service:update()
-    -- The selected epoch installs its generated view at select: the wait
-    -- adopts the installed reader, never a physical generated root.
-    local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
-    SnapshotBootFixture.install(service, {
-      epoch = epoch,
-      identity = SnapshotBootFixture.identity(),
-      sequence = 1,
-      initial = true,
-      entries = {},
-    })
-    service:update()
-    local script = { fired = 0, cancelled = 0 }
-    local state = CachePreparationState.new({
-      kind = "boot-source",
-      epoch = epoch,
-      service = service,
-      getAssetReader = installedReader(service, epoch),
-      versionId = "heartgold",
-      pairIndex = 5,
-      isCurrent = function()
-        return true
-      end,
-      onReady = function()
-        script.fired = script.fired + 1
-      end,
-      onCancel = function()
-        script.cancelled = script.cancelled + 1
-      end,
-    })
-    state:update(0.016)
-    service:update()
-    local walkerId = assert(walkerCommandId(host, epoch), "the wait demands the selected pair")
-    service:injectReply({
-      op = "request-result",
-      epoch = epoch,
-      requestId = walkerId,
-      state = "failed",
-      requiredSequence = 1,
-      errorMessage = "synthetic walker failure",
-    })
-    service:update()
-    state:update(0.016)
-    Assert.equal(script.fired, 0, "a terminal worker failure never transfers")
-    Assert.notNil(state.artFailure, "the worker failure stays visible")
-    local copy = captureWarmCopy(function()
-      state:draw()
-    end)
-    Assert.isTrue(copy:lower():find("escape", 1, true) ~= nil, "the terminal wait names escape")
-    Assert.isTrue(copy:find("Press R", 1, true) == nil, "the terminal wait never promises a retry")
-    local commandsBefore = #host.channels[1].log
-    state:keypressed("r")
-    state:update(0.016)
-    state:update(0.016)
-    service:update()
-    Assert.equal(script.fired, 0, "R never retries a terminal worker request")
-    Assert.notNil(state.artFailure, "R leaves the terminal failure latched")
-    Assert.equal(#host.channels[1].log, commandsBefore, "R issues no identical selector again")
-    Assert.equal(loading.adoptions, 1, "only the construction preview runs before the worker failure")
-    service:injectReply({
-      op = "request-result",
-      epoch = epoch,
-      requestId = walkerId,
-      state = "ready",
-      requiredSequence = 1,
-    })
-    service:update()
-    state:update(0.016)
-    Assert.equal(script.fired, 0, "a late ready packet never heals the terminal record")
-    state:keypressed("escape")
-    Assert.equal(script.cancelled, 1, "escape releases the terminal wait")
-    local second = assert(service:select({ versionId = "heartgold" }))
-    Assert.isTrue(second ~= epoch, "the fresh epoch differs from the failed one")
-    assert(service:requestBootSource(second))
-    SnapshotBootFixture.install(service, {
-      epoch = second,
-      identity = SnapshotBootFixture.identity(),
-      sequence = 1,
-      initial = true,
-      entries = {},
-    })
-    service:injectReply({ op = "boot-source-result", epoch = second, state = "ready" })
-    service:update()
-    local freshLoading = fakeAdopter()
-    Loading.new = function()
-      return freshLoading
-    end
-    local freshScript = { fired = 0 }
-    local fresh = CachePreparationState.new({
-      kind = "boot-source",
-      epoch = second,
-      service = service,
-      getAssetReader = installedReader(service, second),
-      versionId = "heartgold",
-      pairIndex = 5,
-      isCurrent = function()
-        return true
-      end,
-      onReady = function()
-        freshScript.fired = freshScript.fired + 1
-      end,
-      onCancel = function() end,
-    })
-    fresh:update(0.016)
-    service:update()
-    local freshWalkerId = assert(walkerCommandId(host, second), "the fresh wait demands the pair anew")
-    Assert.isTrue(freshWalkerId ~= walkerId, "the fresh epoch owns a distinct request identity")
-    service:injectReply({
-      op = "request-result",
-      epoch = second,
-      requestId = freshWalkerId,
-      state = "ready",
-      requiredSequence = 1,
-    })
-    service:update()
-    fresh:update(0.016)
-    Assert.equal(freshScript.fired, 1, "the fresh epoch transfers on its independent answer")
-    Assert.isTrue(fresh:takeLoading() == freshLoading, "the fresh wait transfers its own presentation")
-    service:injectReply({
-      op = "request-result",
-      epoch = epoch,
-      requestId = walkerId,
-      state = "ready",
-      requiredSequence = 1,
-    })
-    service:update()
-    fresh:update(0.016)
-    Assert.equal(freshScript.fired, 1, "a stale packet never publishes a second transfer")
-    fresh:dispose()
-    state:dispose()
-    service:shutdown()
-  end, debug.traceback)
-  Loading.new = savedNew
-  if not ok then
-    error(err, 0)
-  end
-end
-
-function T.local_adoption_failure_needs_one_explicit_key_per_attempt()
-  local CacheService = require("app.src.CacheService")
-  local Loading = require(LOADING_MODULE)
-  local savedNew = Loading.new
-  local loading = fakeAdopter()
-  loading.adoptResult = false
-  Loading.new = function()
-    return loading
-  end
-  local ok, err = xpcall(function()
-    local host = newChannelHost()
-    assert(type(host) == "table" and type(host.channels) == "table", "host shape")
-    assert(type(host.newChannel) == "function", "host has newChannel")
-    local service = CacheService.new({ thread = host })
-    assert(#host.channels == 2, "service owns two channels, got " .. tostring(#host.channels))
-    local epoch = assert(service:select({ versionId = "heartgold" }))
-    assert(service:requestBootSource(epoch))
-    service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
-    service:update()
-    -- The selected epoch installs its generated view at select: the wait
-    -- adopts the installed reader, never a physical generated root.
-    local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
-    SnapshotBootFixture.install(service, {
-      epoch = epoch,
-      identity = SnapshotBootFixture.identity(),
-      sequence = 1,
-      initial = true,
-      entries = {},
-    })
-    service:update()
-    local script = { fired = 0 }
-    local state = CachePreparationState.new({
-      kind = "boot-source",
-      epoch = epoch,
-      service = service,
-      getAssetReader = installedReader(service, epoch),
-      versionId = "heartgold",
-      pairIndex = 5,
-      isCurrent = function()
-        return true
-      end,
-      onReady = function()
-        script.fired = script.fired + 1
-      end,
-      onCancel = function() end,
-    })
-    state:update(0.016)
-    service:update()
-    local walkerId = assert(walkerCommandId(host, epoch), "the wait demands the selected pair")
-    service:injectReply({
-      op = "request-result",
-      epoch = epoch,
-      requestId = walkerId,
-      state = "ready",
-      requiredSequence = 1,
-    })
-    service:update()
-    state:update(0.016)
-    Assert.equal(script.fired, 0, "a failed adoption never transfers")
-    Assert.equal(loading.adoptions, 2, "construction plus the first ready answer attempt adoption")
-    local copy = captureWarmCopy(function()
-      state:draw()
-    end)
-    Assert.isTrue(copy:find("Press R", 1, true) ~= nil, "the adoption failure names its retry key")
-    state:update(0.016)
-    state:update(0.016)
-    Assert.equal(loading.adoptions, 2, "no automatic adoption follows the latch")
-    Assert.equal(script.fired, 0, "the latch never transfers on its own")
-    state:keypressed("r")
-    loading.adoptResult = true
-    state:update(0.016)
-    Assert.equal(loading.adoptions, 3, "one explicit key authorizes exactly one new attempt")
-    Assert.equal(script.fired, 1, "the retried adoption transfers")
-    Assert.isTrue(state:takeLoading() == loading, "the retry transfers the owned presentation")
-    state:update(0.016)
-    Assert.equal(script.fired, 1, "the transfer fires exactly once")
-    state:dispose()
-    service:shutdown()
-  end, debug.traceback)
-  Loading.new = savedNew
-  if not ok then
-    error(err, 0)
-  end
-end
-
-function T.cold_terminal_worker_failure_forwards_escape_only_to_the_card()
-  local CacheService = require("app.src.CacheService")
-  local Loading = require(LOADING_MODULE)
-  local savedNew = Loading.new
-  local loading = fakeAdopter()
-  Loading.new = function()
-    return loading
-  end
-  local ok, err = xpcall(function()
-    local host = newChannelHost()
-    local service = CacheService.new({ thread = host })
-    local epoch = assert(service:select({ versionId = "heartgold" }))
-    assert(service:requestBootSource(epoch))
-    service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
-    service:update()
-    local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
-    SnapshotBootFixture.installBoot(service, epoch)
-    service:update()
-    local script = { fired = 0 }
-    local state = CachePreparationState.new({
-      kind = "boot-source",
-      epoch = epoch,
-      service = service,
-      getAssetReader = installedReader(service, epoch),
-      versionId = "heartgold",
-      pairIndex = 5,
-      freshImport = true,
-      importStatus = { state = "complete", progress = 1 },
-      isCurrent = function()
-        return true
-      end,
-      onReady = function()
-        script.fired = script.fired + 1
-      end,
-      onCancel = function() end,
-    })
-    state:update(0.016)
-    service:update()
-    local walkerId = assert(walkerCommandId(host, epoch), "the cold card demands the selected pair")
-    service:injectReply({
-      op = "request-result",
-      epoch = epoch,
-      requestId = walkerId,
-      state = "failed",
-      requiredSequence = 1,
-      errorMessage = "synthetic walker failure",
-    })
-    service:update()
-    state:update(0.016)
-    Assert.equal(script.fired, 0, "a terminal cold failure never transfers")
-    local seen = {}
-    local view = assert(state._importView, "a cold wait retains its card")
-    local originalDraw = view.draw
-    view.draw = function(self, statusOverride)
-      seen.override = statusOverride
-      return originalDraw(self, statusOverride)
-    end
-    local copy = captureWarmCopy(function()
-      state:draw()
-    end)
-    view.draw = originalDraw
-    Assert.notNil(seen.override, "the cold card receives its artwork status")
-    Assert.equal(seen.override.stage, "artwork", "the cold failure rides the artwork stage")
-    Assert.isFalse(seen.override.retryable == true, "a terminal failure forwards no retry flag")
-    Assert.isTrue(copy:find("Press Esc", 1, true) ~= nil, "the cold terminal card names escape")
-    Assert.isTrue(copy:find("Press R", 1, true) == nil, "the cold terminal card never promises a retry")
-    state:keypressed("r")
-    state:update(0.016)
-    Assert.equal(script.fired, 0, "R never retries the cold terminal failure")
-    state:dispose()
-    service:shutdown()
-  end, debug.traceback)
-  Loading.new = savedNew
-  if not ok then
-    error(err, 0)
-  end
-end
-
-function T.quiescence_card_names_the_pending_file_before_the_barrier_admits()
-  local App = require("app.src.App")
-  local RomSource = require("romdump.src.source.RomSource")
-  local NdsRom = require("romdump.src.source.NdsRom")
-  local RomBinding = require("romdump.src.source.RomBinding")
-  local originalFromPath = RomSource.fromPath
-  local originalFromDroppedFile = RomSource.fromDroppedFile
-  local originalOpen = NdsRom.open
-  local originalRecord = RomBinding.record
-  local calls = {}
-  RomSource.fromPath = function(...)
-    calls[#calls + 1] = "path"
-    return originalFromPath(...)
-  end
-  RomSource.fromDroppedFile = function(...)
-    calls[#calls + 1] = "drop"
-    return originalFromDroppedFile(...)
-  end
-  NdsRom.open = function(...)
-    calls[#calls + 1] = "verify"
-    return originalOpen(...)
-  end
-  RomBinding.record = function(...)
-    calls[#calls + 1] = "record"
-    return originalRecord(...)
-  end
-  local savedApp = {
-    state = App.state,
-    service = App.service,
-    epoch = App.epoch,
-    pendingQuiesce = App.pendingQuiesce,
-    importer = App.importer,
-    selectedVersionId = App.selectedVersionId,
-    receipt = App._importReceipt,
-    rebind = App._rebindVersionId,
-    bootBlocked = App._bootBlockedVersionId,
-    pairIndex = App.pairIndex,
-  }
-  local function restoreAll()
-    RomSource.fromPath = originalFromPath
-    RomSource.fromDroppedFile = originalFromDroppedFile
-    NdsRom.open = originalOpen
-    RomBinding.record = originalRecord
-    App.state = savedApp.state
-    App.service = savedApp.service
-    App.epoch = savedApp.epoch
-    App.pendingQuiesce = savedApp.pendingQuiesce
-    App.importer = savedApp.importer
-    App.selectedVersionId = savedApp.selectedVersionId
-    App._importReceipt = savedApp.receipt
-    App._rebindVersionId = savedApp.rebind
-    App._bootBlockedVersionId = savedApp.bootBlocked
-    App.pairIndex = savedApp.pairIndex
-  end
-  local function captureCopy(draw)
-    local lg = love.graphics
-    local saved = {
-      getDimensions = lg.getDimensions,
-      getWidth = lg.getWidth,
-      setColor = lg.setColor,
-      rectangle = lg.rectangle,
-      print = lg.print,
-      printf = lg.printf,
-    }
-    local copy = {}
-    lg.getDimensions = function()
-      return 800, 600
-    end
-    lg.getWidth = function()
-      return 800
-    end
-    lg.setColor = function() end
-    lg.rectangle = function() end
-    lg.print = function(value)
-      copy[#copy + 1] = tostring(value)
-    end
-    lg.printf = function(value)
-      copy[#copy + 1] = tostring(value)
-    end
-    local ok, err = xpcall(draw, debug.traceback)
-    lg.getDimensions = saved.getDimensions
-    lg.getWidth = saved.getWidth
-    lg.setColor = saved.setColor
-    lg.rectangle = saved.rectangle
-    lg.print = saved.print
-    lg.printf = saved.printf
-    if not ok then
-      error(err, 0)
-    end
-    return table.concat(copy, "\n")
-  end
-  local function dropStub()
-    return {
-      getFilename = function()
-        return "soulsilver.nds"
-      end,
-      open = function()
-        return true
-      end,
-      read = function()
-        return "not a real rom"
-      end,
-      close = function() end,
-    }
-  end
-  -- Every admitted barrier above starts a real background validation
-  -- through the deferred file receipt. Retire each started session through
-  -- its public cancel/update seam so no worker lease outlives this case.
-  local startedImporters = {}
-  local function noteStartedImporter()
-    if App.importer ~= nil then
-      startedImporters[#startedImporters + 1] = App.importer
-    end
-  end
-  local function retireStartedImporters()
-    local threads = {}
-    for _, importer in ipairs(startedImporters) do
-      pcall(function()
-        local queued = importer._queued
-        if type(queued) == "table" and queued.thread ~= nil then
-          threads[#threads + 1] = { importer = importer, thread = queued.thread }
-        end
-      end)
-      pcall(function()
-        importer:cancelQueued()
-      end)
-    end
-    if App.importer ~= nil then
-      pcall(function()
-        App.importer:cancelQueued()
-      end)
-    end
-    App._pendingImport = nil
-    for _, entry in ipairs(threads) do
-      for _ = 1, 200 do
-        pcall(function()
-          entry.importer:update()
-        end)
-        local ok, running = pcall(entry.thread.isRunning, entry.thread)
-        if not ok or running ~= true then
-          break
-        end
-        pcall(love.timer.sleep, 0.01)
-      end
-    end
-    for _, importer in ipairs(startedImporters) do
-      for _ = 1, 8 do
-        pcall(function()
-          importer:update()
-        end)
-      end
-    end
-    if App.importer ~= nil then
-      for _ = 1, 8 do
-        pcall(function()
-          App.importer:update()
-        end)
-      end
-    end
-  end
-  local ok, err = xpcall(function()
-    for _, kind in ipairs({ "path", "drop" }) do
-      local script = { status = "pending", barrier = 7, imports = 0 }
-      local service = {}
-      function service:quiesce(_)
-        return script.barrier
-      end
-      function service:barrierStatus(_, _)
-        return script.status
-      end
-      function service:importSource(_, _)
-        script.imports = script.imports + 1
-        return true
-      end
-      function service:update() end
-      function service:setExecutionPolicy() end
-      App.state = nil
-      App._cacheLoading = false
-      App.service = service
-      App.epoch = 3
-      App.pendingQuiesce = nil
-      App.importer = nil
-      App.selectedVersionId = nil
-      App._importReceipt = nil
-      App._rebindVersionId = nil
-      App._bootBlockedVersionId = nil
-      App.pairIndex = nil
-      calls = {}
-      if kind == "path" then
-        App._beginImportPath("/user/soulsilver.nds")
-      else
-        App.filedropped(dropStub())
-      end
-      Assert.equal(
-        getmetatable(App.state),
-        CachePreparationState,
-        "the pending barrier holds a visible wait for a " .. kind
-      )
-      Assert.equal(App.state.kind, "quiescence", "the wait guards source closure")
-      local waiting = captureCopy(function()
-        App.state:draw()
-      end)
-      Assert.isTrue(
-        waiting:find("soulsilver.nds", 1, true) ~= nil,
-        "the waiting card names the pending file before admission, got: " .. waiting
-      )
-      Assert.equal(#calls, 0, "no source read runs while the barrier is pending")
-      App.update(0.016)
-      Assert.equal(
-        getmetatable(App.state),
-        CachePreparationState,
-        "the unacknowledged barrier keeps the wait for a " .. kind
-      )
-      Assert.equal(#calls, 0, "the held wait still reads nothing")
-      script.status = "ready"
-      App.update(0.016)
-      Assert.equal(#calls, 0, "admission alone never reads before the receipt is painted")
-      local admitted = captureCopy(function()
-        App.draw()
-      end)
-      Assert.isTrue(
-        admitted:find("soulsilver.nds", 1, true) ~= nil,
-        "the admitted receipt still names the file, got: " .. admitted
-      )
-      App.update(0.016)
-      Assert.equal(#calls, 0, "the render thread never reads the " .. kind .. " source")
-      noteStartedImporter()
-      local owned = App.importer
-      if owned ~= nil then
-        local worker = nil
-        pcall(function()
-          local queued = owned._queued
-          if type(queued) == "table" then
-            worker = queued.thread
-          end
-        end)
-        pcall(function()
-          owned:cancelQueued()
-        end)
-        if worker ~= nil then
-          for _ = 1, 200 do
-            pcall(function()
-              owned:update()
-            end)
-            local okWorker, running = pcall(worker.isRunning, worker)
-            if not okWorker or running ~= true then
-              break
-            end
-            pcall(love.timer.sleep, 0.01)
-          end
-        end
-        for _ = 1, 8 do
-          pcall(function()
-            owned:update()
-          end)
-        end
-      end
-      App._pendingImport = nil
-      App.importer = nil
-    end
-    do
-      local script = { status = "pending", barrier = 11, imports = 0 }
-      local service = {}
-      function service:quiesce(_)
-        return script.barrier
-      end
-      function service:barrierStatus(_, _)
-        return script.status
-      end
-      function service:importSource(_, _)
-        script.imports = script.imports + 1
-        return true
-      end
-      function service:update() end
-      App.state = nil
-      App.service = service
-      App.epoch = 5
-      App.pendingQuiesce = nil
-      App.importer = nil
-      App.selectedVersionId = nil
-      App._importReceipt = nil
-      App._rebindVersionId = nil
-      App._bootBlockedVersionId = nil
-      App.pairIndex = nil
-      calls = {}
-      App.filedropped(dropStub())
-      Assert.equal(getmetatable(App.state), CachePreparationState, "the cancelled attempt starts behind its barrier")
-      App.state:keypressed("escape")
-      App.update(0.016)
-      Assert.isNil(App.pendingQuiesce, "escape releases the pending barrier")
-      Assert.equal(#calls, 0, "a cancelled wait never starts its worker")
-      noteStartedImporter()
-    end
-  end, debug.traceback)
-  retireStartedImporters()
-  restoreAll()
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- A loading presentation that records which generated reader adopted it.
-local function recordingAdopter()
-  local presentation = { adoptions = 0, adoptedFs = nil, disposals = 0 }
-  function presentation:update() end
-  function presentation:resize() end
-  function presentation:draw() end
-  function presentation:dispose()
-    self.disposals = self.disposals + 1
-  end
-  function presentation:adoptGeneratedAssets(cacheFs)
-    self.adoptions = self.adoptions + 1
-    self.adoptedFs = cacheFs
-    return true
-  end
-  return presentation
-end
-
--- The retained wait before the title draws the presented art from the selected
--- epoch's installed generated view: before that view exists it stays on the
--- built-in art, and every later adoption hands over the installed reader
--- itself instead of reopening a physical generated root.
-function T.loading_art_comes_from_the_installed_generated_view()
-  local CacheService = require("app.src.CacheService")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local SnapshotBootFixture = require("tests.support.SnapshotBootFixture")
-  local Loading = require(LOADING_MODULE)
-  local savedNew = Loading.new
-  local loading = recordingAdopter()
-  Loading.new = function()
-    return loading
-  end
-  local originalForVersion = CacheFs.forVersion
-  local physicalOpens = 0
-  rawset(CacheFs, "forVersion", function(_)
-    physicalOpens = physicalOpens + 1
-    return nil, "a physical generated root serves no resident payloads"
-  end)
-  local ok, err = xpcall(function()
-    local host = newChannelHost()
-    local service = CacheService.new({ thread = host })
-    local epoch = assert(service:select({ versionId = "heartgold" }))
-    assert(service:requestBootSource(epoch))
-    service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
-    service:update()
-    local script = { fired = 0 }
-    local state = CachePreparationState.new({
-      kind = "boot-source",
-      epoch = epoch,
-      service = service,
-      getAssetReader = installedReader(service, epoch),
-      versionId = "heartgold",
-      pairIndex = 5,
-      isCurrent = function()
-        return true
-      end,
-      onReady = function()
-        script.fired = script.fired + 1
-      end,
-      onCancel = function() end,
-    })
-    Assert.equal(
-      physicalOpens,
-      0,
-      "the boot wait must draw from the installed generated view, never reopen a physical generated root"
-    )
-    Assert.equal(loading.adoptions, 0, "built-in art is used while the epoch has installed nothing")
-    local identity = SnapshotBootFixture.identity()
-    SnapshotBootFixture.install(service, {
-      epoch = epoch,
-      identity = identity,
-      sequence = 1,
-      initial = true,
-      entries = {},
-    })
-    service:update()
-    local installedReader = assert(service:getCacheFs(epoch), "the installed epoch exposes its generated view")
-    state:update(0.016)
-    service:update()
-    local walkerId = assert(walkerCommandId(host, epoch), "the wait demands the selected pair")
-    service:injectReply({
-      op = "request-result",
-      epoch = epoch,
-      requestId = walkerId,
-      state = "ready",
-      requiredSequence = 1,
-    })
-    service:update()
-    state:update(0.016)
-    Assert.equal(loading.adoptions, 1, "the ready pair is adopted once")
-    Assert.isTrue(loading.adoptedFs == installedReader, "the adopted art reads the installed generated view")
-    Assert.equal(physicalOpens, 0, "adoption never reopens a physical generated root")
-    Assert.equal(script.fired, 1, "the admitted wait transfers its presentation")
-    state:dispose()
-    service:shutdown()
-  end, debug.traceback)
-  Loading.new = savedNew
-  rawset(CacheFs, "forVersion", originalForVersion)
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- A loading presentation that records which reader adopted the generated art.
-local function adoptedReaderPresentation()
-  local presentation = { adoptions = 0, adoptedFs = nil, disposals = 0 }
-  function presentation:update() end
-  function presentation:resize() end
-  function presentation:draw() end
-  function presentation:dispose()
-    self.disposals = self.disposals + 1
-  end
-  function presentation:adoptGeneratedAssets(cacheFs)
-    self.adoptions = self.adoptions + 1
-    self.adoptedFs = cacheFs
-    return true
-  end
-  return presentation
-end
-
--- The boot wait adopts the selected epoch's overlay reader through its own
--- selected-reader callback, so the first generated art frame already reflects an
--- ordered package selection. The installed base view is not consulted directly:
--- a boot that read it would silently drop the selection's overrides.
-function T.boot_artifact_reads_the_selected_overlay_through_its_reader_callback()
-  local Loading = require(LOADING_MODULE)
-  local savedNew = Loading.new
-  local loading = adoptedReaderPresentation()
-  Loading.new = function()
-    return loading
-  end
-  local ok, err = xpcall(function()
-    local script = { ready = true, walkerReady = true }
-    local service = bootService(script)
-    service.getCacheFs = function()
-      error("the boot wait must read the selected epoch's overlay, not the installed base view", 0)
-    end
-    local selected = { versionId = "heartgold", overlay = true }
-    local asks = 0
-    local installed = false
-    local state = bootWait(script, {
-      pairIndex = 5,
-      getAssetReader = function()
-        asks = asks + 1
-        if not installed then
-          return nil
-        end
-        return selected
-      end,
-    })
-    Assert.equal(loading.adoptions, 0, "an epoch whose base installation is pending keeps its built-in art")
-    installed = true
-    state:update(0.016)
-    state:update(0.016)
-    Assert.isTrue(asks >= 1, "the boot wait asks its selected-reader callback for the overlay")
-    Assert.equal(loading.adoptions, 1, "the ready pair is adopted once")
-    Assert.isTrue(loading.adoptedFs == selected, "the adopted art reads the selected overlay reader")
-    Assert.equal(script.fired, 1, "the boot gate still transfers on readiness")
-    state:dispose()
-  end, debug.traceback)
-  Loading.new = savedNew
-  if not ok then
-    error(err, 0)
-  end
-end
-
--- A selection that cannot compose its reader is not "no art yet": the failure
--- stays visible through the wait's boot error path, the built-in art never
--- replaces the selected content, and the admitted gate never transfers a boot
--- that would silently ignore the user's packages.
-function T.selected_reader_failure_latches_instead_of_builtin_art()
-  local Errors = require("libs.errors.src.Errors")
-  local Loading = require(LOADING_MODULE)
-  local savedNew = Loading.new
-  local loading = adoptedReaderPresentation()
-  Loading.new = function()
-    return loading
-  end
-  local ok, err = xpcall(function()
-    local script = { ready = true, walkerReady = true }
-    local raised, failure = pcall(Errors.raise, "MOD_PACKAGE_INCOMPATIBLE", "one.zip was built for another game", {
-      package = "one.zip",
-    })
-    Assert.isFalse(raised, "the fixture raises one typed selection failure")
-    local state = bootWait(script, {
-      pairIndex = 5,
-      getAssetReader = function()
-        error(failure, 0)
-      end,
-    })
-    state:update(0.016)
-    state:update(0.016)
-    Assert.notNil(state.error, "the selection failure surfaces on the wait")
-    Assert.isTrue(
-      tostring(state.error):find("another game", 1, true) ~= nil,
-      "the boot failure names the rejected package: " .. tostring(state.error)
-    )
-    Assert.equal(loading.adoptions, 0, "built-in art never stands in for a failed selection")
-    Assert.equal(script.fired, 0, "a failed selection never transfers a boot")
-    state:dispose()
-  end, debug.traceback)
-  Loading.new = savedNew
-  if not ok then
-    error(err, 0)
-  end
 end
 
 return { tests = T }

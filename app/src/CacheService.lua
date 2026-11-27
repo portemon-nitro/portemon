@@ -1453,7 +1453,8 @@ end
 
 -- Join the controller thread exactly once. Process shutdown alone joins;
 -- selection retirement never does. Unsent interest is discarded: shutdown
--- is final and nothing after it can observe this process.
+-- is final and nothing after it can observe this process. Quit uses this
+-- same ordered path and waits for termination before releasing owners.
 function CacheService:shutdown()
   if self._joined then
     return

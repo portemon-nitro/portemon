@@ -8,6 +8,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local NewGameInitialization = require("game.hgss.src.newgame.NewGameInitialization")
 local FirstPlayCachePreparation = require("game.hgss.src.newgame.FirstPlayCachePreparation")
+local SaveLocationPreparation = require("game.hgss.src.field.SaveLocationPreparation")
 local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparationState")
 local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
 local FieldState = require("game.hgss.src.field.FieldState")
@@ -188,6 +189,7 @@ local function installRoutes(options, game, saveStore, versionId)
       createLoader = entryLoader,
       enterField = enterField,
       onCancel = returnToMainMenu,
+      displayContext = displayContext,
     }))
   end
 
@@ -273,6 +275,7 @@ local function installRoutes(options, game, saveStore, versionId)
       derivedAssets = derivedAssets,
       onReady = bootOakIntro,
       onCancel = returnToMainMenu,
+      displayContext = displayContext,
     }))
   end
 
@@ -297,6 +300,12 @@ end
 ---@return FirstPlayCachePreparation
 function HgssGame.newFirstPlayCachePreparation(options)
   return FirstPlayCachePreparation.new(options)
+end
+
+---@param options { versionId: string, entryLocation: { mapId: integer, fieldX: integer, fieldZ: integer }, derivedAssets: table<string, function> }
+---@return SaveLocationPreparation
+function HgssGame.newSaveLocationPreparation(options)
+  return SaveLocationPreparation.new(options)
 end
 
 ---@param options HgssGameOptions

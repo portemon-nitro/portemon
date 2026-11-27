@@ -1623,7 +1623,8 @@ end
 
 -- Stop accepting work, return leases for jobs the worker never received, ask
 -- it to stop and join it, then return leases pinned by physical jobs and
--- discard unclaimed replies.
+-- discard unclaimed replies. Quit uses this same ordered path and waits for
+-- termination before the decoded owner is released.
 -- Idempotent: the worker is created and joined at most once, and a queue that
 -- never dispatched never creates one. The borrowed decoded owner is never
 -- cleared here; its lifetime belongs to the selected runtime.

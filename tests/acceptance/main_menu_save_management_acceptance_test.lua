@@ -22,10 +22,26 @@ local T = {
 local namespaceSerial = 0
 local templateRecord
 
-local function isolatedBackend(namespace)
+local function isolatedBackend(namespace, modtimes)
   local fs = love.filesystem
   local function map(path)
     return namespace .. "/" .. path:gsub("^saves/", "")
+  end
+  local function getInfo(path)
+    local info = fs.getInfo(map(path))
+    if modtimes == nil or type(info) ~= "table" or info.type ~= "file" then
+      return info
+    end
+    local saveId = path:match("^saves/games/(save%-%d+)%.lua$")
+    if saveId == nil or modtimes[saveId] == nil then
+      return info
+    end
+    local controlled = {}
+    for key, value in pairs(info) do
+      controlled[key] = value
+    end
+    controlled.modtime = modtimes[saveId]
+    return controlled
   end
   return {
     write = function(_, path, data)
@@ -35,7 +51,7 @@ local function isolatedBackend(namespace)
       return fs.read(map(path))
     end,
     getInfo = function(_, path)
-      return fs.getInfo(map(path))
+      return getInfo(path)
     end,
     createDirectory = function(_, path)
       return fs.createDirectory(map(path))
@@ -150,7 +166,7 @@ end
 local function withMenu(count, width, height, options, fn)
   namespaceSerial = namespaceSerial + 1
   local namespace = "acceptance/main-menu/" .. namespaceSerial
-  local backend = isolatedBackend(namespace)
+  local backend = isolatedBackend(namespace, options and options.modtimes)
   local saveFs = SaveFs.global(backend)
   local saveIds = seedRecords(saveFs, count, options and options.corruptSave)
   local results = {}
@@ -301,7 +317,9 @@ function T.tests.zero_and_one_save_boots_choose_the_correct_initial_continue_pat
     local initial = view(menu)
     Assert.equal(initial.focusedId, saveIds[1], "an existing save must be the default focus")
     Assert.equal(#initial.saves, 1, "save records must be separate from global actions")
-    Assert.equal(#initial.globalActions, 1, "New Game must remain a separate global action")
+    Assert.equal(#initial.globalActions, 2, "New Game and Back to game selection remain separate global actions")
+    Assert.equal(initial.globalActions[1].id, "new-game")
+    Assert.equal(initial.globalActions[2].id, "game-selection")
     menu:keypressed("return")
     Assert.equal(results[1].kind, "continue", "save confirmation must publish Continue")
     Assert.equal(results[1].saveId, saveIds[1])
@@ -503,6 +521,137 @@ function T.tests.scroll_offset_stays_logical_across_a_host_scale_change()
     press(menu, deleteRect.x + deleteRect.width / 2, deleteRect.y + deleteRect.height / 2)
     Assert.isNil(view(menu).layout.saves.cards[target], "the confirmation delete button must delete once")
     Assert.deepEqual(results, {}, "deletion must not publish a route result")
+  end)
+end
+
+function T.tests.two_action_footer_keeps_exact_edges_and_direct_pointer_activation()
+  local versionId = AcceptanceHarness.defaultVersion()
+  if templateRecord == nil then
+    templateRecord = freshRecord(versionId)
+  end
+
+  withMenu(0, 320, 180, nil, function(menu, _, results)
+    local published = view(menu)
+    local newGame = assert(published.layout.global.actions["new-game"])
+    local back = assert(published.layout.global.actions["game-selection"])
+    Assert.equal(newGame.y, back.y, "the footer keeps one row at the compact native size")
+    Assert.equal(newGame.height, back.height, "the footer keeps one height")
+    Assert.equal(back.width, back.height, "Return is a square at the compact native size")
+    Assert.isTrue(back.x + back.width <= newGame.x, "Return sits left of New Game")
+    Assert.isTrue(
+      published.layout.saves.viewport.y + published.layout.saves.viewport.height <= newGame.y,
+      "the save viewport stays above the footer"
+    )
+
+    menu:keypressed("right")
+    Assert.equal(view(menu).focusedId, "new-game", "Right with no saves must stay on New Game")
+    menu:keypressed("left")
+    Assert.equal(view(menu).focusedId, "game-selection", "Left from New Game enters Return")
+    for _, key in ipairs({ "left", "up", "down" }) do
+      menu:keypressed(key)
+      Assert.equal(view(menu).focusedId, "game-selection", "Return must ignore " .. key)
+    end
+    menu:keypressed("right")
+    Assert.equal(view(menu).focusedId, "new-game", "Right exits Return")
+    pressGamepad(menu, "dpleft")
+    Assert.equal(view(menu).focusedId, "game-selection", "the controller route enters Return from the left")
+    pressGamepad(menu, "a")
+    local backX, backY = center(back)
+    press(menu, backX, backY)
+    Assert.equal(#results, 2, "keyboard and pointer each activate Return once")
+    for _, result in ipairs(results) do
+      Assert.equal(result.kind, "game_selection", "Return must not publish Quit or a save result")
+    end
+  end)
+
+  withMenu(2, 640, 480, nil, function(menu, _, results)
+    local published = view(menu)
+    local newGame = assert(published.layout.global.actions["new-game"])
+    local back = assert(published.layout.global.actions["game-selection"])
+    Assert.equal(newGame.y, back.y, "both actions stay on one row with saves")
+    Assert.equal(back.width, back.height, "Return stays square with saves")
+    Assert.isTrue(back.x + back.width <= newGame.x, "Return stays left of New Game with saves")
+    local remembered = published.focusedId
+    Assert.isTrue(remembered ~= "new-game", "setup must start on a save")
+
+    menu:keypressed("left")
+    Assert.equal(view(menu).focusedId, "new-game", "Left from a save body reaches New Game")
+    menu:keypressed("left")
+    Assert.equal(view(menu).focusedId, "game-selection", "Left from New Game reaches Return with saves")
+    for _, key in ipairs({ "up", "down", "left" }) do
+      menu:keypressed(key)
+      Assert.equal(view(menu).focusedId, "game-selection", "Return must not reach a save via " .. key)
+    end
+    menu:keypressed("right")
+    Assert.equal(view(menu).focusedId, "new-game", "Right exits Return with saves")
+    menu:keypressed("right")
+    Assert.equal(view(menu).focusedId, remembered, "Right restores the remembered save")
+
+    local backX, backY = center(back)
+    press(menu, backX, backY)
+    Assert.equal(#results, 1, "direct pointer activation emits one result from any focus")
+    Assert.equal(results[1].kind, "game_selection", "the pointer route keeps the existing result kind")
+  end)
+end
+
+function T.tests.save_order_follows_controlled_payload_modification_time()
+  local versionId = AcceptanceHarness.defaultVersion()
+  if templateRecord == nil then
+    templateRecord = freshRecord(versionId)
+  end
+
+  local modtimes = {
+    ["save-00000001"] = 300,
+    ["save-00000002"] = 100,
+    ["save-00000003"] = 200,
+  }
+  withMenu(3, 640, 480, { modtimes = modtimes }, function(menu, _, results, saveFs)
+    local function publishedIds()
+      local published = view(menu)
+      local ids = {}
+      for _, item in ipairs(published.saves) do
+        ids[#ids + 1] = item.saveId
+      end
+      return ids, published
+    end
+
+    local ids, initial = publishedIds()
+    Assert.deepEqual(ids, {
+      "save-00000001",
+      "save-00000003",
+      "save-00000002",
+    }, "saved cards follow descending payload modification time")
+    Assert.equal(initial.focusedId, "save-00000001", "the newest saved card starts focused")
+
+    menu:keypressed("down")
+    menu:keypressed("down")
+    local focusedBefore = view(menu).focusedId
+    Assert.isTrue(focusedBefore ~= "new-game", "navigation setup must keep focus on a save")
+    modtimes["save-00000002"] = 999
+    menu:refresh()
+    local reordered, refreshed = publishedIds()
+    Assert.deepEqual(reordered, {
+      "save-00000002",
+      "save-00000001",
+      "save-00000003",
+    }, "a refresh reorders to the new last-saved card")
+    Assert.deepEqual(
+      refreshed.focus,
+      { region = "saves", saveId = focusedBefore, lane = "body" },
+      "a still-present focused save keeps its semantic identity across reordering"
+    )
+
+    menu:keypressed("right")
+    menu:keypressed("return")
+    menu:keypressed("down")
+    menu:keypressed("return")
+    menu:keypressed("right")
+    menu:keypressed("return")
+    local afterDelete = view(menu)
+    Assert.isNil(afterDelete.layout.saves.cards["save-00000002"], "confirmation deletes the focused record")
+    Assert.isFalse(saveFs:exists("games/save-00000002.lua", "file"), "the removed payload leaves the store")
+    Assert.equal(afterDelete.focusedId, "save-00000001", "deletion keeps the existing adjacent fallback")
+    Assert.deepEqual(results, {}, "save management never publishes a route result")
   end)
 end
 

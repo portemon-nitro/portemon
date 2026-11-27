@@ -5,6 +5,7 @@
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
 local OakIntroLayout = require("game.hgss.src.newgame.OakIntroLayout")
@@ -186,9 +187,8 @@ OakIntroState.__index = OakIntroState
 local SOURCE_FRAME_DURATION = SourceTick.DT
 local SOURCE_FRAME_EPSILON = 1e-14
 
-local function resolvePixelSurface(width, height)
-  local bounds = { x = 0, y = 0, width = width, height = height }
-  local preferredScale = math.max(1, math.floor(height / NativeDisplay.HEIGHT + 0.5))
+local function resolvePixelSurface(bounds)
+  local preferredScale = math.max(1, math.floor(bounds.height / NativeDisplay.HEIGHT + 0.5))
   local outputScale = PixelScale.fitPreferred(bounds, NativeDisplay.WIDTH, NativeDisplay.HEIGHT, preferredScale)
   return PixelScale.cover(bounds, outputScale)
 end
@@ -554,7 +554,10 @@ end
 function OakIntroState:view()
   local view = self.controller:view()
   ---@cast view OakIntroStateView
-  local surface = resolvePixelSurface(self.width, self.height)
+  local measurement = assert(self:_measured(), "Oak presentation needs its display facts")
+  local selected = ApplicationLayout.selectSurfaces(measurement)
+  local bounds = assert(selected.primary.usableBounds, "Oak presentation needs usable bounds")
+  local surface = resolvePixelSurface(bounds)
   view.pixelSurface = surface
   local rootScale = assert(surface.placement.pixelScale, "Oak root surface keeps its integer physical scale")
   assert(rootScale == math.floor(rootScale), "Oak root compositing keeps an integer physical scale")
@@ -569,7 +572,6 @@ function OakIntroState:view()
   if view.phase == "name_edit" then
     local session = self:_ensureNamingSession()
     local snapshot = assert(view.namingScreen, "Oak name editing requires its Naming Screen snapshot")
-    local measurement = assert(self:_measured(), "Oak naming needs its display facts")
     local resolved
     local ok, planOrErr = pcall(function()
       return session:resolve(measurement, snapshot)

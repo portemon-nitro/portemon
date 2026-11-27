@@ -3,8 +3,9 @@
 local WindowConfig = require("game.src.WindowConfig")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
+local RomArchive = require("romdump.src.source.RomArchive")
+local RomIconRecovery = require("romdump.src.source.RomIconRecovery")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
-local CacheArchive = require("romdump.src.build.CacheArchive")
 local CacheService = require("app.src.CacheService")
 local AudioPreferences = require("app.src.AudioPreferences")
 local HgssGame = require("game.hgss.src.HgssGame")
@@ -13,21 +14,34 @@ local SaveEditorState = require("app.src.saveeditor.SaveEditorState")
 local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
 local ModPackages = require("app.src.ModPackages")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
-local ImportState = require("app.src.launcher.ImportState")
-local VersionSelectState = require("app.src.launcher.VersionSelectState")
+local BootIntroState = require("app.src.launcher.BootIntroState")
+local GameSelectState = require("app.src.launcher.GameSelectState")
+local LauncherAudio = require("app.src.launcher.LauncherAudio")
+local LauncherRenderer = require("app.src.launcher.LauncherRenderer")
+local TouchGamepad = require("app.src.input.TouchGamepad")
 local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
-local EditionPreference = require("app.src.launcher.EditionPreference")
+local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
+local Errors = require("libs.errors.src.Errors")
 local StartupTitleState = require("app.src.launcher.StartupTitleState")
 local StartupAudioSession = require("app.src.audio.StartupAudioSession")
-local CacheFs = require("libs.storage.src.CacheFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+local DisplayContext = require("libs.ui.src.DisplayContext")
+local LauncherText = require("app.src.launcher.LauncherText")
 
 -- Idle retention for the selected epoch's decoded CPU owner: charged, shared
 -- decoded results, never the resident base bytes themselves.
 local ASSET_RUNTIME_IDLE_BYTES = 64 * 1024 * 1024
+
+-- App owns the outer host clear only while the boot overlay covers it.
+local BOOT_BACKGROUND_COLOR = { 1, 1, 1, 1 }
+-- Visible-paint dwell bounds for the boot overlay: automatic admission waits
+-- out the minimum, while an explicit button/pointer skip still retires it at
+-- once and the hard cap still guarantees progress.
+local BOOT_MIN_DURATION = 3
+local BOOT_MAX_DURATION = 5
 
 ---@class App
 ---@field opts AppOptions
@@ -38,20 +52,33 @@ local ASSET_RUNTIME_IDLE_BYTES = 64 * 1024 * 1024
 ---@field epoch integer latest borrowed controller epoch, monotonically increasing
 ---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
 ---@field pairIndex integer? selected-epoch walking pair, chosen once per selection
----@field _importReceipt string? received filename latched synchronously on drop/picker input
----@field _pendingImport table<string, unknown>? deferred import descriptor awaiting its receipt paint
+---@field _importAttempt table<string, unknown>? one finite native/source import owner
+---@field _iconRecovery table<string, unknown>? one optional read-only banner recovery job
+---@field _iconRepairAttempted table<string, boolean>
+---@field _pendingIconData { romSha1: string, png: love.FileData }?
+---@field _bootIntro BootIntroState? foreground-only presentation over the selected epoch
+---@field _bootCandidate AppBootCandidate?
 ---@field selectedVersionId string? currently selected game version
----@field _rebindVersionId string? version a pending raw drop is expected to supply back
----@field _bootBlockedVersionId string? version a blocked boot refuses to switch away from
----@field importPickerError string? latest recoverable picker or preference detail
----@field preferenceError string? last-played preference write diagnostic
+---@field _selectedEntryLocation { mapId: integer, fieldX: integer, fieldZ: integer }? transient copied save hint
+---@field _saveLocationWarmup { epoch: integer, versionId: string, preparation: table<string, function> }?|nil
 ---@field _startupWarmup { epoch: integer, versionId: string, preparation: table<string, function> }?|nil
----@field startupWarmupError string? background first-play diagnostic, never a menu gate
+---@field startupWarmupError string? background preparation diagnostic, never a menu gate
+---@field launcherRenderer LauncherRenderer?|nil process-owned launcher painter
+---@field _touchGamepad TouchGamepad?|nil Android-only borrowed virtual input source
+---@field _safeRect { x: number, y: number, width: number, height: number }? latest published native safe rectangle
+---@field _touchGamepadSuspended boolean host is temporarily nonpresentable
+---@field _suspendedTouchIds table<unknown, boolean> touch lifetimes first seen while nonpresentable
+---@field launcherAudio LauncherAudio?|nil process-owned launcher cue owner
+---@field _bootPending boolean? metadata decision deferred until the first boot paint
+---@field _displayContext DisplayContext? borrows App's published native facts
+---@field _foreground boolean
+---@field _realTouches table<unknown, boolean>
 ---@field startupAudioSession StartupAudioSession?|nil optional selected-version title/menu audio owner
----@field _assetRuntime AppAssetRuntime?|nil one selected-epoch CPU runtime shared by every composition
 ---@field startupAudioError string?|nil non-gating audio diagnostic
+---@field _assetRuntime AppAssetRuntime?|nil one selected-epoch CPU runtime shared by every composition
 ---@field audioPreferences table<string, function>?|nil process-owned app-wide volume port, retained across saves and versions
 ---@field _swallowedPointers table<string, boolean> pointer releases owned by startup during a transfer
+---@field _bootSwallowedInputs table<string, boolean> held initiating boot inputs consumed before a route
 ---@field drawableWidth number?
 ---@field drawableHeight number?
 ---@field pixelRatio number?
@@ -61,6 +88,17 @@ local App = {}
 ---@field test boolean?
 ---@field dev boolean?
 
+---@class AppSaveMetadata
+---@field versionId string?
+---@field modifiedAt number?
+---@field entryLocation { mapId: integer, fieldX: integer, fieldZ: integer }?
+---@field hasError boolean
+
+---@class AppBootCandidate
+---@field versionId string
+---@field entryLocation { mapId: integer, fieldX: integer, fieldZ: integer }?
+---@field ready boolean
+
 ---@class AppAssetRuntime
 ---@field epoch integer selected controller epoch the runtime was installed for
 ---@field cacheFs table<string, unknown> selected epoch's generated reader: the installed view overlaid by the ordered packages
@@ -68,20 +106,100 @@ local App = {}
 ---@field decoded ResidentAssetCache shared decoded CPU owner
 ---@field preparationQueue AssetPreparationQueue shared preparation queue
 
--- Version registration only lists candidates for the boot gate: every
--- selection waits for source readiness before the menu, first play, or
--- retail. A registered source, or a derived-cache snapshot on disk, makes a
--- version a candidate; neither fact proves the cache usable, so the
--- controller still decides the boot route. Neither check opens or hashes
--- the ROM.
-local function readyVersions()
-  local out = {}
-  for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) or CacheArchive.recoverableFileName(versionId) ~= nil then
-      out[#out + 1] = versionId
+-- Managed source presence is the product installation fact. It never opens or
+-- hashes an archive and never consults caches or legacy external bindings.
+local function managedInstalled(versionId)
+  local info = GameVersion.info(versionId)
+  return type(info) == "table" and type(info.sha1) == "string" and RomArchive.recoverablePath(info.sha1) ~= nil
+end
+
+---@param location unknown
+---@return { mapId: integer, fieldX: integer, fieldZ: integer }?
+local function copyLocation(location)
+  if type(location) ~= "table" then
+    return nil
+  end
+  return { mapId = location.mapId, fieldX = location.fieldX, fieldZ = location.fieldZ }
+end
+
+---@param versionId string
+---@return boolean
+local function supported(versionId)
+  for _, candidate in ipairs(GameVersion.ORDER) do
+    if candidate == versionId then
+      return true
     end
   end
-  return out
+  return false
+end
+
+local EDITION_DISPLAY_NAMES = {
+  heartgold = "Pokémon HeartGold",
+  soulsilver = "Pokémon SoulSilver",
+}
+
+local function gameLabel(versionId)
+  local displayName = EDITION_DISPLAY_NAMES[versionId]
+  if displayName ~= nil then
+    return displayName
+  end
+  local ok, info = pcall(GameVersion.info, versionId)
+  if ok and type(info) == "table" then
+    return info.label or info.displayName or versionId
+  end
+  return versionId
+end
+
+---@return AppSaveMetadata[]?
+---@return unknown?
+local function readSaveMetadata()
+  local store = GameSaveStore.new(SaveFs.global())
+  local ok, entries = pcall(store.listMetadata, store)
+  if not ok then
+    return nil, entries
+  end
+  assert(type(entries) == "table", "save metadata listing must return an array")
+  ---@type AppSaveMetadata[]
+  local detached = {}
+  for index, entry in ipairs(entries) do
+    detached[index] = {
+      versionId = entry.versionId,
+      modifiedAt = entry.modifiedAt,
+      entryLocation = copyLocation(entry.entryLocation),
+      hasError = entry.error ~= nil,
+    }
+  end
+  return detached, nil
+end
+
+---@param entries AppSaveMetadata[]?
+---@param versionId string?
+---@return AppBootCandidate?
+local function newestSave(entries, versionId)
+  if type(entries) ~= "table" then
+    return nil
+  end
+  local newest, newestTime = nil, nil
+  for _, entry in ipairs(entries) do
+    local modifiedAt = entry.modifiedAt
+    if
+      not entry.hasError
+      and type(entry.versionId) == "string"
+      and supported(entry.versionId)
+      and (versionId == nil or entry.versionId == versionId)
+      and type(modifiedAt) == "number"
+      and modifiedAt == modifiedAt
+      and math.abs(modifiedAt) < math.huge
+      and (newestTime == nil or modifiedAt > newestTime)
+    then
+      newest, newestTime = entry, modifiedAt
+    end
+  end
+  if newest == nil then
+    return nil
+  end
+  local newestVersionId = assert(newest.versionId, "supported save metadata names its game")
+  return { versionId = newestVersionId, entryLocation = copyLocation(newest.entryLocation) }
 end
 
 local function provisionerOptions(versionId)
@@ -126,16 +244,87 @@ function App._ensureService()
   App.service = CacheService.new()
 end
 
--- Retire the interactive import session without blocking: a queued worker is
--- told to abandon its registration gate, late results are invalidated, and
--- the pending first-paint descriptor is dropped so no worker starts later.
+local IMPORT_UUID = "%x%x%x%x%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%-%x%x%x%x%x%x%x%x%x%x%x%x"
+
+-- Called once at process startup, before an importer can own a stage. Only
+-- bridge-shaped temporary names are eligible; canonical sources and saves are
+-- never scanned.
+function App._cleanupAbandonedImports()
+  local info = love.filesystem.getInfo("imports")
+  if info == nil or info.type ~= "directory" then
+    return
+  end
+  for _, name in ipairs(love.filesystem.getDirectoryItems("imports")) do
+    local path = "imports/" .. name
+    local entry = love.filesystem.getInfo(path)
+    if
+      entry ~= nil
+      and entry.type == "file"
+      and (
+        name:match("^(" .. IMPORT_UUID .. ")%.nds$")
+        or name:match("^(" .. IMPORT_UUID .. ")%.zip$")
+        or name:match("^(" .. IMPORT_UUID .. ")%.part$")
+      )
+    then
+      love.filesystem.remove(path)
+    end
+  end
+end
+
+function App._finishBootIntro(stopImmediately)
+  local intro = App._bootIntro
+  if intro == nil then
+    return
+  end
+  App._bootIntro = nil
+  love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
+  if App.launcherAudio ~= nil then
+    App.launcherAudio:fadeBoot(stopImmediately == true and 0 or 0.08)
+  end
+  intro:dispose()
+end
+
+function App._releaseIconRecovery()
+  local job = App._iconRecovery
+  App._iconRecovery = nil
+  if job ~= nil then
+    job:dispose()
+  end
+  local pending = App._pendingIconData
+  App._pendingIconData = nil
+  if pending ~= nil then
+    pending.png:release()
+  end
+end
+
+-- Cancellation is an App effect, never a leaf status guess. A committed
+-- worker remains owned until its terminal result; an outstanding source
+-- barrier likewise survives the canceled view.
 function App._cancelImport()
+  local attempt = App._importAttempt
+  if attempt == nil then
+    return
+  end
   local importer = App.importer
-  App.importer = nil
-  App._pendingImport = nil
-  if importer ~= nil and type(importer.cancelQueued) == "function" then
+  local status = importer ~= nil and importer.status and importer:status() or nil
+  local cancellable = attempt.mode == "choose"
+    or attempt.mode == "picker"
+    or attempt.mode == "receipt"
+    or attempt.mode == "draining"
+    or attempt.mode == "error"
+    or (status ~= nil and status.canCancel == true)
+  if not cancellable then
+    return
+  end
+  if attempt.descriptor ~= nil and attempt.descriptor.kind == "temporary" and not attempt.started then
+    love.filesystem.remove(attempt.descriptor.value)
+  end
+  if importer ~= nil and status ~= nil and status.canCancel == true then
     importer:cancelQueued()
   end
+  App.importer = nil
+  App._importAttempt = nil
+  App._showGameSelection(attempt.expectedVersionId)
 end
 
 -- Retires the selected source interest without joining controller work.
@@ -151,9 +340,12 @@ function App._retireSelection()
   App._swallowedPointers = {}
   App.pairIndex = nil
   App.splRandomState = nil
-  App._importReceipt = nil
-  App._cancelImport()
   App._releaseStartupAudio()
+  local locationWarmup = App._saveLocationWarmup
+  App._saveLocationWarmup = nil
+  if locationWarmup ~= nil then
+    locationWarmup.preparation:dispose()
+  end
   local warmup = App._startupWarmup
   App._startupWarmup = nil
   if warmup ~= nil then
@@ -165,6 +357,7 @@ function App._retireSelection()
   if provisioner then
     provisioner:dispose()
   end
+  App._selectedEntryLocation = nil
 end
 
 -- The selected epoch's one decoded CPU runtime. It exists only while the
@@ -450,6 +643,7 @@ local function stageMenu(versionId)
       elseif result.kind == "continue" then
         App._launchGameWithProvisioner(versionId, { kind = "continue", saveId = result.saveId })
       elseif result.kind == "edit" then
+        App._disposeSaveLocationWarmup()
         local provisioner = assert(App.provisioner, "save editing needs the selected provisioner")
         local ok, stateOrError = pcall(function()
           local editorRuntime =
@@ -476,6 +670,8 @@ local function stageMenu(versionId)
           error(stateOrError, 0)
         end
         App.setState(assert(stateOrError))
+      elseif result.kind == "game_selection" then
+        App._showGameSelection(versionId)
       elseif result.kind == "quit" then
         love.event.quit(0)
       end
@@ -496,7 +692,7 @@ end
 local function installMenu(versionId)
   local ok, menu = pcall(stageMenu, versionId)
   if not ok then
-    App._showVersionSelector()
+    App._showGameSelection(versionId)
     error(menu, 0)
   end
   App.setState(assert(menu))
@@ -611,6 +807,54 @@ function App._updateStartupWarmup()
   end
 end
 
+function App._disposeSaveLocationWarmup()
+  local warmup = App._saveLocationWarmup
+  App._saveLocationWarmup = nil
+  if warmup ~= nil then
+    warmup.preparation:dispose()
+  end
+end
+
+function App._maybeStartSaveLocationWarmup(versionId, epoch)
+  local location = App._selectedEntryLocation
+  if location == nil or App._saveLocationWarmup ~= nil or App.epoch ~= epoch or App.selectedVersionId ~= versionId then
+    return
+  end
+  local provisioner = App.provisioner
+  if provisioner == nil then
+    return
+  end
+  local entryLocation = assert(copyLocation(location), "a selected save location is copyable")
+  local ok, preparation = pcall(HgssGame.newSaveLocationPreparation, {
+    versionId = versionId,
+    entryLocation = entryLocation,
+    derivedAssets = provisioner:gameHost(),
+  })
+  if not ok then
+    App.startupWarmupError = tostring(preparation)
+    return
+  end
+  App._saveLocationWarmup = { epoch = epoch, versionId = versionId, preparation = preparation }
+end
+
+function App._updateSaveLocationWarmup()
+  local warmup = App._saveLocationWarmup
+  if warmup == nil then
+    return
+  end
+  if warmup.epoch ~= App.epoch or warmup.versionId ~= App.selectedVersionId then
+    App._disposeSaveLocationWarmup()
+    return
+  end
+  local ok, ready, failure = pcall(warmup.preparation.poll, warmup.preparation)
+  if not ok or failure ~= nil or ready == true then
+    if not ok or failure ~= nil then
+      App.startupWarmupError = tostring(ok and failure or ready)
+    end
+    App._disposeSaveLocationWarmup()
+  end
+end
+
 -- Cancellation restores only the menu state; the current selection and its
 -- warmup authorization remain owned by the App.
 ---@param versionId string
@@ -624,8 +868,13 @@ end
 ---@param entry table<string, unknown>
 function App._launchGameWithProvisioner(versionId, entry)
   local provisioner = assert(App.provisioner, "selection has no provisioner")
+  App._disposeSaveLocationWarmup()
   App._releaseStartupAudio()
   local runtime = assert(App._ensureAssetRuntime(App.epoch), "the retail entry needs the selected CPU runtime")
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:setTarget(nil)
+  end
+  local touchGamepad = App._touchGamepad
   local ok, gameOrError = pcall(HgssGame.new, {
     versionId = versionId,
     cacheFs = runtime.cacheFs,
@@ -643,67 +892,388 @@ function App._launchGameWithProvisioner(versionId, entry)
     development = App.opts.dev,
     derivedAssets = provisioner:gameHost(),
     splRandomState = App.splRandomState,
+    topologyProvider = touchGamepad ~= nil and function()
+      return assert(touchGamepad:topology(), "Android game entry requires published controller topology")
+    end or nil,
   })
   if not ok then
-    App._showVersionSelector()
+    App._showGameSelection(versionId)
     error(gameOrError, 0)
   end
   App.setState(assert(gameOrError))
-  local recorded, recordError = EditionPreference.recordPlayed(versionId)
-  if not recorded then
-    App.preferenceError = tostring(recordError)
-    print("Could not save the last played edition: " .. App.preferenceError)
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:setTarget(assert(gameOrError))
   end
 end
 
-function App._showVersionSelector()
-  App._rebindVersionId = nil
-  App._bootBlockedVersionId = nil
-  App.importPickerError = nil
-  App._retireSelection()
-  local ready = readyVersions()
-  if #ready == 0 then
-    App._startImport()
+function App._ensureLauncherResources()
+  if App.launcherRenderer == nil then
+    App.launcherRenderer = LauncherRenderer.new()
+  end
+  if App.launcherAudio == nil then
+    App.launcherAudio = LauncherAudio.new()
+  end
+  if App._touchGamepad == nil and love.system.getOS() == "Android" then
+    local renderer = assert(App.launcherRenderer, "Android controls require the launcher renderer")
+    ---@cast renderer TouchGamepadRenderer
+    App._touchGamepad = TouchGamepad.new(renderer)
+    App._suspendedTouchIds = {}
+    App._syncDrawableSize()
+  elseif App._touchGamepad ~= nil and love.system.getOS() ~= "Android" then
+    App._touchGamepad:setTarget(nil)
+    App._touchGamepad = nil
+    App._suspendedTouchIds = {}
+  end
+end
+
+function App._releaseLauncherResources()
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:setTarget(nil)
+    App._touchGamepad = nil
+    App._safeRect = nil
+    App._touchGamepadSuspended = false
+    App._suspendedTouchIds = {}
+  end
+  if App.launcherAudio ~= nil then
+    App.launcherAudio:dispose()
+    App.launcherAudio = nil
+  end
+  if App.launcherRenderer ~= nil then
+    App.launcherRenderer:dispose()
+    App.launcherRenderer = nil
+  end
+  App._safeRect = nil
+  App._displayContext = nil
+end
+
+---@return table<string, boolean>
+local function managedInstalledFacts()
+  local installed = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    installed[versionId] = managedInstalled(versionId)
+  end
+  return installed
+end
+
+---@param installedFacts table<string, boolean>
+---@return table<integer, table<string, string|boolean>>
+local function gameSnapshot(installedFacts)
+  local games = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    local info = GameVersion.info(versionId)
+    local installed = installedFacts[versionId] == true
+    local sha1 = type(info) == "table" and info.sha1 or nil
+    games[#games + 1] = {
+      versionId = versionId,
+      label = gameLabel(versionId),
+      installed = installed,
+      iconSha1 = installed and sha1 or nil,
+    }
+  end
+  return games
+end
+
+function App._launcherDisplayContext()
+  return DisplayContext.new({
+    graphics = {
+      getDimensions = function()
+        return App.drawableWidth, App.drawableHeight
+      end,
+      getDPIScale = function()
+        return App.pixelRatio
+      end,
+    },
+    topologyProvider = function(width, height)
+      local safe = App._safeRect or { x = 0, y = 0, width = width, height = height }
+      return {
+        surfaces = {
+          {
+            id = "main",
+            role = "world",
+            rect = { x = 0, y = 0, width = width, height = height },
+            safeRect = { x = safe.x, y = safe.y, width = safe.width, height = safe.height },
+            touch = love.system.getOS() == "Android" or love.system.getOS() == "iOS",
+          },
+        },
+      }
+    end,
+  })
+end
+
+function App._importSnapshot(attempt)
+  if attempt == nil then
+    return nil
+  end
+  local status = App.importer ~= nil and App.importer.status and App.importer:status() or nil
+  local mode = attempt.mode
+  local statusText
+  if mode == "picker" then
+    statusText = "Waiting for file picker"
+  elseif mode == "draining" then
+    statusText = "Waiting for source readers to drain…"
+  elseif mode == "receipt" then
+    statusText = "File received; preparing import"
+  elseif mode == "importing" and status ~= nil then
+    statusText = status.stageLabel or (status.state == RomImporter.STATES.READING and "Checking ROM" or "Verifying ROM")
+  elseif mode == "error" then
+    statusText = nil
+  end
+  local progress = nil
+  if mode == "importing" and status ~= nil and status.state ~= RomImporter.STATES.IDLE then
+    local value = status.progress
+    if type(value) == "number" and value == value and value > 0 and value < 1 then
+      progress = value
+    end
+  end
+  return {
+    attemptId = attempt.attemptId,
+    mode = mode,
+    expectedVersionId = attempt.expectedVersionId,
+    receipt = attempt.receipt,
+    statusText = statusText,
+    progress = progress,
+    canCancel = attempt.canCancel == true,
+    pickerAvailable = attempt.pickerAvailable == true,
+    error = attempt.error,
+    elapsed = attempt.elapsed or 0,
+  }
+end
+
+---@param installedFacts table<string, boolean>
+local function refreshRootIcons(installedFacts)
+  local renderer = App.launcherRenderer
+  if renderer == nil then
     return
   end
-  App.setState(VersionSelectState.new(ready, function(versionId)
-    App._selectVersion(versionId)
-  end))
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    local info = GameVersion.info(versionId)
+    if installedFacts[versionId] == true then
+      local sha1 = assert(info.sha1)
+      local path = RomArchive.iconPath(sha1)
+      if love.filesystem.getInfo(path, "file") ~= nil then
+        if not renderer:refreshGameIcon(sha1, path) then
+          renderer:dropGameIcon(sha1)
+          if App._importAttempt == nil and App.importer == nil then
+            App._scheduleIconRecovery(versionId, sha1)
+          end
+        end
+      elseif App._importAttempt == nil and App.importer == nil then
+        App._scheduleIconRecovery(versionId, sha1)
+      end
+    elseif info ~= nil and type(info.sha1) == "string" then
+      renderer:dropGameIcon(info.sha1)
+    end
+  end
 end
 
--- A pending source-close barrier blocks new selections behind a visible
--- wait: no new session writes shared version roots before the controller
--- acknowledges that every source reader closed successfully.
----@param versionId string newly selected game version
----@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string?, importStatus: { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?, importReceipt: string? }? private selection mode
----@return boolean
+function App._refreshRootIcons()
+  refreshRootIcons(managedInstalledFacts())
+end
+
+function App._scheduleIconRecovery(versionId, sha1)
+  if App._iconRepairAttempted[sha1] or App._iconRecovery ~= nil or App._pendingIconData ~= nil then
+    return
+  end
+  App._iconRepairAttempted[sha1] = true
+  local ok, job = pcall(RomIconRecovery.start, versionId)
+  if ok then
+    App._iconRecovery = job
+  else
+    print("Optional cartridge icon recovery unavailable: " .. tostring(job))
+  end
+end
+
+function App._publishRecoveredIcon(romSha1, png)
+  local info = GameVersion.forSha1(romSha1)
+  if info == nil or RomArchive.recoverablePath(romSha1) == nil then
+    png:release()
+    return
+  end
+  local published, failure = RomArchive.publishIcon(romSha1, png)
+  png:release()
+  if published then
+    if App.launcherRenderer ~= nil then
+      App.launcherRenderer:refreshGameIcon(romSha1, RomArchive.iconPath(romSha1))
+    end
+  else
+    print("Optional cartridge icon publication failed: " .. tostring(failure and failure.message or failure))
+  end
+end
+
+function App._pollIconRecovery()
+  local job = App._iconRecovery
+  if job == nil then
+    local pending = App._pendingIconData
+    if pending == nil or App._importAttempt ~= nil or App.importer ~= nil then
+      return
+    end
+    App._pendingIconData = nil
+    App._publishRecoveredIcon(pending.romSha1, pending.png)
+    return
+  end
+  local state, value, png = job:poll()
+  if state == "pending" then
+    return
+  end
+  App._iconRecovery = nil
+  job:dispose()
+  if state == "failed" then
+    print("Optional cartridge icon recovery failed: " .. tostring(value))
+    return
+  end
+  if state ~= "ready" or type(value) ~= "string" or png == nil then
+    if png ~= nil then
+      png:release()
+    end
+    return
+  end
+  if App._importAttempt ~= nil or App.importer ~= nil then
+    App._pendingIconData = { romSha1 = value, png = png }
+    return
+  end
+  App._publishRecoveredIcon(value, png)
+end
+
+function App._newGameSelectState(focusGameId)
+  App._ensureLauncherResources()
+  local installedFacts = managedInstalledFacts()
+  refreshRootIcons(installedFacts)
+  return GameSelectState.new({
+    games = gameSnapshot(installedFacts),
+    initialGameId = focusGameId,
+    renderer = App.launcherRenderer,
+    audio = App.launcherAudio,
+    width = App.drawableWidth,
+    height = App.drawableHeight,
+    safeRect = App._safeRect,
+    pixelRatio = App.pixelRatio,
+    displayContext = App._launcherDisplayContext(),
+    getImportView = function()
+      return App._importSnapshot(App._importAttempt)
+    end,
+    onAction = function(targetId)
+      if targetId == "quit" then
+        love.event.quit(0)
+      elseif targetId == "heartgold" or targetId == "soulsilver" then
+        if managedInstalled(targetId) then
+          -- Read fresh save metadata at activation: the selector holds no
+          -- process-level mirror (it is cleared on retirement), and a stale
+          -- timestamp must not skip the warmup. Failure stays non-fatal.
+          local metadata = readSaveMetadata()
+          local candidate = newestSave(metadata, targetId)
+          App._selectVersion(targetId, { entryLocation = candidate and candidate.entryLocation or nil })
+        else
+          App._openImportChoose(targetId)
+        end
+      elseif targetId == "choose-rom" then
+        App._requestNativePicker()
+      elseif targetId == "retry" then
+        local attempt = App._importAttempt
+        if attempt ~= nil then
+          local expectedVersionId = attempt.expectedVersionId
+          -- A terminal importer belongs to the retired attempt; keeping it
+          -- would re-fail the fresh choose attempt on the next update.
+          if
+            App.importer ~= nil
+            and (App.importer.state == RomImporter.STATES.ERROR or App.importer.state == RomImporter.STATES.COMPLETE)
+          then
+            App.importer = nil
+          end
+          App._importAttempt = App._newImportAttempt(expectedVersionId)
+          App.setState(App._newGameSelectState(expectedVersionId))
+        end
+      elseif targetId == "back" or targetId == "cancel" then
+        App._cancelImport()
+      end
+    end,
+  })
+end
+
+function App._showGameSelection(focusGameId, failure)
+  if failure ~= nil and App._importAttempt == nil then
+    App._importAttempt = {
+      attemptId = {},
+      expectedVersionId = focusGameId,
+      mode = "error",
+      error = failure,
+      canCancel = false,
+      pickerAvailable = NativeRomPicker.available() == true,
+    }
+  end
+  if failure ~= nil then
+    App._finishBootIntro(false)
+  end
+  App._retireSelection()
+  App.selectedVersionId = nil
+  App.setState(App._newGameSelectState(focusGameId))
+end
+
+function App._showQuiescence(attempt, versionId, options)
+  local pending = assert(App.pendingQuiesce)
+  local service = assert(App.service)
+  App.setState(CachePreparationState.new({
+    kind = "quiescence",
+    epoch = pending.epoch,
+    barrier = pending.barrier,
+    service = service,
+    renderer = App.launcherRenderer,
+    width = App.drawableWidth,
+    height = App.drawableHeight,
+    safeRect = App._safeRect,
+    pixelRatio = App.pixelRatio,
+    displayContext = App._launcherDisplayContext(),
+    pendingImportName = attempt and attempt.receipt or nil,
+    pendingImportLabel = attempt and attempt.expectedVersionId and gameLabel(attempt.expectedVersionId) or nil,
+    importAttemptId = attempt and attempt.attemptId or nil,
+    importViewProvider = attempt ~= nil and function()
+      return App._importSnapshot(attempt)
+    end or nil,
+    isCurrent = function(_)
+      return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == pending.barrier
+    end,
+    onReady = function()
+      if App.pendingQuiesce == nil or App.pendingQuiesce.barrier ~= pending.barrier then
+        return
+      end
+      App.pendingQuiesce = nil
+      if attempt ~= nil then
+        App._authorizeImport(attempt, pending.epoch, pending.barrier)
+      else
+        App._selectVersion(versionId, options)
+      end
+    end,
+    onCancel = function()
+      if attempt ~= nil then
+        App._cancelImport()
+      else
+        App._showGameSelection()
+      end
+    end,
+  }))
+end
+
 function App._waitForQuiescence(versionId, options)
   local pending = App.pendingQuiesce
   local service = App.service
   if pending == nil or service == nil then
     return false
   end
-  if service:barrierStatus(pending.epoch, pending.barrier) == "ready" then
+  local ok, status = pcall(service.barrierStatus, service, pending.epoch, pending.barrier)
+  if not ok then
+    App.pendingQuiesce = nil
+    App._showGameSelection(nil, Errors.new("ROM_SOURCE_BARRIER_FAILED", tostring(status), {}))
+    return true
+  end
+  if status == "ready" then
     App.pendingQuiesce = nil
     return false
   end
-  App.setState(CachePreparationState.new({
-    kind = "quiescence",
-    epoch = pending.epoch,
-    service = service,
-    barrier = pending.barrier,
-    isCurrent = function(_)
-      return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == pending.barrier
-    end,
-    onReady = function()
-      App.pendingQuiesce = nil
-      App._selectVersion(versionId, options)
-    end,
-    onCancel = function()
-      App.pendingQuiesce = nil
-      App._showVersionSelector()
-    end,
-  }))
+  if status == "failed" or status == nil then
+    App.pendingQuiesce = nil
+    App._showGameSelection(nil, Errors.new("ROM_SOURCE_BARRIER_FAILED", "source readers could not close", {}))
+    return true
+  end
+  App._showQuiescence(nil, versionId, options)
   return true
 end
 
@@ -775,119 +1345,99 @@ function App._publishFirstPlay(versionId, epoch)
   pcall(service.recordFirstPlay, service, epoch)
 end
 
--- Whether the version already carries a persisted source registration.
--- Answered behind the importer seam without opening the ROM: a filename
--- or launch route alone never counts, and a failed read is unregistered.
----@param versionId string newly selected game version
----@return boolean
-local function alreadyRegistered(versionId)
-  local cacheOk, cacheFs = pcall(CacheFs.forVersion, versionId)
-  if not cacheOk or cacheFs == nil then
-    return false
-  end
-  return RomImporter.isRegistered(cacheFs, versionId)
-end
-
--- Selects a game version: borrows a controller epoch through its
--- provisioner, hands any verified offered source to the controller, queues
--- the boot readiness gate behind it on the same control stream, and waits
--- through a visible boot-source state. Nothing downstream (menu, retail,
--- first-play preparation, background sweep) runs before the gate answers
--- ready for this exact epoch.
----@param versionId string newly selected game version
----@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string?, importStatus: { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?, importReceipt: string? }? private selection mode, default ordinary
+-- Selects one game through the existing source/epoch gate.
+---@param versionId string
+---@param options { entryLocation: { mapId: integer, fieldX: integer, fieldZ: integer }? }?
 function App._selectVersion(versionId, options)
+  assert(supported(versionId), "unknown selected edition")
+  if App._importAttempt ~= nil then
+    return
+  end
+  if not managedInstalled(versionId) then
+    App._openImportChoose(
+      versionId,
+      Errors.new(
+        "ROM_SOURCE_REQUIRED",
+        "a managed " .. gameLabel(versionId) .. " ROM is required",
+        { versionId = versionId }
+      )
+    )
+    return
+  end
   if App._waitForQuiescence(versionId, options) then
     return
   end
   App.selectedVersionId = versionId
   App._retireSelection()
+  App._ensureLauncherResources()
+  if options ~= nil and options.entryLocation ~= nil then
+    local location = assert(options.entryLocation, "selected entry location is present")
+    App._selectedEntryLocation = { mapId = location.mapId, fieldX = location.fieldX, fieldZ = location.fieldZ }
+  end
   local provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
   App.provisioner = provisioner
   App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
-  -- One walking pair per newly selected epoch: the App alone draws one
-  -- fresh random pair once per selection, independent of the published
-  -- catalog. Later journeys (menu returns, New Game, Continue, editor,
-  -- late GPU adoption) reuse it, never reroll.
   App.pairIndex = math.floor(love.math.random(1, HgssLoadingPresentation.walkerPairCount()))
-  -- One SPL stream per selected boot: the opening movie consumes it before
-  -- any game exists, so the App boot owner spans that lifetime. Reset only
-  -- when a new boot is selected; independent from gameplay random state.
   App.splRandomState = { state = 0 }
   local epoch = App.epoch
   local service = assert(App.service, "process cache service is unavailable")
-  -- A newly imported verified source crosses on the same control stream
-  -- behind selection and ahead of the gate, by reference; the controller
-  -- validates and pins it. An ordinary selection carries no offer.
-  local offer = options ~= nil and options.sourceOffer or nil
-  if type(offer) == "userdata" then
-    local info = GameVersion.info(versionId)
-    service:offerSource(epoch, offer, { versionId = versionId, romSha1 = info.sha1 })
-  end
   service:requestBootSource(epoch)
-  local mismatch = options ~= nil and options.bootMismatch or nil
-  local freshImport = options ~= nil and options.freshImport == true
-  local importStatus = (freshImport and options ~= nil) and options.importStatus or nil
-  local importReceipt = (freshImport and options ~= nil) and options.importReceipt or nil
   App.setState(CachePreparationState.new({
     kind = "boot-source",
     epoch = epoch,
     service = service,
     versionId = versionId,
-    mismatch = mismatch,
-    pairIndex = App.pairIndex,
-    freshImport = freshImport,
-    importStatus = importStatus,
-    importReceipt = importReceipt,
-    -- The first generated frame already reads the selected epoch's overlay: the
-    -- wait asks the same aggregate every later composition borrows, gets nil
-    -- while the base installation is pending, and sees a broken selection as its
-    -- typed failure instead of silently drawing built-in art.
-    getAssetReader = function()
-      local runtime = App._ensureAssetRuntime(epoch)
-      if runtime == nil then
-        return nil
-      end
-      return runtime.cacheFs
-    end,
+    label = gameLabel(versionId),
+    renderer = App.launcherRenderer,
+    width = App.drawableWidth,
+    height = App.drawableHeight,
+    safeRect = App._safeRect,
+    pixelRatio = App.pixelRatio,
+    displayContext = App._launcherDisplayContext(),
     isCurrent = function(selected)
-      return App.epoch == selected
+      return App.epoch == selected and App.selectedVersionId == versionId
     end,
     onReady = function()
-      App._continueSelectedVersion(versionId, options)
+      App._continueSelectedVersion(versionId)
+    end,
+    onFailure = function(detail)
+      if App.epoch == epoch and App.selectedVersionId == versionId then
+        App._showGameSelection(versionId, detail)
+      end
     end,
     onCancel = function()
-      App._showVersionSelector()
+      App._showGameSelection(versionId)
     end,
   }))
 end
 
--- Continues the selected version once its boot gate answered ready for the
--- exact selected epoch: installs the startup title directly, which stages
--- the product menu and owns the transfer. Never reselects and never mints
--- another epoch.
----@param versionId string newly selected game version
----@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string?, importStatus: { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?, importReceipt: string? }? private selection mode, default ordinary
-function App._continueSelectedVersion(versionId, options)
+-- Resolve the selected runtime before detaching the neutral presentation.
+-- Expected composition failures leave it owned by the wait until recovery.
+function App._continueSelectedVersion(versionId)
   local epoch = App.epoch
   local provisioner = assert(App.provisioner, "boot continuation needs the selected provisioner")
-  local freshImport = options ~= nil and options.freshImport == true
-  -- Detach the single owned presentation before replacing the boot wait:
-  -- the old state's disposal must never free transferred art, and the
-  -- same selected pair index travels with it to the startup owner.
   local previous = App.state
-  local loading = nil
-  if previous ~= nil and type(previous.takeLoading) == "function" then
-    loading = previous:takeLoading()
+  assert(previous ~= nil and type(previous.takeLoading) == "function", "boot continuation needs its loading owner")
+  local runtimeOk, runtimeOrError = pcall(App._ensureAssetRuntime, epoch)
+  if not runtimeOk or runtimeOrError == nil then
+    local failure = runtimeOk and "selected runtime is unavailable" or runtimeOrError
+    if not runtimeOk and not Errors.is(failure) then
+      App._showGameSelection(versionId)
+      error(failure, 0)
+    end
+    App._showGameSelection(versionId, failure)
+    return
   end
-  -- The normal App boot path always detaches the live C02 presentation
-  -- above; a missing transfer here would silently fall back to a default
-  -- inside the state constructor, so fail loudly instead.
-  assert(loading ~= nil, "boot continuation needs the transferred loading presentation")
-  local width, height = love.graphics.getDimensions()
-  local audio = startupAudioBorrow(versionId, epoch)
-  local runtime = assert(App._ensureAssetRuntime(epoch), "the startup title needs the selected CPU runtime")
-  App.setState(StartupTitleState.new({
+  local runtime = runtimeOrError
+  local loading = previous:takeLoading()
+  local width, height = App.drawableWidth, App.drawableHeight
+  local pixelRatio = App.pixelRatio
+  assert(
+    type(width) == "number" and width > 0 and type(height) == "number" and height > 0,
+    "selected startup requires published drawable dimensions"
+  )
+  assert(type(pixelRatio) == "number" and pixelRatio > 0, "selected startup requires a published pixel ratio")
+  local constructed, stateOrError = pcall(StartupTitleState.new, {
     versionId = versionId,
     epoch = epoch,
     cacheFs = runtime.cacheFs,
@@ -896,10 +1446,14 @@ function App._continueSelectedVersion(versionId, options)
     splRandomState = App.splRandomState,
     width = width,
     height = height,
-    initialImport = freshImport,
+    safeRect = App._safeRect,
+    pixelRatio = pixelRatio,
     loading = loading,
     pairIndex = App.pairIndex,
-    audio = audio,
+    admitOpening = function()
+      return App._admitOpening(epoch, versionId)
+    end,
+    audio = startupAudioBorrow(versionId, epoch),
     isCurrent = function(selected)
       return App.epoch == selected and App.selectedVersionId == versionId
     end,
@@ -915,7 +1469,7 @@ function App._continueSelectedVersion(versionId, options)
     end,
     onCancel = function()
       if App.epoch == epoch and App.selectedVersionId == versionId then
-        App._showVersionSelector()
+        App._showGameSelection(versionId)
       end
     end,
     onTitleReady = function()
@@ -923,14 +1477,96 @@ function App._continueSelectedVersion(versionId, options)
     end,
     beginWarmup = function()
       App._beginSaveAgnosticWarmup(versionId, epoch)
+      App._maybeStartSaveLocationWarmup(versionId, epoch)
     end,
-  }))
+  })
+  if not constructed then
+    loading:dispose()
+    error(stateOrError, 0)
+  end
+  App.setState(assert(stateOrError))
+end
+
+function App._prepareBootCandidate()
+  if not App._bootPending then
+    return App._bootCandidate
+  end
+  App._bootPending = false
+  local metadata = readSaveMetadata()
+  local candidate = newestSave(metadata)
+  if candidate ~= nil then
+    candidate.ready = managedInstalled(candidate.versionId)
+    App._bootCandidate = candidate
+    if candidate.ready then
+      App._selectVersion(candidate.versionId, { entryLocation = candidate.entryLocation })
+    end
+  end
+  return App._bootCandidate
+end
+
+function App._routeBoot(candidate)
+  App._bootPending = false
+  if candidate ~= nil and managedInstalled(candidate.versionId) then
+    App._selectVersion(candidate.versionId, { entryLocation = candidate.entryLocation })
+  else
+    App._showGameSelection(candidate and candidate.versionId or nil)
+  end
+end
+
+function App._admitOpening(epoch, versionId)
+  if App._foreground ~= true then
+    return false
+  end
+  if App._touchGamepadSuspended or App.epoch ~= epoch or App.selectedVersionId ~= versionId then
+    return false
+  end
+  if App._bootIntro == nil then
+    return true
+  end
+  if App._bootIntro.foreground ~= true then
+    return false
+  end
+  if App._bootIntro.elapsed + 1e-9 < BOOT_MIN_DURATION then
+    return false
+  end
+  App._finishBootIntro(true)
+  return true
+end
+
+function App._isPreOpening()
+  if App._touchGamepadSuspended or App._importAttempt ~= nil or App.importer ~= nil then
+    return false
+  end
+  if App._bootIntro ~= nil then
+    return true
+  end
+  local state = App.state
+  return state ~= nil and type(state.isAwaitingOpening) == "function" and state:isAwaitingOpening() == true
+end
+
+function App._interruptOpening(identity)
+  if not App._isPreOpening() then
+    return false
+  end
+  App._bootSwallowedInputs[identity] = true
+  local candidate = App._bootCandidate
+  App._bootPending = false
+  App._finishBootIntro(false)
+  App._showGameSelection(candidate and candidate.versionId or nil)
+  return true
 end
 
 function App.load(opts)
   App.opts = opts or {}
-  App.drawableWidth, App.drawableHeight = love.graphics.getDimensions()
-  App.pixelRatio = love.graphics.getDPIScale()
+  App._cleanupAbandonedImports()
+  App.drawableWidth, App.drawableHeight = nil, nil
+  App.pixelRatio = nil
+  App._safeRect = nil
+  App._displayContext = nil
+  App._touchGamepadSuspended = false
+  App._suspendedTouchIds = {}
+  App._foreground = true
+  App._realTouches = {}
   App.importer = nil
   App.provisioner = nil
   App.splRandomState = nil
@@ -938,14 +1574,18 @@ function App.load(opts)
   App.epoch = 0
   App.pendingQuiesce = nil
   App.pairIndex = nil
-  App._importReceipt = nil
-  App._pendingImport = nil
+  App._importAttempt = nil
+  App._releaseIconRecovery()
+  App._iconRepairAttempted = {}
   App.selectedVersionId = nil
   App._swallowedPointers = {}
-  App._rebindVersionId = nil
-  App._bootBlockedVersionId = nil
-  App.importPickerError = nil
+  App._bootSwallowedInputs = {}
   App._startupWarmup = nil
+  App._saveLocationWarmup = nil
+  App._selectedEntryLocation = nil
+  App._bootCandidate = nil
+  App._bootPending = true
+  App._bootIntro = nil
   App.startupWarmupError = nil
   App.startupAudioSession = nil
   App.startupAudioError = nil
@@ -955,10 +1595,6 @@ function App.load(opts)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
 
-  -- The process-wide master gain applies before any route can play audio
-  -- and is retained across save and version switches. A deliberately
-  -- headless host without an audio module keeps persistence with a silent
-  -- gain adapter.
   local setGain = function(_) end
   if love ~= nil and love.audio ~= nil and type(love.audio.setVolume) == "function" then
     local host = love.audio
@@ -967,8 +1603,19 @@ function App.load(opts)
     end
   end
   App.audioPreferences = AudioPreferences.new({ storage = SaveFs.global(), setGain = setGain })
-
-  App._bootExisting()
+  App._ensureLauncherResources()
+  App._syncDrawableSize()
+  App._displayContext = App._launcherDisplayContext()
+  App._bootIntro = BootIntroState.new({
+    renderer = App.launcherRenderer,
+    audio = App.launcherAudio,
+    displayContext = App._displayContext,
+    width = App.drawableWidth,
+    height = App.drawableHeight,
+    safeRect = App._safeRect,
+    pixelRatio = App.pixelRatio,
+  })
+  love.graphics.setBackgroundColor(unpack(BOOT_BACKGROUND_COLOR))
 end
 
 -- Replaces only the UI state. Source ownership is explicit: selection,
@@ -976,201 +1623,298 @@ end
 -- bootstrap-state to game handoff must not retire it.
 function App.setState(nextState)
   local previous = App.state
+  if previous ~= nextState and App._touchGamepad ~= nil then
+    App._touchGamepad:setTarget(nil)
+  end
   App.state = nextState
   if previous and previous.dispose then
     previous:dispose()
   end
 end
 
-function App._startImport(expectedVersionId)
-  local function onComplete(versionId)
-    App._onImported(versionId)
-  end
-  App.importer = RomImporter.new({ onComplete = onComplete, expectedVersionId = expectedVersionId })
-  -- Capability is a fact for this screen construction, not a persisted
-  -- preference: only an actually loadable bridge gets an activation.
-  local pickerAvailable = NativeRomPicker.available()
-  local importOptions = {
-    targetVersion = expectedVersionId,
-    pickerAvailable = pickerAvailable,
+function App._newImportAttempt(expectedVersionId)
+  local attempt = {
+    attemptId = {},
+    expectedVersionId = expectedVersionId,
+    mode = "choose",
+    canCancel = true,
+    pickerAvailable = NativeRomPicker.available() == true,
+    elapsed = 0,
   }
-  if pickerAvailable then
-    importOptions.onPick = function()
-      local result = NativeRomPicker.openSingle()
-      if result.kind == "path" then
-        App._beginImportPath(result.path, expectedVersionId)
-      elseif result.kind == "error" then
-        print("Native file picker failed: " .. tostring(result.message))
-      end
-    end
-  end
-  App.setState(ImportState.new(App.importer, App.saveDir, importOptions))
+  return attempt
 end
 
-function App._beginImportPath(path, expectedVersionId)
-  if type(path) ~= "string" or (not path:lower():match("%.nds$") and not path:lower():match("%.zip$")) then
-    -- Unsupported picker selection is a handled rejection, not a diagnostic:
-    -- the import card stays put with no console noise under normal operation.
+function App._openImportChoose(expectedVersionId, failure)
+  local attempt = App._importAttempt
+  if attempt == nil then
+    attempt = App._newImportAttempt(expectedVersionId)
+    App._importAttempt = attempt
+  end
+  attempt.mode = failure ~= nil and "error" or "choose"
+  attempt.error = failure
+  attempt.canCancel = attempt.mode == "choose"
+  App._finishBootIntro(false)
+  App._bootPending = false
+  App.setState(App._newGameSelectState(expectedVersionId))
+end
+
+function App._requestNativePicker()
+  local attempt = App._importAttempt
+  if attempt == nil or attempt.mode ~= "choose" or not attempt.pickerAvailable then
     return
   end
-  App._beginImportAttempt("path", path, expectedVersionId)
+  local result = NativeRomPicker.openSingle()
+  if result.kind == "path" then
+    App._beginImportPath(result.path)
+  elseif result.kind == "pending" then
+    attempt.mode, attempt.requestId = "picker", result.requestId
+    App.setState(App._newGameSelectState(attempt.expectedVersionId))
+  elseif result.kind == "cancel" then
+    attempt.mode = "choose"
+    App.setState(App._newGameSelectState(attempt.expectedVersionId))
+  elseif result.kind == "error" then
+    App._failImport(Errors.new("ROM_PICKER_FAILED", tostring(result.message or "file picker failed"), {}))
+  end
 end
 
--- Open the import card for one picked or dropped file without touching the
--- source: the receipt is latched for its first paint, and validation starts
--- only after that paint (see App.update). Importers offering the queued
--- handoff start in the background then; direct-only importers keep their
--- immediate start contract on this same tick.
----@param kind "drop"|"path"
----@param value unknown dropped File or picked path
----@param expectedVersionId string?
----@param receipt string? sanitized basename latched for the first paint
-function App._openImportCard(kind, value, expectedVersionId, receipt)
-  local previous = App.importer
-  App.importer = nil
-  if previous ~= nil and type(previous.cancelQueued) == "function" then
-    previous:cancelQueued()
+function App._pollNativePicker()
+  local attempt = App._importAttempt
+  local requestId = attempt ~= nil and attempt.mode == "picker" and attempt.requestId or nil
+  local result = NativeRomPicker.poll(requestId)
+  if result == nil then
+    return
   end
-  App._startImport(expectedVersionId)
-  -- Acknowledge the file on the same input tick: the first draw already
-  -- names the received file, while no source read has run yet.
-  App._importReceipt = receipt
-  local importer = App.importer
-  if importer ~= nil and type(importer.queuePath) == "function" and type(importer.queueDroppedFile) == "function" then
-    App._pendingImport = {
-      kind = kind,
-      value = value,
-      receipt = receipt,
-      painted = receipt == nil,
-      started = false,
-    }
-  else
-    App._pendingImport = nil
-    if importer then
-      if kind == "path" then
-        importer:startPath(value)
-      else
-        importer:filedropped(value)
-      end
+  if attempt == nil or attempt.mode ~= "picker" or result.requestId ~= attempt.requestId then
+    if result.kind == "path" then
+      love.filesystem.remove(result.relativePath)
+    end
+    return
+  end
+  attempt.requestId = nil
+  if result.kind == "path" then
+    App._beginImportTemporary(result.relativePath, result.displayName, result.requestId)
+  elseif result.kind == "cancel" then
+    attempt.mode = "choose"
+    App.setState(App._newGameSelectState(attempt.expectedVersionId))
+  elseif result.kind == "error" then
+    App._failImport(Errors.new("ROM_PICKER_FAILED", tostring(result.message), {}))
+  end
+end
+
+function App._beginImportTemporary(relativePath, displayName, requestId)
+  App._beginImportAttempt("temporary", relativePath, displayName, requestId)
+end
+
+function App._beginImportPath(path)
+  if type(path) ~= "string" or (not path:lower():match("%.nds$") and not path:lower():match("%.zip$")) then
+    App._failImport(Errors.new("ROM_FILE_UNSUPPORTED", "Choose a supported .nds or .zip file.", {}))
+    return
+  end
+  App._beginImportAttempt("path", path)
+end
+
+function App._ensureAttemptImporter(attempt)
+  if App.importer ~= nil then
+    return App.importer
+  end
+  assert(App._importAttempt == attempt, "only the current attempt owns an importer")
+  local importer
+  importer = RomImporter.new({
+    expectedVersionId = attempt.expectedVersionId,
+    onComplete = function(versionId)
+      App._onImported(versionId, importer)
+    end,
+  })
+  App.importer = importer
+  return importer
+end
+
+function App._showImportReceipt(attempt)
+  assert(App._importAttempt == attempt, "a stale attempt cannot publish a receipt view")
+  App.setState(App._newGameSelectState(attempt.expectedVersionId))
+end
+
+function App._authorizeImport(attempt, epoch, barrier)
+  if App._importAttempt ~= attempt then
+    return
+  end
+  if barrier ~= nil then
+    local service = assert(App.service)
+    local ok, authorized = pcall(service.importSource, service, epoch, barrier)
+    if not ok or authorized ~= true then
+      App._failImport(
+        Errors.new(
+          "ROM_SOURCE_IMPORT_DENIED",
+          ok and "source publication was not authorized" or tostring(authorized),
+          {}
+        )
+      )
+      return
     end
   end
-  local fresh = App.state
-  if receipt ~= nil and fresh ~= nil and type(fresh.markReceived) == "function" then
-    fresh:markReceived(receipt)
-  end
+  attempt.authorized = true
+  attempt.mode = "receipt"
+  attempt.canCancel = true
+  App._ensureAttemptImporter(attempt)
+  App._showImportReceipt(attempt)
 end
 
-function App._beginImportAttempt(kind, value, expectedVersionId)
+function App._beginImportTransaction(attempt)
+  App._finishBootIntro(false)
+  App._bootPending = false
+  App._retireSelection()
+  local service = App.service
+  if service == nil then
+    App._authorizeImport(attempt, nil, nil)
+    return
+  end
+  local epoch = App.epoch or 0
+  local barrier = App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier or service:quiesce(epoch)
+  if barrier == nil then
+    App._authorizeImport(attempt, epoch, nil)
+    return
+  end
+  App.pendingQuiesce = { epoch = epoch, barrier = barrier }
+  attempt.mode, attempt.canCancel = "draining", true
+  App._showQuiescence(attempt)
+end
+
+function App._beginImportAttempt(kind, value, receiptName, requestId)
   local currentState = App.state
   if kind == "drop" and currentState ~= nil and type(currentState.onImportAttempt) == "function" then
     currentState:onImportAttempt()
     return
   end
-  if App.importer and App.importer:isBusy() then
+  local attempt = App._importAttempt
+  if attempt ~= nil and attempt.mode ~= "choose" and attempt.mode ~= "picker" and attempt.mode ~= "error" then
     return
   end
-  local waiting = App.state
-  if waiting ~= nil and getmetatable(waiting) == CachePreparationState and waiting.kind == "quiescence" then
+  if App._touchGamepadSuspended then
     return
   end
-  expectedVersionId = expectedVersionId or (currentState and currentState.targetVersion)
-  local receipt = App._receiptName(kind, value)
-  if App.service ~= nil then
-    local wasBootBlocked = currentState ~= nil
-      and getmetatable(currentState) == CachePreparationState
-      and currentState.kind == "boot-source"
-    App._bootBlockedVersionId = wasBootBlocked and App.selectedVersionId or nil
-    App._rebindVersionId = App.selectedVersionId
-    App._retireSelection()
-    local epoch = App.epoch or 0
-    local barrier = App.service:quiesce(epoch)
-    if barrier ~= nil then
-      -- The barrier wait carries the same receipt: its card names the file
-      -- while readers drain, and the import card created on admission
-      -- paints it again before any worker starts.
-      App._importReceipt = receipt
-      App._pendingImport = {
-        kind = kind,
-        value = value,
-        expectedVersionId = expectedVersionId,
-        receipt = receipt,
-        painted = receipt == nil,
-        started = false,
-      }
-      App.pendingQuiesce = { epoch = epoch, barrier = barrier }
-      App.setState(CachePreparationState.new({
-        kind = "quiescence",
-        epoch = epoch,
-        service = App.service,
-        barrier = barrier,
-        pendingImportName = receipt,
-        isCurrent = function(_)
-          return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == barrier
-        end,
-        onReady = function()
-          App.pendingQuiesce = nil
-          if App.service:importSource(epoch, barrier) then
-            App._openImportCard(kind, value, expectedVersionId, receipt)
-          end
-        end,
-        onCancel = function()
-          App.pendingQuiesce = nil
-          App._showVersionSelector()
-        end,
-      }))
+  if App.importer ~= nil then
+    local state = App.importer.state
+    local status = type(App.importer.status) == "function" and App.importer:status() or nil
+    if
+      state == RomImporter.STATES.READING
+      or state == RomImporter.STATES.VERIFYING
+      or state == RomImporter.STATES.REGISTERING
+      or (status ~= nil and status.canCancel == true)
+    then
       return
     end
+    App.importer = nil
   end
-  App._openImportCard(kind, value, expectedVersionId, receipt)
+  if attempt ~= nil and attempt.mode == "error" then
+    attempt = App._newImportAttempt(attempt.expectedVersionId)
+  end
+  attempt = attempt or App._newImportAttempt(nil)
+  App._importAttempt = attempt
+  attempt.descriptor = { kind = kind, value = value, requestId = requestId }
+  -- The display receipt is sanitized UTF-8; the descriptor keeps the exact
+  -- unmodified source path/URI for the importer. The renderer fits the
+  -- receipt to pixels, so no byte budget is applied here.
+  local rawReceipt = receiptName
+  if rawReceipt == nil then
+    rawReceipt = App._receiptName(kind, value)
+  else
+    rawReceipt = LauncherText.sanitize(tostring(rawReceipt))
+    if rawReceipt == "" then
+      rawReceipt = nil
+    end
+  end
+  attempt.receipt = rawReceipt
+  attempt.mode, attempt.canCancel = "receipt", true
+  App._beginImportTransaction(attempt)
 end
 
--- Record one actually painted receipt for the deferred import start. Only a
--- draw that rendered the pending receipt for the current attempt counts;
--- latching the name is not painting.
 function App._noteReceiptPaint()
-  local pending = App._pendingImport
-  if pending == nil or pending.painted or pending.started or pending.receipt == nil then
+  local attempt = App._importAttempt
+  if attempt == nil or attempt.painted or attempt.started or attempt.receipt == nil or App._touchGamepadSuspended then
     return
   end
   local state = App.state
   if state == nil or type(state.paintedReceipt) ~= "function" then
     return
   end
-  local ok, name = pcall(state.paintedReceipt, state)
-  if ok and name == pending.receipt then
-    pending.painted = true
+  local ok, token = pcall(state.paintedReceipt, state)
+  if ok and token == attempt.attemptId then
+    attempt.painted = true
   end
 end
 
--- Start the deferred import once its receipt was painted and no source-reader
--- barrier holds the selection. The queued handoff validates in the
--- background; the render thread performs no source read here.
 function App._startPendingImport()
-  local pending = App._pendingImport
-  if pending == nil or pending.started or not pending.painted or App.pendingQuiesce ~= nil then
+  local attempt = App._importAttempt
+  if
+    attempt == nil
+    or attempt.descriptor == nil
+    or attempt.started
+    or not attempt.painted
+    or not attempt.authorized
+    or App.pendingQuiesce ~= nil
+    or App._touchGamepadSuspended
+  then
     return
   end
-  local importer = App.importer
-  if importer == nil then
-    App._pendingImport = nil
-    return
-  end
-  local ok = pcall(function()
-    if pending.kind == "path" then
-      importer:queuePath(pending.value)
+  local importer = assert(App.importer, "an authorized attempt owns its importer")
+  local descriptor = attempt.descriptor
+  local ok, accepted, failure = pcall(function()
+    if descriptor.kind == "temporary" then
+      return importer:queueTemporaryPath(descriptor.value, descriptor.requestId)
+    elseif descriptor.kind == "path" then
+      return importer:queuePath(descriptor.value)
     else
-      importer:queueDroppedFile(pending.value)
+      return importer:queueDroppedFile(descriptor.value)
     end
   end)
-  if ok then
-    pending.started = true
-  else
-    App._pendingImport = nil
+  if ok and (descriptor.kind ~= "temporary" or accepted == true) then
+    attempt.started, attempt.mode = true, "importing"
+    if importer.state == RomImporter.STATES.ERROR then
+      App._failImport(assert(importer:status()).error or "ROM import failed")
+    end
+    return
   end
+  if descriptor.kind == "temporary" then
+    love.filesystem.remove(descriptor.value)
+  end
+  if not ok then
+    if not Errors.is(accepted) then
+      error(accepted, 0)
+    end
+    failure = accepted
+  elseif descriptor.kind == "temporary" and not Errors.is(failure) then
+    failure = Errors.new("ROM_IMPORT_REQUEST_INVALID", "temporary import was not accepted", {})
+  end
+  if not Errors.is(failure) then
+    error(failure, 0)
+  end
+  App._failImport(failure)
+end
+
+function App._failImport(failure)
+  local attempt = App._importAttempt
+  if attempt == nil then
+    attempt = App._newImportAttempt(nil)
+    App._importAttempt = attempt
+  end
+  if not Errors.is(failure) then
+    failure = Errors.new("ROM_IMPORT_FAILED", tostring(failure or "ROM import failed"), {})
+  end
+  if attempt.descriptor ~= nil and attempt.descriptor.kind == "temporary" and not attempt.started then
+    love.filesystem.remove(attempt.descriptor.value)
+  end
+  attempt.descriptor = nil
+  if not attempt.started then
+    App.importer = nil
+  end
+  attempt.mode, attempt.error, attempt.canCancel = "error", failure, false
+  App.setState(App._newGameSelectState(attempt.expectedVersionId))
 end
 
 -- Sanitized basename for the synchronous file-received receipt: the card
 -- names the file without leaking paths and truncates to one card row.
+-- External display text only: the returned receipt is valid UTF-8 on glyph
+-- boundaries, while the source pathname/URI in the descriptor is untouched.
 ---@param kind string "drop" or "path"
 ---@param value unknown dropped File or picked path
 ---@return string? receipt basename, if one can be named
@@ -1187,10 +1931,7 @@ function App._receiptName(kind, value)
   if type(raw) ~= "string" or raw == "" then
     return nil
   end
-  local clean = raw:gsub("[%c]", "?")
-  if #clean > 48 then
-    clean = clean:sub(1, 47) .. "…"
-  end
+  local clean = LauncherText.sanitize(raw)
   if clean == "" then
     return nil
   end
@@ -1198,135 +1939,31 @@ function App._receiptName(kind, value)
 end
 
 ---@param versionId string
----@return string display label for the selected game version
-local function selectedVersionLabel(versionId)
-  local infoOk, info = pcall(GameVersion.info, versionId)
-  if infoOk and type(info) == "table" and type(info.label) == "string" then
-    return info.label
-  end
-  return tostring(versionId)
-end
-
-function App._onImported(versionId)
+---@param originatingImporter RomImporter
+function App._onImported(versionId, originatingImporter)
   local importer = App.importer
-  -- A completion counts only for the live session: an import that never
-  -- completed never selects, releases, or offers. Attempts the shell never
-  -- owned keep their historical handoff.
-  if importer ~= nil then
-    local statusOk, snapshot = pcall(importer.status, importer)
-    if not statusOk or type(snapshot) ~= "table" or snapshot.state ~= RomImporter.STATES.COMPLETE then
-      return
-    end
+  if importer == nil or importer ~= originatingImporter then
+    return
   end
-  App._pendingImport = nil
-  -- Take the one verified source handoff before the importer is released.
-  -- A dropped or freshly imported ROM carries no reopenable path yet, so
-  -- this buffer is what lets the controller admit the selection; the
-  -- buffer crosses by reference as a selection option so the offer is
-  -- enqueued before the boot gate, including when quiescence defers the
-  -- selection behind a pending barrier. Releasing the wrapper never drops
-  -- the buffer: the options own the reference until admitted.
-  local verifiedSource = nil
-  if importer ~= nil and type(importer.takeVerifiedSource) == "function" then
-    local takeOk, taken = pcall(importer.takeVerifiedSource, importer)
-    if takeOk and taken ~= nil then
-      verifiedSource = taken
+  local snapshot = assert(importer:status(), "the current importer must expose its status")
+  if type(snapshot) ~= "table" or snapshot.state ~= RomImporter.STATES.COMPLETE then
+    return
+  end
+  assert(type(importer.takeVerifiedSource) == "function", "a complete import owns its verified source handoff")
+  local verifiedSource = assert(importer:takeVerifiedSource(), "a complete import has one verified source handoff")
+  assert(type(verifiedSource.release) == "function", "the verified source wrapper owns its release")
+  verifiedSource:release()
+  local pendingIcon = App._pendingIconData
+  if pendingIcon ~= nil then
+    local info = GameVersion.forSha1(pendingIcon.romSha1)
+    if info ~= nil and info.id == versionId then
+      App._pendingIconData = nil
+      pendingIcon.png:release()
     end
   end
   App.importer = nil
-  -- Freeze the final verified view for the cold fresh-import card and
-  -- prefer the live card receipt the import view latched on input.
-  local frozenStatus = nil
-  if importer ~= nil and type(importer.status) == "function" then
-    local statusOk, snapshot = pcall(importer.status, importer)
-    if statusOk and type(snapshot) == "table" then
-      frozenStatus = {
-        state = snapshot.state,
-        progress = snapshot.progress,
-        versionId = snapshot.versionId,
-        displayName = snapshot.displayName,
-        sourceName = snapshot.sourceName,
-      }
-    end
-  end
-  local receipt = App._importReceipt
-  App._importReceipt = nil
-  local currentView = App.state
-  if currentView ~= nil and type(currentView.receivedName) == "function" then
-    receipt = currentView:receivedName() or receipt
-  end
-  local offeredBytes = nil
-  if verifiedSource ~= nil then
-    local bytesOk, byteData = pcall(verifiedSource.byteData, verifiedSource)
-    if bytesOk and type(byteData) == "userdata" then
-      offeredBytes = byteData
-    end
-    if type(verifiedSource.release) == "function" then
-      pcall(verifiedSource.release, verifiedSource)
-    end
-  end
-  -- A blocked boot rebind stays on its expected version: a wrong ROM never
-  -- switches the selection, launches another game, or clears current
-  -- files. The expected version reselects with the mismatch diagnostic so
-  -- the boot wait stays actionable on a fresh epoch.
-  local blockedExpected = App._bootBlockedVersionId
-  if blockedExpected == nil then
-    local current = App.state
-    if
-      current ~= nil
-      and getmetatable(current) == CachePreparationState
-      and current.kind == "boot-source"
-      and App.selectedVersionId ~= nil
-    then
-      blockedExpected = App.selectedVersionId
-    end
-  end
-  if blockedExpected ~= nil and versionId ~= blockedExpected then
-    App._bootBlockedVersionId = nil
-    App._rebindVersionId = nil
-    local expectedLabel = selectedVersionLabel(blockedExpected)
-    local wrongLabel = selectedVersionLabel(versionId)
-    App._selectVersion(blockedExpected, {
-      bootMismatch = string.format(
-        "Dropped %s does not match the expected %s version (mismatch). Drop the matching .nds or .zip for %s to finish preparing.",
-        wrongLabel,
-        expectedLabel,
-        expectedLabel
-      ),
-    })
-    return
-  end
-  App._bootBlockedVersionId = nil
-  -- A rebind that supplies the same ROM resumes the waiting version on
-  -- the ordinary path: its receipts, assets, and saves survive instead of
-  -- restarting as a fresh import. A repeated completion for an already
-  -- registered version is warm even without that launch-path flag, while
-  -- only a genuinely new version takes the fresh-import path.
-  local rebindId = App._rebindVersionId
-  App._rebindVersionId = nil
-  if rebindId ~= nil and versionId == rebindId then
-    if offeredBytes ~= nil then
-      App._selectVersion(versionId, { sourceOffer = offeredBytes })
-    else
-      App._selectVersion(versionId)
-    end
-  elseif alreadyRegistered(versionId) then
-    if offeredBytes ~= nil then
-      App._selectVersion(versionId, { sourceOffer = offeredBytes })
-    else
-      App._selectVersion(versionId)
-    end
-  else
-    local selectOptions = {
-      freshImport = true,
-      importStatus = frozenStatus,
-      importReceipt = receipt,
-    }
-    if offeredBytes ~= nil then
-      selectOptions.sourceOffer = offeredBytes
-    end
-    App._selectVersion(versionId, selectOptions)
-  end
+  App._importAttempt = nil
+  App._showGameSelection(versionId)
 end
 
 function App._bootMainMenu(versions)
@@ -1335,19 +1972,11 @@ function App._bootMainMenu(versions)
 end
 
 function App._bootExisting()
-  local ready = readyVersions()
-  if #ready == 0 then
-    App._startImport()
-    return
-  end
-  local remembered = EditionPreference.read()
-  for _, versionId in ipairs(ready) do
-    if versionId == remembered then
-      App._selectVersion(versionId)
-      return
-    end
-  end
-  App._selectVersion(ready[1])
+  App._bootPending = false
+  local metadata = readSaveMetadata()
+  App._bootCandidate = newestSave(metadata)
+  App._finishBootIntro(false)
+  App._routeBoot(App._bootCandidate)
 end
 
 -- One authoritative execution-policy fact for the selected epoch. A state
@@ -1397,21 +2026,70 @@ end
 
 function App.update(dt)
   App._syncDrawableSize()
-  if App.importer and App.importer:isBusy() then
+  if App._touchGamepadSuspended then
+    return
+  end
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:sync()
+  end
+  App._pollNativePicker()
+  App._pollIconRecovery()
+  if App._importAttempt ~= nil then
+    App._importAttempt.elapsed = (App._importAttempt.elapsed or 0) + dt
+  end
+  if
+    App.importer ~= nil
+    and App.importer.state ~= RomImporter.STATES.COMPLETE
+    and App.importer.state ~= RomImporter.STATES.ERROR
+  then
     App.importer:update()
   end
-  if App.importer and not App.importer:isBusy() and App.importer.state == RomImporter.STATES.ERROR then
-    App.importer = nil
-    App._pendingImport = nil
+  if
+    App.importer ~= nil
+    and App.importer.state == RomImporter.STATES.ERROR
+    and App._importAttempt ~= nil
+    and App._importAttempt.mode ~= "error"
+  then
+    App._failImport(assert(App.importer:status()).error or "ROM import failed")
   end
   if App.service then
     App.service:update()
   end
   App._updateStartupWarmup()
+  App._updateSaveLocationWarmup()
+  if App.launcherAudio ~= nil then
+    App.launcherAudio:update(dt)
+  end
+  if App._bootIntro ~= nil then
+    App._bootIntro:update(dt)
+  end
   if App.state and App.state.update then
     App.state:update(dt)
   end
+  if App._bootIntro ~= nil and App._bootPending and App._bootIntro.painted then
+    App._prepareBootCandidate()
+    if App.state ~= nil and getmetatable(App.state) == CachePreparationState and App.state.kind == "boot-source" then
+      App.state:update(0)
+    end
+  end
+  if
+    App._bootIntro ~= nil
+    and App.state ~= nil
+    and getmetatable(App.state) == StartupTitleState
+    and (App.state.phase == "error" or App.state:hasInitialAudioFailure())
+  then
+    App._finishBootIntro(false)
+  end
+  if App._bootIntro ~= nil and App._bootIntro.elapsed + 1e-9 >= BOOT_MAX_DURATION then
+    App._finishBootIntro(false)
+    if App.state == nil then
+      App._showGameSelection(App._bootCandidate and App._bootCandidate.versionId or nil)
+    end
+  end
   App._syncCacheExecutionPolicy()
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:sync()
+  end
   App._startPendingImport()
   local audio = App.startupAudioSession
   if audio ~= nil then
@@ -1446,41 +2124,161 @@ function App.update(dt)
   end
 end
 
-function App.resize(width, height)
-  App.drawableWidth = width
-  App.drawableHeight = height
-  App.pixelRatio = love.graphics.getDPIScale()
+local function finite(value)
+  return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+end
+
+local function copySafe(rect)
+  return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
+end
+
+local function sameRectangle(a, b)
+  return a ~= nil and b ~= nil and a.x == b.x and a.y == b.y and a.width == b.width and a.height == b.height
+end
+
+local function sampleNativeFacts()
+  local graphics = love.graphics
+  local function sample()
+    local width, height = graphics.getDimensions()
+    local ratio = graphics.getDPIScale()
+    local safe
+    if type(love.window.getSafeArea) == "function" then
+      local x, y, safeWidth, safeHeight = love.window.getSafeArea()
+      safe = { x = x, y = y, width = safeWidth, height = safeHeight }
+    elseif love.system.getOS() ~= "Android" and love.system.getOS() ~= "iOS" then
+      safe = { x = 0, y = 0, width = width, height = height }
+    end
+    local widthAfter, heightAfter = graphics.getDimensions()
+    local ratioAfter = graphics.getDPIScale()
+    return width, height, ratio, safe, widthAfter, heightAfter, ratioAfter
+  end
+  local width, height, ratio, safe, widthAfter, heightAfter, ratioAfter = sample()
+  if width ~= widthAfter or height ~= heightAfter or ratio ~= ratioAfter then
+    width, height, ratio, safe = sample()
+  end
+  return width, height, ratio, safe
+end
+
+function App._cancelLeafCaptures()
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:cancel()
+  end
+  if App.state ~= nil and type(App.state.focus) == "function" then
+    App.state:focus(false)
+  end
+  if App._bootIntro ~= nil then
+    App._bootIntro:focus(false)
+  end
   App._swallowedPointers = {}
-  if App.state and App.state.resize then
-    App.state:resize(width, height)
+end
+
+function App._publishDrawableSize(width, height, pixelRatio, safeRect)
+  local valid = finite(width)
+    and width > 0
+    and finite(height)
+    and height > 0
+    and finite(pixelRatio)
+    and pixelRatio > 0
+    and type(safeRect) == "table"
+    and finite(safeRect.x)
+    and finite(safeRect.y)
+    and finite(safeRect.width)
+    and safeRect.width > 0
+    and finite(safeRect.height)
+    and safeRect.height > 0
+  local usable
+  if valid then
+    local x = math.max(0, safeRect.x)
+    local y = math.max(0, safeRect.y)
+    local farX = math.min(width, safeRect.x + safeRect.width)
+    local farY = math.min(height, safeRect.y + safeRect.height)
+    if farX > x and farY > y then
+      usable = { x = x, y = y, width = farX - x, height = farY - y }
+    end
+  end
+  if usable == nil then
+    if not App._touchGamepadSuspended then
+      App._cancelLeafCaptures()
+      for id in pairs(App._realTouches) do
+        App._suspendedTouchIds[id] = true
+      end
+    end
+    App._touchGamepadSuspended = true
+    return
+  end
+  local changed = App._forceDisplayPublication
+    or App._touchGamepadSuspended
+    or width ~= App.drawableWidth
+    or height ~= App.drawableHeight
+    or pixelRatio ~= App.pixelRatio
+    or not sameRectangle(usable, App._safeRect)
+  if not changed then
+    return
+  end
+  App._cancelLeafCaptures()
+  App.drawableWidth, App.drawableHeight, App.pixelRatio = width, height, pixelRatio
+  App._safeRect = copySafe(usable)
+  App._displayContext = App._launcherDisplayContext()
+  App._touchGamepadSuspended = false
+  App._forceDisplayPublication = false
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:setGeometry(width, height, App._safeRect, pixelRatio)
+  end
+  if App._importAttempt ~= nil and not App._importAttempt.started then
+    App._importAttempt.painted = false
+  end
+  if App._bootIntro ~= nil then
+    App._bootIntro:resize(width, height, App._safeRect, pixelRatio)
+  end
+  if App.state ~= nil and type(App.state.resize) == "function" then
+    App.state:resize(width, height, App._safeRect, pixelRatio)
+  end
+  if App.state ~= nil and type(App.state.focus) == "function" then
+    App.state:focus(true)
+  end
+  if App._bootIntro ~= nil then
+    App._bootIntro:focus(App._foreground)
+  end
+end
+
+function App.resize(_, _)
+  App._forceDisplayPublication = true
+  App._syncDrawableSize()
+  if not App._touchGamepadSuspended then
+    if App.state ~= nil and type(App.state.focus) == "function" then
+      App.state:focus(true)
+    end
+    if App._bootIntro ~= nil then
+      App._bootIntro:focus(App._foreground)
+    end
   end
 end
 
 function App._syncDrawableSize()
-  local width, height = love.graphics.getDimensions()
-  local pixelRatio = love.graphics.getDPIScale()
-  if width == App.drawableWidth and height == App.drawableHeight and pixelRatio == App.pixelRatio then
-    return
-  end
-  App.drawableWidth = width
-  App.drawableHeight = height
-  App.pixelRatio = pixelRatio
-  if App.state and App.state.resize then
-    App.state:resize(width, height)
-  end
+  local width, height, ratio, safe = sampleNativeFacts()
+  App._publishDrawableSize(width, height, ratio, safe)
 end
 
 function App.draw()
-  -- LÖVE keeps the color across frames, so every frame starts from white
-  -- instead of whatever the previous state last drew with.
+  if App._touchGamepadSuspended then
+    App._syncDrawableSize()
+  end
+  if App._touchGamepadSuspended then
+    return
+  end
   love.graphics.setColor(1, 1, 1, 1)
-  if App.state and App.state.draw then
+  if App._bootIntro ~= nil then
+    App._bootIntro:draw()
+  elseif App.state and App.state.draw then
     App.state:draw()
   elseif App.opts.dev then
     love.graphics.setColor(1, 1, 1)
     love.graphics.print("portemon", 24, 24)
   end
   App._noteReceiptPaint()
+  if App._touchGamepad ~= nil then
+    App._touchGamepad:draw()
+  end
 end
 
 function App.filedropped(file)
@@ -1495,6 +2293,26 @@ function App.filedropped(file)
   App._beginImportAttempt("drop", file)
 end
 
+local BOOT_MODIFIERS =
+  { lshift = true, rshift = true, lctrl = true, rctrl = true, lalt = true, ralt = true, lgui = true, rgui = true }
+
+local function releaseBootInput(identity)
+  if App._bootSwallowedInputs ~= nil then
+    App._bootSwallowedInputs[identity] = nil
+  end
+end
+
+local function pointerInSafe(x, y)
+  local safe = App._safeRect
+  return type(x) == "number"
+    and type(y) == "number"
+    and safe ~= nil
+    and x >= safe.x
+    and x < safe.x + safe.width
+    and y >= safe.y
+    and y < safe.y + safe.height
+end
+
 function App.keypressed(key, scancode, isrepeat)
   if key == "f11" then
     if not isrepeat then
@@ -1502,8 +2320,22 @@ function App.keypressed(key, scancode, isrepeat)
     end
     return
   end
+  App._syncDrawableSize()
+  if App._touchGamepadSuspended then
+    return
+  end
+  local identity = "key:" .. key
+  if App._bootSwallowedInputs[identity] then
+    return
+  end
+  if not isrepeat and not BOOT_MODIFIERS[key] and App._interruptOpening(identity) then
+    return
+  end
   if App.state and App.state.keypressed then
     App.state:keypressed(key, scancode, isrepeat)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
     return
   end
   if key == "escape" then
@@ -1512,52 +2344,126 @@ function App.keypressed(key, scancode, isrepeat)
 end
 
 function App.keyreleased(key, scancode)
+  local identity = "key:" .. key
+  if App._bootSwallowedInputs[identity] then
+    releaseBootInput(identity)
+    return
+  end
   if App.state and App.state.keyreleased then
     App.state:keyreleased(key, scancode)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.gamepadpressed(joystick, button)
+  App._syncDrawableSize()
+  if App._touchGamepadSuspended then
+    return
+  end
+  local identity = "gamepad:" .. tostring(joystick) .. ":" .. button
+  if App._bootSwallowedInputs[identity] then
+    return
+  end
+  if App._interruptOpening(identity) then
+    return
+  end
   if App.state and App.state.gamepadpressed then
     App.state:gamepadpressed(joystick, button)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.gamepadreleased(joystick, button)
+  local identity = "gamepad:" .. tostring(joystick) .. ":" .. button
+  if App._bootSwallowedInputs[identity] then
+    releaseBootInput(identity)
+    return
+  end
   if App.state and App.state.gamepadreleased then
     App.state:gamepadreleased(joystick, button)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.gamepadaxis(joystick, axis, value)
   if App.state and App.state.gamepadaxis then
     App.state:gamepadaxis(joystick, axis, value)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.mousepressed(x, y, button, istouch, presses)
+  if istouch then
+    return
+  end
   App._syncDrawableSize()
+  if App._touchGamepadSuspended then
+    return
+  end
+  local pointerId = "mouse:" .. tostring(button)
+  if App._bootSwallowedInputs[pointerId] then
+    return
+  end
+  if button == 1 and pointerInSafe(x, y) and App._interruptOpening(pointerId) then
+    return
+  end
+  if App._bootIntro ~= nil and not pointerInSafe(x, y) then
+    return
+  end
   local state = App.state
   if state and state.mousepressed then
     state:mousepressed(x, y, button, istouch, presses)
-    if getmetatable(state) == StartupTitleState and state.canceledPointers["mouse:" .. tostring(button)] then
-      App._swallowedPointers = App._swallowedPointers or {}
-      App._swallowedPointers["mouse:" .. tostring(button)] = true
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
+    if getmetatable(state) == StartupTitleState and state.canceledPointers[pointerId] then
+      App._swallowedPointers[pointerId] = true
     end
   end
 end
 
 function App.mousemoved(x, y, dx, dy, istouch)
+  if istouch then
+    return
+  end
   App._syncDrawableSize()
+  if App._touchGamepadSuspended then
+    return
+  end
+  local pointerId = "mouse:1"
+  if App._bootSwallowedInputs[pointerId] then
+    return
+  end
   if App.state and App.state.mousemoved then
     App.state:mousemoved(x, y, dx, dy, istouch)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.mousereleased(x, y, button, istouch, presses)
+  if istouch then
+    return
+  end
   App._syncDrawableSize()
+  if App._touchGamepadSuspended then
+    return
+  end
   local pointerId = "mouse:" .. tostring(button)
-  if App._swallowedPointers ~= nil and App._swallowedPointers[pointerId] then
+  if App._bootSwallowedInputs[pointerId] then
+    releaseBootInput(pointerId)
+    return
+  end
+  if App._swallowedPointers[pointerId] then
     local state = App.state
     if state ~= nil and getmetatable(state) == StartupTitleState then
       state:mousereleased(x, y, button, istouch, presses)
@@ -1567,6 +2473,9 @@ function App.mousereleased(x, y, button, istouch, presses)
   end
   if App.state and App.state.mousereleased then
     App.state:mousereleased(x, y, button, istouch, presses)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
@@ -1577,28 +2486,75 @@ function App.wheelmoved(x, y)
 end
 
 function App.touchpressed(id, x, y, dx, dy, pressure)
+  App._realTouches[id] = true
   App._syncDrawableSize()
+  local pointerId = "touch:" .. tostring(id)
+  if App._touchGamepadSuspended then
+    App._suspendedTouchIds[id] = true
+    return
+  end
+  App._suspendedTouchIds[id] = nil
+  if App._bootSwallowedInputs[pointerId] then
+    return
+  end
+  if App._touchGamepad ~= nil and App._touchGamepad:touchpressed(id, x, y) then
+    return
+  end
+  if pointerInSafe(x, y) and App._interruptOpening(pointerId) then
+    return
+  end
+  if App._bootIntro ~= nil and not pointerInSafe(x, y) then
+    return
+  end
   local state = App.state
   if state and state.touchpressed then
     state:touchpressed(id, x, y, dx, dy, pressure)
-    if getmetatable(state) == StartupTitleState and state.canceledPointers["touch:" .. tostring(id)] then
-      App._swallowedPointers = App._swallowedPointers or {}
-      App._swallowedPointers["touch:" .. tostring(id)] = true
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
+    if getmetatable(state) == StartupTitleState and state.canceledPointers[pointerId] then
+      App._swallowedPointers[pointerId] = true
     end
   end
 end
 
 function App.touchmoved(id, x, y, dx, dy, pressure)
   App._syncDrawableSize()
+  if App._touchGamepadSuspended or App._suspendedTouchIds[id] then
+    return
+  end
+  local pointerId = "touch:" .. tostring(id)
+  if App._bootSwallowedInputs[pointerId] then
+    return
+  end
+  if App._touchGamepad ~= nil and App._touchGamepad:touchmoved(id, x, y) then
+    return
+  end
   if App.state and App.state.touchmoved then
     App.state:touchmoved(id, x, y, dx, dy, pressure)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.touchreleased(id, x, y, dx, dy, pressure)
   App._syncDrawableSize()
   local pointerId = "touch:" .. tostring(id)
-  if App._swallowedPointers ~= nil and App._swallowedPointers[pointerId] then
+  App._realTouches[id] = nil
+  if App._touchGamepadSuspended or App._suspendedTouchIds[id] then
+    App._suspendedTouchIds[id] = nil
+    releaseBootInput(pointerId)
+    return
+  end
+  if App._bootSwallowedInputs[pointerId] then
+    releaseBootInput(pointerId)
+    return
+  end
+  if App._touchGamepad ~= nil and App._touchGamepad:touchreleased(id, x, y) then
+    return
+  end
+  if App._swallowedPointers[pointerId] then
     local state = App.state
     if state ~= nil and getmetatable(state) == StartupTitleState then
       state:touchreleased(id, x, y, dx, dy, pressure)
@@ -1608,21 +2564,40 @@ function App.touchreleased(id, x, y, dx, dy, pressure)
   end
   if App.state and App.state.touchreleased then
     App.state:touchreleased(id, x, y, dx, dy, pressure)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.textinput(text)
   if App.state and App.state.textinput then
     App.state:textinput(text)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
 function App.focus(focused)
+  App._foreground = focused == true
   if not focused then
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:cancel()
+    end
     App._swallowedPointers = {}
+    App._bootSwallowedInputs = {}
+    App._realTouches = {}
+    App._suspendedTouchIds = {}
+  end
+  if App._bootIntro ~= nil then
+    App._bootIntro:focus(App._foreground)
   end
   if App.state and App.state.focus then
     App.state:focus(focused)
+    if App._touchGamepad ~= nil then
+      App._touchGamepad:sync()
+    end
   end
 end
 
@@ -1633,20 +2608,63 @@ function App.quit()
       return true
     end
   end
-  App.setState(nil)
+  local attempt = App._importAttempt
+  if attempt ~= nil and attempt.mode == "importing" then
+    local importer = App.importer
+    local status = importer ~= nil and importer:status() or nil
+    if status == nil or status.canCancel ~= true then
+      return true
+    end
+  end
+  -- Final quit drains the physical import worker at its module owner,
+  -- unconditionally: a cancel-then-quit orphan keeps occupying the process
+  -- lease after its attempt cleared, a retained terminal error still owns a
+  -- live worker, and an in-flight read must still terminate before teardown.
+  -- No replacement selector is constructed purely to dispose it. The commit
+  -- gate above already vetoed quit once publication was authorized, so this
+  -- cancellation never revokes a committed archive. Interactive cancellation
+  -- stays nonblocking; only this final path joins. A failed join vetoes quit
+  -- so teardown never runs as if the lease were freed when it was not.
+  if
+    attempt ~= nil
+    and attempt.descriptor ~= nil
+    and attempt.descriptor.kind == "temporary"
+    and not attempt.started
+  then
+    pcall(love.filesystem.remove, attempt.descriptor.value)
+  end
+  do
+    local importer = App.importer
+    if importer ~= nil then
+      importer:cancelQueued()
+    end
+    -- The shutdown path above never constructs a replacement selector
+    -- purely to dispose it; the join is honored before the attempt clears.
+    if not RomImporter.shutdownProcessLease() then
+      return true
+    end
+    App._importAttempt = nil
+    App.importer = nil
+  end
+  App._finishBootIntro(false)
+  -- Quit joins background work through the single ordered retirement path:
+  -- cancel optional demand promptly, signal workers while the host is live,
+  -- then wait for termination before releasing owners. No parallel abandon
+  -- lifecycle exists; a partial snapshot stage is ignored on the next boot.
+  App._releaseIconRecovery()
   App._retireSelection()
-  -- Process shutdown alone joins the controller thread; selection
-  -- switching only retires epochs while actual old work stays counted
-  -- below the controller.
   local service = App.service
   App.service = nil
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
-  App._rebindVersionId = nil
-  App._bootBlockedVersionId = nil
   if service then
     service:shutdown()
   end
+  App._releaseLauncherResources()
+  App._safeRect = nil
+  App._displayContext = nil
+  App._importAttempt = nil
+  App.importer = nil
 end
 
 return App

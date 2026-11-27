@@ -1,10 +1,8 @@
 -- Private background entry for interactive ROM import. The render thread never
--- owns ROM file reads, archive traversal, cartridge hashing, or source
--- registration: this module runs the authoritative RomImporter sequence in a
--- dedicated love.thread worker and reports back over channels. It implements
--- no validation of its own; every check below reuses the existing importer,
--- source, cartridge, and binding owners. Main-thread code must treat this
--- module as an opaque bootstrap: only RomImporter drives it.
+-- owns ROM file reads, archive traversal, cartridge hashing, compression, or
+-- managed publication: this module runs the existing validation owner in a
+-- dedicated love.thread worker and reports back over channels. Main-thread code
+-- must treat this module as an opaque bootstrap: only RomImporter drives it.
 
 local RomImportWorker = {}
 
@@ -22,6 +20,7 @@ end
 pcall(require, "love.thread")
 pcall(require, "love.filesystem")
 pcall(require, "love.data")
+pcall(require, "love.image")
 pcall(require, "love.timer")
 local Worker = require("romdump.src.source.RomImportWorker")
 Worker.run(inbox, outbox)
@@ -33,12 +32,9 @@ function RomImportWorker.bootstrap()
   return bootstrapSource()
 end
 
--- In-memory backend staging the worker's decided binding. The worker state
--- shares no filesystem cache handle with the game thread, so registration
--- runs against this ephemeral staging; the decided binding record travels
--- back over the channel and the game thread publishes those exact bytes
--- through its configured cache. Only the backend methods the version cache
--- exercises are implemented.
+-- In-memory backend for the direct importer's existing registration path. The
+-- worker shares no persistent cache handle with the game thread; this record
+-- is private validation staging and is never published as an external binding.
 ---@return table<string, table<string, unknown>> memory backend with files/dirs maps
 local function memoryBackend()
   local files = {}
@@ -220,10 +216,13 @@ function RomImportWorker.run(inbox, outbox)
   -- still answer the live session, since an id-less packet would read as a
   -- stale late packet and die silent.
   local latchedId = {}
+  local prepared
+  local iconPng
+  local temporaryPath
   local ok, failure = pcall(function()
     local RomImporter = require("romdump.src.source.RomImporter")
     local RomSource = require("romdump.src.source.RomSource")
-    local RomBinding = require("romdump.src.source.RomBinding")
+    local RomArchive = require("romdump.src.source.RomArchive")
     local CacheFs = require("libs.storage.src.CacheFs")
     local Errors = require("libs.errors.src.Errors")
 
@@ -243,26 +242,34 @@ function RomImportWorker.run(inbox, outbox)
       answer({ kind = "error", errorCode = code, message = message, context = plainContext(context) })
     end
 
-    if request.kind ~= "path" and request.kind ~= "drop" and request.kind ~= "dropBytes" then
+    if
+      request.kind ~= "path"
+      and request.kind ~= "drop"
+      and request.kind ~= "dropBytes"
+      and request.kind ~= "temporary"
+    then
       failRequest("ROM_IMPORT_REQUEST_INVALID", "background import request has no usable source", {})
       return
     end
 
     local versions = catalogFromEntries(request.catalog)
+    if request.kind == "temporary" then
+      temporaryPath = assert(request.path)
+    end
     local staging = memoryBackend()
     local function cacheFactory(versionId)
       return CacheFs.forVersion(versionId, staging)
     end
 
     -- Cooperative cancellation polled at safe boundaries only. It discards
-    -- a matching cancel packet without ever consuming a matching commit,
-    -- which stays queued for registerGate's blocking demand.
+    -- a matching cancel packet without consuming a matching commit, which
+    -- stays queued for the publication gate's blocking demand.
     local committed = false
     local function cancelRequested()
-      local ok, packet = pcall(function()
+      local popped, packet = pcall(function()
         return inbox:pop()
       end)
-      if not ok or packet == nil then
+      if not popped or packet == nil then
         return false
       end
       if type(packet) == "table" and packet.id == id and packet.op == "cancel" then
@@ -274,28 +281,11 @@ function RomImportWorker.run(inbox, outbox)
       return false
     end
 
-    -- The registration gate: after canonical verification and the reopen
-    -- proof, and directly before the binding write, the worker announces
-    -- the validated version and waits for the game thread's explicit
-    -- commit or cancel for this session. A cancel raises out of the
-    -- validation coroutine so nothing is recorded; the game thread already
-    -- retired the session and discards everything that follows.
-    local function registerGate()
-      answer({ kind = "validated" })
-      local reply = inbox:demand()
-      if type(reply) == "table" and reply.id == id and reply.op == "commit" then
-        committed = true
-        return
-      end
-      Errors.raise("IMPORT_CANCELED", "the import was superseded before registration", { id = id })
-    end
-
     local importer = RomImporter.new({
       versions = versions,
       cacheFactory = cacheFactory,
       now = workerNow,
       expectedVersionId = request.expectedVersionId,
-      registerGate = registerGate,
     })
 
     -- A cancel already queued before the expensive source open ends the
@@ -315,10 +305,19 @@ function RomImportWorker.run(inbox, outbox)
       started, startErr = pcall(importer.startPath, importer, request.path)
     elseif request.kind == "drop" then
       started, startErr = pcall(importer.startDroppedFile, importer, request.file)
+    elseif request.kind == "temporary" then
+      local physicalPath = assert(love.filesystem.getSaveDirectory()) .. "/" .. assert(temporaryPath)
+      started, startErr = pcall(importer.startPath, importer, physicalPath)
     else
       started, startErr = pcall(function()
-        local name = type(request.name) == "string" and request.name or "dropped file"
-        local bytes = assert(type(request.bytes) == "string" and request.bytes, "memory drop requires its bytes")
+        local requestedName = request.name
+        local name = "dropped file"
+        if type(requestedName) == "string" then
+          name = tostring(requestedName)
+        end
+        local rawBytes = request.bytes
+        assert(type(rawBytes) == "string", "memory drop requires its bytes")
+        local bytes = tostring(rawBytes)
         local source
         if name:lower():match("%.zip$") then
           source = assert(RomSource.fromZipData(bytes, name, versions))
@@ -347,7 +346,10 @@ function RomImportWorker.run(inbox, outbox)
     local lastState, lastProgress = nil, nil
     local function reportStatus(force)
       local snapshot = importer:status()
-      local progress = snapshot.progress or 0
+      if snapshot.state == RomImporter.STATES.COMPLETE then
+        return
+      end
+      local progress = math.min(0.9, snapshot.progress or 0)
       if not force and snapshot.state == lastState and progress == lastProgress then
         return
       end
@@ -372,38 +374,106 @@ function RomImportWorker.run(inbox, outbox)
       workerSleep(0)
     end
 
-    if importer.state == RomImporter.STATES.COMPLETE then
+    if importer.state == RomImporter.STATES.ERROR then
       local snapshot = importer:status()
-      local view = importer:takeVerifiedSource()
-      assert(view ~= nil, "a completed import hands its verified source once")
-      local byteDataOk, byteData = pcall(view.byteData, view)
-      pcall(view.release, view)
-      assert(byteDataOk and type(byteData) == "userdata", "a completed import shares its verified buffer")
-      local cache = cacheFactory(snapshot.versionId)
-      local binding = assert(cache:loadLua(RomBinding.PATH))
-      answer({
-        kind = "complete",
-        versionId = snapshot.versionId,
-        report = snapshot.report,
-        sourceName = snapshot.sourceName,
-        displayName = snapshot.displayName,
-        binding = binding,
-        byteData = byteData,
-      })
+      if snapshot.errorCode == "IMPORT_CANCELED" then
+        return
+      end
+      failRequest(
+        snapshot.errorCode or "ROM_IMPORT_FAILED",
+        Errors.format(snapshot.error),
+        Errors.is(snapshot.error) and snapshot.error.context or {}
+      )
       return
     end
 
     local snapshot = importer:status()
-    if snapshot.errorCode == "IMPORT_CANCELED" then
+    local view = importer:takeVerifiedSource()
+    assert(view ~= nil, "a completed import hands its verified source once")
+    local byteDataOk, byteData = pcall(view.byteData, view)
+    pcall(view.release, view)
+    assert(byteDataOk and type(byteData) == "userdata", "a completed import shares its verified buffer")
+    local versionInfo = assert(versions.info(snapshot.versionId), "verified import has a catalog identity")
+    local iconError
+    iconPng, iconError = RomArchive.encodeIcon(byteData)
+    if iconPng == nil then
+      answer({
+        kind = "status",
+        state = "registering",
+        progress = 0.9,
+        stage = "publishing",
+        detail = "ROM icon unavailable: " .. Errors.format(iconError),
+      })
+    end
+
+    answer({ kind = "status", state = "registering", progress = 0.9, stage = "publishing", stageLabel = "Saving ROM" })
+    prepared, startErr = RomArchive.prepare(versionInfo, byteData, versions)
+    if prepared == nil then
+      local err = startErr
+      local typedErr = Errors.is(err) and err or nil
+      ---@cast typedErr Errors.Error?
+      failRequest(
+        typedErr and typedErr.code or "ROM_ARCHIVE_WRITE_FAILED",
+        Errors.format(err),
+        typedErr and typedErr.context or {}
+      )
       return
     end
-    local message = Errors.format(snapshot.error)
-    failRequest(
-      snapshot.errorCode or "ROM_IMPORT_FAILED",
-      message,
-      Errors.is(snapshot.error) and snapshot.error.context or {}
-    )
+    if cancelRequested() then
+      return
+    end
+
+    answer({ kind = "validated" })
+    local reply = inbox:demand()
+    if not (type(reply) == "table" and reply.id == id and reply.op == "commit") then
+      Errors.raise("IMPORT_CANCELED", "the import was superseded before publication", { id = id })
+    end
+    committed = true
+
+    local published, publishError = RomArchive.publish(prepared)
+    if not published then
+      local err = publishError
+      local typedErr = Errors.is(err) and err or nil
+      ---@cast typedErr Errors.Error?
+      failRequest(
+        typedErr and typedErr.code or "ROM_ARCHIVE_PUBLISH_FAILED",
+        Errors.format(err),
+        typedErr and typedErr.context or {}
+      )
+      return
+    end
+    if iconPng ~= nil then
+      local iconPublished, iconPublishError = RomArchive.publishIcon(versionInfo.sha1:lower(), iconPng)
+      if not iconPublished then
+        answer({
+          kind = "status",
+          state = "registering",
+          progress = 0.9,
+          stage = "publishing",
+          detail = "ROM icon could not be saved: " .. Errors.format(iconPublishError),
+        })
+      end
+      iconPng:release()
+      iconPng = nil
+    end
+    answer({
+      kind = "complete",
+      versionId = snapshot.versionId,
+      report = snapshot.report,
+      sourceName = snapshot.sourceName,
+      displayName = snapshot.displayName,
+      byteData = byteData,
+    })
   end)
+  if prepared ~= nil then
+    pcall(require("romdump.src.source.RomArchive").discard, prepared)
+  end
+  if iconPng ~= nil then
+    pcall(iconPng.release, iconPng)
+  end
+  if temporaryPath ~= nil then
+    pcall(love.filesystem.remove, temporaryPath)
+  end
   if not ok and latchedId.id ~= nil then
     pcall(function()
       if type(outbox) == "table" or type(outbox) == "userdata" then

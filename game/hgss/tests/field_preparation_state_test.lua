@@ -255,6 +255,76 @@ function T.escape_before_readiness_never_builds_a_loader()
   state:dispose()
 end
 
+function T.gamepad_b_cancels_each_pending_field_preparation_once_without_late_transfer()
+  local cases = {
+    {
+      name = "continue",
+      options = function(calls)
+        return continueOptions({
+          derivedAssets = {
+            requestMilestone = function()
+              return false
+            end,
+            requestLogicalField = function()
+              return true
+            end,
+          },
+          createLoader = function()
+            calls.builds = (calls.builds or 0) + 1
+            return readyGeometryLoader(calls)
+          end,
+          onCancel = function()
+            calls.cancels = (calls.cancels or 0) + 1
+          end,
+        })
+      end,
+    },
+    {
+      name = "post-Oak new game",
+      options = function(calls)
+        local gates = { planning = false, runtime = false }
+        local behavior = { ready = false }
+        local options = newGameOptions(gates, {}, calls, behavior, {
+          onCancel = function()
+            calls.cancels = (calls.cancels or 0) + 1
+          end,
+        })
+        calls.gates = gates
+        calls.behavior = behavior
+        return options
+      end,
+    },
+  }
+  local Game = require("game.src.Game")
+  for _, case in ipairs(cases) do
+    local calls = {}
+    local state = FieldPreparationState.new(case.options(calls))
+    local game = Game.new({ onExit = function() end })
+    game:setState(state)
+    settle(game)
+    local joystick = {
+      getID = function()
+        return -1
+      end,
+    }
+    game:gamepadpressed(joystick, "a")
+    Assert.equal(calls.cancels or 0, 0, case.name .. " ignores unrelated gamepad buttons")
+    game:gamepadpressed(joystick, "b")
+    Assert.equal(calls.cancels, 1, case.name .. " B follows the existing cancellation path")
+    game:gamepadpressed(joystick, "b")
+    game:keypressed("escape")
+    Assert.equal(calls.cancels, 1, case.name .. " cancellation remains idempotent")
+    if calls.gates then
+      calls.gates.planning, calls.gates.runtime = true, true
+      calls.behavior.ready = true
+    end
+    settle(game)
+    Assert.equal(calls.transfers or 0, 0, case.name .. " never transfers after cancellation")
+    Assert.equal(calls.builds or 0, 0, case.name .. " never builds a loader after cancellation")
+    game:dispose()
+  end
+end
+
 function T.failed_loader_build_raises_directly()
   local builds = 0
   local state = FieldPreparationState.new(continueOptions({

@@ -448,6 +448,29 @@ function T.release_while_idle_joins_the_worker_and_is_idempotent()
   end)
 end
 
+function T.release_while_busy_signals_stop_and_joins_the_worker()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = newQueue(fakeCacheFs())
+    local running = queue:request("mesh", "geometry/running.g4mesh", "demand")
+    Assert.isTrue(requestWasPushedFor(host, running))
+    queue:release()
+    queue:release()
+    Assert.equal(host.threads[1].waits, 1, "quit joins the worker before releasing owners")
+    local shutdownSeen = false
+    for _, pushed in ipairs(host.allPushes) do
+      if type(pushed.value) == "table" and pushed.value.op == "shutdown" then
+        shutdownSeen = true
+      end
+    end
+    Assert.isTrue(shutdownSeen, "release still asks the worker to stop")
+    Assert.throws(function()
+      queue:poll(running)
+    end, "a released queue discards outstanding tokens rather than reviving them")
+  end)
+end
+
 function T.release_while_busy_drains_and_discards_outstanding_work()
   local AssetPreparationQueue = requireQueue()
   local host = fakeThreadHost()

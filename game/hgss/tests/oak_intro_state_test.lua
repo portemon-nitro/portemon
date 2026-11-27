@@ -12,6 +12,9 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local DisplayContext = require("libs.ui.src.DisplayContext")
+local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 
 local T = {}
 local DIALOGUE_CURSOR_PLACEMENT = { x = 240, y = 168, width = 16, height = 16 }
@@ -210,7 +213,7 @@ local function fakeController()
   return controller --[[@as OakIntroStateTest.Controller]]
 end
 
-local function stateHarness(overrides, preparedEntry)
+local function stateHarness(overrides, preparedEntry, displayContext)
   local controller = fakeController()
   local input = { calls = {} }
   ---@cast input OakIntroStateTest.Input
@@ -254,6 +257,7 @@ local function stateHarness(overrides, preparedEntry)
     namingOverrides = overrides,
     dialogueCursorPlacement = DIALOGUE_CURSOR_PLACEMENT,
     preparedEntry = preparedEntry,
+    displayContext = displayContext,
   })
   return state, controller, input, renderer, choiceText
 end
@@ -499,6 +503,143 @@ function T.pointer_hits_the_same_button_geometry_used_by_presentation()
   state:mousepressed(yesX, yesY, 1)
   state:mousepressed(noX, noY, 1)
   Assert.deepEqual(controller.pressed, { "female", "yes", "no" })
+end
+
+local function reservedTopology(width, height, safeRect, occupiedRegions)
+  return ScreenTopology.oneDisplay({
+    id = "main",
+    rect = { x = 0, y = 0, width = width, height = height },
+    safeRect = safeRect,
+    occupiedRegions = occupiedRegions,
+    touch = true,
+    role = "world",
+  })
+end
+
+function T.reserved_oak_surface_and_pointer_inversion_share_the_usable_placement()
+  local cases = {
+    {
+      width = 360,
+      height = 800,
+      safeRect = { x = 0, y = 0, width = 360, height = 800 },
+      occupiedRegions = { { x = 0, y = 584, width = 360, height = 216 } },
+      usable = { x = 0, y = 0, width = 360, height = 584 },
+      blockedPoint = { 180, 700 },
+    },
+    {
+      width = 800,
+      height = 360,
+      safeRect = { x = 0, y = 0, width = 800, height = 360 },
+      occupiedRegions = {
+        { x = 0, y = 0, width = 160, height = 360 },
+        { x = 640, y = 0, width = 160, height = 360 },
+      },
+      usable = { x = 160, y = 0, width = 480, height = 360 },
+      blockedPoint = { 80, 180 },
+    },
+    {
+      width = 360,
+      height = 800,
+      safeRect = { x = 12, y = 20, width = 336, height = 780 },
+      occupiedRegions = { { x = 12, y = 544, width = 336, height = 216 } },
+      usable = { x = 12, y = 20, width = 336, height = 524 },
+      blockedPoint = { 180, 650 },
+    },
+  }
+  for _, case in ipairs(cases) do
+    local current = reservedTopology(case.width, case.height, case.safeRect, case.occupiedRegions)
+    local context = DisplayContext.new({
+      graphics = {
+        getDimensions = function()
+          return case.width, case.height
+        end,
+        getDPIScale = function()
+          return 1
+        end,
+      },
+      topologyProvider = function()
+        return current
+      end,
+    })
+    local state, controller = stateHarness(nil, nil, context)
+    state:resize(case.width, case.height)
+    controller.phase = "gender_select"
+    local view = state:view()
+    local surface = assert(view.pixelSurface)
+    local measured = context:measure(case.width, case.height)
+    Assert.deepEqual(
+      ApplicationLayout.selectSurfaces(measured).primary.usableBounds,
+      case.usable,
+      "the Oak fixture publishes the same largest usable rectangle as the shared resolver"
+    )
+    Assert.deepEqual(surface.placement.frame, case.usable, "Oak's root pixel surface fills the usable rectangle")
+    Assert.equal(view.layout.viewport.width, case.usable.width)
+    Assert.equal(view.layout.viewport.height, case.usable.height)
+    local gender = assert(view.layout.genderButtons[1])
+    local hostX, hostY = LayoutGeometry.logicalToHost(
+      surface.placement,
+      gender.rect.x + gender.rect.width / 2,
+      gender.rect.y + gender.rect.height / 2
+    )
+    state:touchpressed(51, hostX, hostY)
+    state:touchreleased(51, hostX, hostY)
+    Assert.deepEqual(
+      controller.pressed,
+      { "female" },
+      "native touch hits the target presented by the translated surface"
+    )
+    state:touchpressed(52, case.blockedPoint[1], case.blockedPoint[2])
+    state:touchreleased(52, case.blockedPoint[1], case.blockedPoint[2])
+    Assert.deepEqual(controller.pressed, { "female" }, "controller reservations never activate Oak content")
+
+    controller.phase = "name_edit"
+    local namingView = state:view()
+    local naming = assert(namingView.layout.namingScreen)
+    local namingPlan = assert(namingView.namingPresentation)
+    local pane = assert(namingPlan.panes[1])
+    local placement = assert(pane.placement)
+    Assert.isTrue(placement.frame.x >= case.usable.x and placement.frame.y >= case.usable.y)
+    Assert.isTrue(placement.frame.x + placement.frame.width <= case.usable.x + case.usable.width)
+    Assert.isTrue(placement.frame.y + placement.frame.height <= case.usable.y + case.usable.height)
+    local key = assert(naming.cells[2][1])
+    local keyX, keyY = LayoutGeometry.logicalToHost(placement, key.x + 1, key.y + 1)
+    state:touchpressed(53, keyX, keyY)
+    state:touchreleased(53, keyX, keyY)
+    Assert.deepEqual(
+      controller.activated,
+      { { row = 2, column = 1 } },
+      "naming touch uses the same usable-area placement"
+    )
+    state:dispose()
+  end
+end
+
+function T.same_size_inset_change_reframes_oak_without_a_host_resize()
+  local current = reservedTopology(360, 800, { x = 0, y = 0, width = 360, height = 800 }, {
+    { x = 0, y = 584, width = 360, height = 216 },
+  })
+  local context = DisplayContext.new({
+    graphics = {
+      getDimensions = function()
+        return 360, 800
+      end,
+      getDPIScale = function()
+        return 1
+      end,
+    },
+    topologyProvider = function()
+      return current
+    end,
+  })
+  local state, controller = stateHarness(nil, nil, context)
+  controller.phase = "gender_select"
+  state:resize(360, 800)
+  Assert.deepEqual(state:view().pixelSurface.placement.frame, { x = 0, y = 0, width = 360, height = 584 })
+  current = reservedTopology(360, 800, { x = 12, y = 20, width = 336, height = 780 }, {
+    { x = 12, y = 544, width = 336, height = 216 },
+  })
+  Assert.deepEqual(state:view().pixelSurface.placement.frame, { x = 12, y = 20, width = 336, height = 524 })
+  state:dispose()
 end
 
 function T.pointer_cannot_activate_gender_selection_during_host_composition()

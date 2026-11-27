@@ -297,6 +297,8 @@ local APP_HGSS_IMPORTS = {
 local APP_ROMDUMP_IMPORTS = {
   ["romdump.src.source.GameVersion"] = true,
   ["romdump.src.source.RomImporter"] = true,
+  ["romdump.src.source.RomArchive"] = true,
+  ["romdump.src.source.RomIconRecovery"] = true,
   ["romdump.src.build.InteractiveCacheBuild"] = true,
   ["romdump.src.build.CompilerPool"] = true,
   ["romdump.src.build.CacheControllerWorker"] = true,
@@ -495,6 +497,8 @@ function T.app_cross_package_imports_match_exact_semantic_seams()
     { module = "libs.storage.src.SaveFs", allowed = true },
     { module = "romdump.src.source.GameVersion", allowed = true },
     { module = "romdump.src.source.RomImporter", allowed = true },
+    { module = "romdump.src.source.RomArchive", allowed = true },
+    { module = "romdump.src.source.RomIconRecovery", allowed = true },
     { module = "romdump.src.build.CacheArchive", allowed = true },
     { module = "romdump.src.ProducerFingerprint", allowed = true },
     { module = "game.hgss.src.field.FieldRuntime", allowed = false },
