@@ -221,8 +221,8 @@ function FieldState.new(game, options)
     local function battleDisplay()
       return runtime.presentationDisplay
     end
-    local function captureFieldLayers()
-      return self:_captureTransitionLayers()
+    local function captureFieldLayers(spare)
+      return self:_captureTransitionLayers(spare)
     end
     local function currentFieldCamera()
       return runtime.camera
@@ -1004,8 +1004,12 @@ end
 
 -- Captures the current native field planes after a transition source tick
 -- changed camera or plane state. This path prepares the transition input
--- without drawing or advancing the ordinary field composition.
-function FieldState:_captureTransitionLayers()
+-- without drawing or advancing the ordinary field composition. A spare
+-- launch-owned slot reuses its compatible surfaces in place; nil keeps the
+-- standalone one-shot path.
+---@param slot table<string, unknown>? reusable launch-owned capture record or nil
+---@return FieldRenderer.Capture independent capture surfaces owned by the caller
+function FieldState:_captureTransitionLayers(slot)
   local runtime = assert(self.runtime, "field transition capture requires its runtime")
   local renderer = assert(
     self.presentationResources and self.presentationResources.renderer,
@@ -1022,8 +1026,26 @@ function FieldState:_captureTransitionLayers()
     self.spriteItems,
     assert(runtime.viewport, "transition capture requires the active field viewport"),
     alpha,
-    assert(runtime.fieldPixelScale, "transition capture requires its pixel scale"):resolvedScale()
+    assert(runtime.fieldPixelScale, "transition capture requires its pixel scale"):resolvedScale(),
+    slot
   )
+end
+
+-- Whether the encounter compositor provably covers the ordinary field
+-- world this frame: the current map already presented, so this is never
+-- the first destination draw, and the envelope's effect frame writes the
+-- entire viewport with an opaque replace composite and no wipe. Backdrop,
+-- UI, and acknowledgement of actual draws are unaffected.
+---@return boolean true only when the ordinary renderer draw is demonstrably hidden
+function FieldState:_envelopeReplacesFieldWorld()
+  if self._presentedRuntimeMap ~= self.runtime.runtimeMap then
+    return false
+  end
+  local envelope = self.battleEnvelope
+  if envelope == nil or type(envelope.replacesFieldWorld) ~= "function" then
+    return false
+  end
+  return envelope:replacesFieldWorld()
 end
 
 -- The structural presentation-geometry signature: the window dimensions plus
@@ -1627,6 +1649,7 @@ function FieldState:draw()
     -- draws back shifted, exactly like a transition frame.
     local poison = self.runtime.poisonEffect
     local poisonFrame = poison ~= nil and poison:frame() or nil
+    local suppressWorldDraw = poisonFrame == nil and self:_envelopeReplacesFieldWorld()
     if poisonFrame ~= nil then
       local capture = resources.renderer:captureTransitionLayers(
         self.runtime.runtimeMap.renderEnvironment,
@@ -1644,7 +1667,7 @@ function FieldState:draw()
       if not ok then
         error(err, 0)
       end
-    else
+    elseif not suppressWorldDraw then
       resources.renderer:draw(
         self.runtime.runtimeMap.renderEnvironment,
         self.runtime.camera,
@@ -1660,6 +1683,7 @@ function FieldState:draw()
       local renderer = assert(self._hoOhAppearanceRenderer, "Ho-Oh scene renderer is ready before drawing its layers")
       renderer:drawLeaves(hoOhStatus, self.runtime.viewport)
     end
+    return not suppressWorldDraw
   end
   if overworldPresent then
     if visualHold then
@@ -1668,20 +1692,26 @@ function FieldState:draw()
     else
       local scene = self.runtime.celebiTimeTravelScene
       local status = scene and scene:status() or nil
+      local worldPresented = true
       if status ~= nil and status.active and status.blurActive then
         if self._celebiBlur == nil then
           self._celebiBlur = CelebiTimeTravelBlur.new()
         end
-        self._celebiBlur:draw(status, self.runtime.viewport, drawFieldWorld)
+        local function drawWorldOnce()
+          worldPresented = drawFieldWorld()
+        end
+        self._celebiBlur:draw(status, self.runtime.viewport, drawWorldOnce)
       else
         if self._celebiBlur ~= nil then
           self._celebiBlur:release()
           self._celebiBlur = nil
         end
-        drawFieldWorld()
+        worldPresented = drawFieldWorld()
       end
-      self._presentedRuntimeMap = self.runtime.runtimeMap
-      self.runtime:acknowledgeDestinationPresentation()
+      if worldPresented then
+        self._presentedRuntimeMap = self.runtime.runtimeMap
+        self.runtime:acknowledgeDestinationPresentation()
+      end
     end
   elseif legendCinematic then
     local cinematicStatus = drawLegendCinematic()

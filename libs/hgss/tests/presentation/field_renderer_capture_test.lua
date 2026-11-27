@@ -33,6 +33,10 @@ local function fakeGraphics(ledger, opts)
   local canvasCalls = 0
   graphics.created = {}
   graphics.draws = {}
+  graphics.drawTargets = {}
+  graphics.drawColors = {}
+  graphics._boundCanvas = nil
+  graphics._drawColor = { 1, 1, 1, 1 }
   graphics.rectangles = {}
   graphics.quads = {}
   graphics.stencilCalls = {}
@@ -49,7 +53,7 @@ local function fakeGraphics(ledger, opts)
     return canvas
   end
   function graphics.getCanvas()
-    return nil
+    return graphics._boundCanvas
   end
   function graphics.getShader()
     return nil
@@ -63,11 +67,15 @@ local function fakeGraphics(ledger, opts)
   function graphics.getScissor()
     return nil
   end
-  function graphics.setCanvas(_) end
+  function graphics.setCanvas(canvas)
+    graphics._boundCanvas = canvas
+  end
   function graphics.setScissor() end
   function graphics.setShader() end
   function graphics.setBlendMode(_, _) end
-  function graphics.setColor(_, _, _, _) end
+  function graphics.setColor(red, green, blue, alpha)
+    graphics._drawColor = { red, green, blue, alpha }
+  end
   function graphics.clear(_, _, _, _) end
   function graphics.push(_)
     graphics._pushDepth = graphics._pushDepth + 1
@@ -107,6 +115,9 @@ local function fakeGraphics(ledger, opts)
       sx = sx,
       sy = sy,
     }
+    graphics.drawTargets[#graphics.drawTargets + 1] = graphics._boundCanvas
+    local color = graphics._drawColor
+    graphics.drawColors[#graphics.drawColors + 1] = { color[1], color[2], color[3], color[4] }
   end
   return graphics
 end
@@ -419,6 +430,170 @@ function T.encounter_blur_follows_capture_dimensions_with_exactly_once_release()
   Assert.equal(second.previous._releaseCount, 1, "the replacement releases exactly once")
   effect:dispose()
   Assert.equal(second.previous._releaseCount, 1, "disposal stays exactly once")
+end
+
+-- A launch-owned capture slot survives across source ticks: a compatible
+-- slot keeps its ownership record and canvases with no new allocation,
+-- each tick copies the current source planes into those canvases, a resize
+-- replaces only the mismatched canvases before retiring them exactly once,
+-- and a failed replacement leaves the last accepted frame untouched.
+-- Captures requested without a slot stay independent.
+function T.capture_reuses_compatible_slot_surfaces_across_source_ticks()
+  local ledger = {}
+  local graphics = fakeGraphics(ledger)
+  local ticks = 0
+  local scratchFirst = fakeCanvas(256, 192)
+  local scratchSecond = fakeCanvas(256, 192)
+  local gxRenderer = {
+    draw = function(_)
+      ticks = ticks + 1
+      if ticks == 1 then
+        return { world = scratchFirst }
+      end
+      return { world = scratchSecond }
+    end,
+  }
+  local renderer = FieldRenderer.new({ gxRenderer = gxRenderer, graphics = graphics })
+  local camera = stubCamera()
+  local viewport = { x = 0, y = 0, width = 256, height = 192 }
+
+  local slot = renderer:captureTransitionLayers({}, camera, {}, nil, viewport, 1, 3)
+  Assert.notNil(slot, "the first launch capture publishes its planes")
+  Assert.notNil(slot.world, "the first launch capture owns its world plane")
+  local slotWorld = slot.world
+  local allocated = #ledger
+
+  local reused = renderer:captureTransitionLayers({}, camera, {}, nil, viewport, 1, 3, slot)
+  Assert.isTrue(reused == slot, "a compatible slot keeps its ownership record across ticks")
+  Assert.isTrue(slot.world == slotWorld, "a compatible slot keeps its world canvas")
+  Assert.equal(#ledger, allocated, "a compatible slot allocates no new surfaces")
+  local latestCopy = nil
+  for index = #graphics.draws, 1, -1 do
+    if graphics.drawTargets[index] == slotWorld then
+      latestCopy = graphics.draws[index]
+      break
+    end
+  end
+  Assert.notNil(latestCopy, "the reused slot copies the current tick into its own canvas")
+  Assert.isTrue(latestCopy.image == scratchSecond, "the reused slot samples the latest source tick")
+
+  local wide = { x = 0, y = 0, width = 512, height = 384 }
+  local resized = renderer:captureTransitionLayers({}, camera, {}, nil, wide, 1, 3, slot)
+  Assert.isTrue(resized == slot, "a resized slot keeps its ownership record")
+  Assert.equal(slot.world:getWidth(), 512, "the resized slot matches the new capture width")
+  Assert.equal(slot.world:getHeight(), 384, "the resized slot matches the new capture height")
+  Assert.isTrue(slot.world ~= slotWorld, "a resize replaces the mismatched canvas")
+  Assert.isTrue(slotWorld._released, "a resize retires the incompatible canvas")
+  Assert.equal(slotWorld._releaseCount, 1, "a resize retires the old canvas exactly once")
+
+  local solo = renderer:captureTransitionLayers({}, camera, {}, nil, viewport, 1, 3)
+  Assert.isTrue(solo ~= slot, "captures without a slot stay independent of the reused slot")
+  Assert.isTrue(solo.world ~= slot.world, "a standalone capture owns its own world canvas")
+  solo:dispose()
+  Assert.isTrue(solo.world._released, "a standalone capture still releases its own canvas")
+
+  slot:dispose()
+  slot:dispose()
+  Assert.equal(slot.world._releaseCount, 1, "slot disposal stays exactly once")
+
+  -- A failed replacement never publishes a partial frame: the error
+  -- rethrows, the slot keeps its last accepted canvases unreleased, every
+  -- newly attempted surface releases, and a retry at the accepted size
+  -- reuses the surviving slot.
+  local failingLedger = {}
+  local failingGraphics = fakeGraphics(failingLedger)
+  local realNewCanvas = failingGraphics.newCanvas
+  failingGraphics.newCanvas = function(width, height, spec)
+    if width == 512 then
+      error("injected replacement allocation failure")
+    end
+    return realNewCanvas(width, height, spec)
+  end
+  local failingGx = {
+    draw = function(_)
+      return { world = fakeCanvas(256, 192), objects = fakeCanvas(256, 192) }
+    end,
+  }
+  local failingRenderer = FieldRenderer.new({ gxRenderer = failingGx, graphics = failingGraphics })
+  local accepted = failingRenderer:captureTransitionLayers({}, camera, {}, nil, viewport, 1, 3)
+  local acceptedWorld, acceptedObjects = accepted.world, accepted.objects
+  Assert.notNil(acceptedObjects, "the accepted slot owns its object plane")
+  local ok, err =
+    pcall(failingRenderer.captureTransitionLayers, failingRenderer, {}, camera, {}, nil, wide, 1, 3, accepted)
+  Assert.isFalse(ok, "the failed replacement rethrows instead of publishing")
+  Assert.notNil(err, "the rethrown failure carries its injected cause")
+  Assert.isTrue(accepted.world == acceptedWorld, "the failed replacement keeps the accepted world canvas")
+  Assert.isTrue(accepted.objects == acceptedObjects, "the failed replacement keeps the accepted object canvas")
+  Assert.isFalse(acceptedWorld._released, "the failed replacement never retires the accepted world")
+  Assert.isFalse(acceptedObjects._released, "the failed replacement never retires the accepted objects")
+  Assert.equal(accepted.world:getWidth(), 256, "the failed replacement keeps the accepted dimensions")
+  for _, canvas in ipairs(failingGraphics.created) do
+    if canvas ~= acceptedWorld and canvas ~= acceptedObjects then
+      Assert.isTrue(canvas._released, "the failed replacement releases only its new surfaces")
+    end
+  end
+  local retry = failingRenderer:captureTransitionLayers({}, camera, {}, nil, viewport, 1, 3, accepted)
+  Assert.isTrue(retry == accepted, "a retry at the accepted size reuses the surviving slot")
+  Assert.isTrue(accepted.world == acceptedWorld, "the retry keeps the accepted world canvas")
+  accepted:dispose()
+end
+
+-- Encounter motion blur swaps its feedback roles instead of copying the
+-- current frame back into the previous one: the composite still blends the
+-- fresh frame weakly against the last raw input strongly, the strong term
+-- is never the prior composite, and every buffer releases exactly once.
+function T.motion_blur_swaps_feedback_roles_instead_of_copying_back()
+  local graphics = fakeGraphics({})
+  local renderer = FieldRenderer.new({ gxRenderer = {}, graphics = graphics })
+  local blur = renderer:beginEncounterMotionBlur({ world = fakeCanvas(256, 192) })
+  local previousRole, currentRole, composite = blur.previous, blur.current, blur.composite
+
+  local fresh = fakeCanvas(256, 192)
+  local drawsBefore = #graphics.draws
+  renderer:stepEncounterMotionBlur(blur, { world = fresh })
+  Assert.isTrue(blur.previous == currentRole, "the step hands the previous role to the just-drawn frame")
+  Assert.isTrue(blur.current == previousRole, "the step hands the current role to the older frame")
+  Assert.isTrue(blur.composite == composite, "the composite buffer keeps its role")
+  local copyBack = 0
+  local compositeDraws = {}
+  for index = drawsBefore + 1, #graphics.draws do
+    if graphics.drawTargets[index] == composite then
+      compositeDraws[#compositeDraws + 1] = index
+    end
+    if graphics.drawTargets[index] == blur.previous and graphics.draws[index].image == blur.current then
+      copyBack = copyBack + 1
+    end
+  end
+  Assert.equal(copyBack, 0, "the step never blits the current frame back into the previous role")
+  Assert.equal(#compositeDraws, 2, "one step composites exactly the fresh frame and its feedback")
+  local weak = compositeDraws[1]
+  local strong = compositeDraws[2]
+  Assert.isTrue(graphics.draws[weak].image == currentRole, "the weak term samples the fresh frame")
+  Assert.equal(graphics.drawColors[weak][1], 3 / 16, "the fresh frame keeps its weak blend weight")
+  Assert.equal(graphics.drawColors[weak][4], 1, "the weak blend term stays opaque")
+  Assert.isTrue(graphics.draws[strong].image == previousRole, "the strong term samples the last raw input")
+  Assert.isTrue(
+    graphics.draws[strong].image ~= composite,
+    "the strong term is raw input, never the prior composite"
+  )
+  Assert.equal(graphics.drawColors[strong][1], 15 / 16, "the last raw input keeps its strong blend weight")
+  Assert.equal(graphics.drawColors[strong][4], 1, "the strong blend term stays opaque")
+
+  renderer:stepEncounterMotionBlur(blur, { world = fakeCanvas(256, 192) })
+  Assert.isTrue(blur.previous == previousRole, "feedback roles alternate back on the next tick")
+  Assert.isTrue(blur.current == currentRole, "feedback roles alternate back on the next tick")
+
+  blur:dispose()
+  Assert.isTrue(
+    previousRole._released and currentRole._released and composite._released,
+    "completion releases every feedback buffer"
+  )
+  Assert.equal(previousRole._releaseCount, 1, "the previous role releases exactly once")
+  Assert.equal(currentRole._releaseCount, 1, "the current role releases exactly once")
+  Assert.equal(composite._releaseCount, 1, "the composite releases exactly once")
+  blur:dispose()
+  Assert.equal(previousRole._releaseCount, 1, "feedback disposal stays exactly once")
+  Assert.equal(composite._releaseCount, 1, "composite disposal stays exactly once")
 end
 
 return { tests = T }

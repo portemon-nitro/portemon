@@ -88,10 +88,11 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _warmParticles table<string, FieldBattlePresentation.ParticleEntry[]> encounter particle textures each scene group holding or acquiring pins must carry
 ---@field _fieldRenderer table<string, unknown>? field-local native plane compositor
 ---@field _fieldCamera fun(): table<string, unknown>? current field camera provider
----@field _captureFieldLayers fun(): table<string, unknown>? fresh launch-owned native field planes
+---@field _captureFieldLayers fun(spare: table<string, unknown>?): table<string, unknown>? fresh launch-owned native field planes, reusing the spare slot when compatible
 ---@field _transition table<string, unknown>? selected launch-owned native transition
 ---@field _transitionContext table<string, unknown>? immutable context captured before field mutation
----@field _transitionCapture table<string, unknown>? latest source-tick native field planes
+---@field _transitionCapture table<string, unknown>? published source-tick native field planes drawn by the envelope
+---@field _transitionCaptureSpare table<string, unknown>? unpublished reusable slot filled by the next source tick
 ---@field _transitionFailed boolean true after a reported native transition failure
 ---@field _disposed boolean
 local FieldBattlePresentation = {}
@@ -4063,6 +4064,7 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._resultMusicPlayed = false
   self._transition = nil
   self._transitionCapture = nil
+  self._transitionCaptureSpare = nil
   self._transitionFailed = false
   self:_startTransition(descriptor)
   -- Enroll the scene image on the shared owner while the transition
@@ -4853,8 +4855,10 @@ function FieldBattlePresentation:_startReadyTransition()
   local transition = assert(self._transition, "selected transition handle is retained by the launch")
   transition:start()
   local capture = assert(self._captureFieldLayers, "the field launch supplies fresh source captures")
-  self._transitionCapture = capture()
-  transition:acceptFieldLayers(self._transitionCapture)
+  local fresh = capture(self._transitionCaptureSpare)
+  self._transitionCaptureSpare = fresh
+  transition:acceptFieldLayers(fresh)
+  self._transitionCapture, self._transitionCaptureSpare = fresh, self._transitionCapture
 end
 
 -- Advances one selected source callback, then captures the field after its
@@ -4900,25 +4904,29 @@ function FieldBattlePresentation:_stepTransition()
     if state.phase == "running" then
       local frame = transition:frame()
       if frame.requiresCurrentFieldLayers == true then
-        local nextCapture = self._captureFieldLayers()
+        local spare = self._transitionCaptureSpare
+        local nextCapture = self._captureFieldLayers(spare)
+        self._transitionCaptureSpare = nextCapture
+        if spare ~= nil and spare ~= nextCapture then
+          spare:dispose()
+        end
         local accepted, acceptErr = pcall(transition.acceptFieldLayers, transition, nextCapture)
         if not accepted then
-          if nextCapture ~= nil then
-            nextCapture:dispose()
-          end
           error(acceptErr, 0)
         end
-        local previous = self._transitionCapture
-        self._transitionCapture = nextCapture
-        if previous ~= nil then
-          previous:dispose()
-        end
+        -- The published frame swaps only after acceptance: a rejected or
+        -- failed tick keeps the previous active untouched, and teardown
+        -- releases both distinct slots exactly once.
+        self._transitionCapture, self._transitionCaptureSpare = nextCapture, self._transitionCapture
       end
     elseif state.phase == "complete" then
-      local previous = self._transitionCapture
-      self._transitionCapture = nil
-      if previous ~= nil then
-        previous:dispose()
+      local active, spare = self._transitionCapture, self._transitionCaptureSpare
+      self._transitionCapture, self._transitionCaptureSpare = nil, nil
+      if active ~= nil then
+        active:dispose()
+      end
+      if spare ~= nil and spare ~= active then
+        spare:dispose()
       end
     end
   end)
@@ -5489,8 +5497,8 @@ function FieldBattlePresentation:_dropLaunch()
   self._transitionFailed = false
 end
 
--- Releases the active native task and its latest launch-owned field planes
--- exactly once, including completion, failure, and envelope disposal.
+-- Releases the active native task and both launch-owned field slots exactly
+-- once, including completion, failure, and envelope disposal.
 function FieldBattlePresentation:_disposeTransition()
   local transition = self._transition
   self._transition = nil
@@ -5503,6 +5511,54 @@ function FieldBattlePresentation:_disposeTransition()
   if capture ~= nil then
     capture:dispose()
   end
+  local spare = self._transitionCaptureSpare
+  self._transitionCaptureSpare = nil
+  if spare ~= nil and spare ~= capture then
+    spare:dispose()
+  end
+end
+
+-- Whether the encounter compositor provably covers the ordinary field
+-- world this frame: the launch owns a running transition with published
+-- planes, and the current effect frame draws its full-viewport motion-blur
+-- composite with replace and no wipe. A read-only query for the field
+-- composition owner; it never advances, accepts, or releases anything.
+---@return boolean true only when the ordinary world draw is demonstrably hidden
+function FieldBattlePresentation:replacesFieldWorld()
+  if self._transitionFailed then
+    return false
+  end
+  local transition = self._transition
+  if transition == nil then
+    return false
+  end
+  local statusOk, status = pcall(function()
+    return transition:status()
+  end)
+  if not statusOk or type(status) ~= "table" or status.phase ~= "running" then
+    return false
+  end
+  local capture = self._transitionCapture
+  if capture == nil or capture._disposed == true then
+    return false
+  end
+  local frameOk, frame = pcall(function()
+    return transition:frame()
+  end)
+  if not frameOk or type(frame) ~= "table" then
+    return false
+  end
+  if frame.motionBlur == nil or frame.motionBlur._disposed == true then
+    return false
+  end
+  if frame.wipe ~= nil then
+    return false
+  end
+  local blendAlpha = frame.blendAlpha
+  if blendAlpha ~= nil and blendAlpha < 16 then
+    return false
+  end
+  return true
 end
 
 -- Idempotent release of the envelope lifetime: the live screen releases

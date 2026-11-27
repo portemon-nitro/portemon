@@ -128,6 +128,7 @@ end
 ---@param presentationPixelScale integer?
 ---@param captureLayers boolean? return the world's resolved color and object surfaces
 ---@param captureOnly boolean? omit presentation output and return only the requested planes
+---@param captureSlot FieldRenderer.Capture? reusable launch-owned record; compatible ticks reuse its surfaces in place
 ---@return FieldRenderer.CaptureLayers?
 function FieldRenderer:draw(
   renderEnvironment,
@@ -138,7 +139,8 @@ function FieldRenderer:draw(
   alpha,
   presentationPixelScale,
   captureLayers,
-  captureOnly
+  captureOnly,
+  captureSlot
 )
   assert(captureOnly ~= true or captureLayers == true, "capture-only field draws request planes")
   local viewMatrix = camera:view(alpha)
@@ -167,11 +169,31 @@ function FieldRenderer:draw(
   if captureLayers then
     local graphics = assert(self._graphics, "field plane capture requires the LÖVE graphics boundary")
     local captureWidth, captureHeight = liveCaptureDimensions(viewport)
-    local presentationTarget = graphics.newCanvas(captureWidth, captureHeight, {
-      format = "rgba8",
-      readable = true,
-      dpiscale = 1,
-    })
+    if captureSlot ~= nil then
+      assert(
+        type(captureSlot) == "table" and type(captureSlot._canvases) == "table",
+        "reused transition captures stay launch-owned"
+      )
+      assert(not captureSlot._disposed, "reused transition captures outlive their disposal")
+    end
+    -- A compatible slot renders straight into its own world canvas and
+    -- copies each fresh scratch plane back over it, so the tick allocates
+    -- no new surface; any other tick goes through a transient target that
+    -- releases afterwards, keeping the slot's record untouched on failure.
+    local compatibleSlot = captureSlot ~= nil
+      and captureSlot.world ~= nil
+      and captureSlot.world:getWidth() == captureWidth
+      and captureSlot.world:getHeight() == captureHeight
+    local presentationTarget
+    if compatibleSlot then
+      presentationTarget = assert(captureSlot).world
+    else
+      presentationTarget = graphics.newCanvas(captureWidth, captureHeight, {
+        format = "rgba8",
+        readable = true,
+        dpiscale = 1,
+      })
+    end
     local previousCanvas = graphics.getCanvas()
     local previousViewport = frame.viewport
     local previousCaptureLayers = frame.captureLayers
@@ -189,7 +211,8 @@ function FieldRenderer:draw(
       return self:_captureLayers(
         assert(layers, "GxRenderer must publish requested field planes"),
         captureWidth,
-        captureHeight
+        captureHeight,
+        captureSlot
       )
     end)
     local restored, restoreError = pcall(function()
@@ -197,8 +220,13 @@ function FieldRenderer:draw(
       frame.viewport = previousViewport
       frame.captureLayers = previousCaptureLayers
     end)
-    presentationTarget:release()
+    if not compatibleSlot then
+      presentationTarget:release()
+    end
     if not ok then
+      -- A failed tick never publishes a partial frame: replacement
+      -- canvases already released inside the copy, while a reused slot
+      -- keeps its last accepted record.
       error(result, 0)
     end
     if not restored then
@@ -227,7 +255,8 @@ end
 ---@param viewport table<string, unknown> current field viewport
 ---@param alpha number current field interpolation alpha
 ---@param presentationPixelScale integer? presentation scale for sprite composition
----@return FieldRenderer.CaptureLayers fresh launch-owned presentation-sized planes
+---@param slot FieldRenderer.Capture? reusable launch-owned record; nil keeps the standalone one-shot path
+---@return FieldRenderer.Capture launch-owned presentation-sized planes
 function FieldRenderer:captureTransitionLayers(
   renderEnvironment,
   camera,
@@ -235,10 +264,22 @@ function FieldRenderer:captureTransitionLayers(
   spriteItems,
   viewport,
   alpha,
-  presentationPixelScale
+  presentationPixelScale,
+  slot
 )
   return assert(
-    self:draw(renderEnvironment, camera, worldParts, spriteItems, viewport, alpha, presentationPixelScale, true, true),
+    self:draw(
+      renderEnvironment,
+      camera,
+      worldParts,
+      spriteItems,
+      viewport,
+      alpha,
+      presentationPixelScale,
+      true,
+      true,
+      slot
+    ),
     "transition tick capture publishes its presentation planes"
   )
 end
@@ -533,10 +574,10 @@ function FieldRenderer:stepEncounterMotionBlur(motionBlur, currentLayers)
     graphics.setColor(15 / 16, 15 / 16, 15 / 16, 1)
     graphics.draw(motionBlur.previous, 0, 0)
 
-    graphics.setCanvas(motionBlur.previous)
-    graphics.setBlendMode("replace", "premultiplied")
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(motionBlur.current, 0, 0)
+    -- The feedback roles swap instead of copying the current frame back
+    -- into the previous one: the just-drawn frame becomes the last raw
+    -- input for the next tick, and the older frame is redrawn in place.
+    motionBlur.previous, motionBlur.current = motionBlur.current, motionBlur.previous
   end)
   graphics.pop()
   if not ok then
@@ -576,68 +617,128 @@ end
 ---@field _disposed boolean
 ---@field dispose fun(self: FieldRenderer.Capture): boolean
 
+---@alias FieldRenderer.CapturePlaneKey "world" | "objects" | "objectCoverage"
+
 ---@param layers FieldRenderer.CaptureLayers renderer-owned scratch surfaces
 ---@param captureWidth integer ceil-allocated live viewport width
 ---@param captureHeight integer ceil-allocated live viewport height
+---@param slot FieldRenderer.Capture? reusable launch-owned record or nil for a standalone capture
 ---@return FieldRenderer.Capture independent surfaces owned by the caller
-function FieldRenderer:_captureLayers(layers, captureWidth, captureHeight)
+function FieldRenderer:_captureLayers(layers, captureWidth, captureHeight, slot)
   local graphics = assert(self._graphics, "field plane capture requires the LÖVE graphics boundary")
   assert(
     type(captureWidth) == "number" and captureWidth > 0 and type(captureHeight) == "number" and captureHeight > 0,
     "transition capture copies its planes at positive physical dimensions"
   )
-  local capture = {
-    _canvases = {},
-    _disposed = false,
-    dispose = FieldRenderer._disposeCapture,
-  }
+  assert(layers.world ~= nil, "transition capture copies the published world plane")
+  local capture
+  if slot == nil then
+    capture = {
+      _canvases = {},
+      _disposed = false,
+      dispose = FieldRenderer._disposeCapture,
+    }
+  else
+    capture = slot
+  end
+  -- Replacements allocate before any incompatible surface retires: every
+  -- new canvas lands in `fresh` first, ownership commits only after all
+  -- planes copied successfully, and a failure releases only the news while
+  -- the slot keeps its last accepted record.
+  local fresh = {}
+  local staged = {}
   local ok, result = pcall(function()
-    capture.world = self:_copyCanvas(graphics, layers.world, capture, captureWidth, captureHeight)
-    if layers.objects ~= nil then
-      capture.objects = self:_copyCanvas(graphics, layers.objects, capture, captureWidth, captureHeight)
+    self:_stagePlane(graphics, capture, staged, fresh, "world", layers.world, captureWidth, captureHeight)
+    self:_stagePlane(graphics, capture, staged, fresh, "objects", layers.objects, captureWidth, captureHeight)
+    self:_stagePlane(
+      graphics,
+      capture,
+      staged,
+      fresh,
+      "objectCoverage",
+      layers.objectCoverage,
+      captureWidth,
+      captureHeight
+    )
+    for _, entry in ipairs(staged) do
+      capture[entry.key] = entry.canvas
     end
-    if layers.objectCoverage ~= nil then
-      capture.objectCoverage = self:_copyCanvas(graphics, layers.objectCoverage, capture, captureWidth, captureHeight)
+    local owned = {}
+    for _, key in ipairs({ "world", "objects", "objectCoverage" }) do
+      local plane = capture[key]
+      if plane ~= nil then
+        owned[#owned + 1] = plane
+      end
+    end
+    capture._canvases = owned
+    for _, entry in ipairs(staged) do
+      if entry.previous ~= nil and entry.previous ~= entry.canvas then
+        entry.previous:release()
+      end
     end
     return capture
   end)
   if not ok then
-    capture:dispose()
+    for _, canvas in ipairs(fresh) do
+      canvas:release()
+    end
     error(result, 0)
   end
   return result
 end
 
----@param graphics GxRenderer.Graphics
----@param source GxRenderer.Canvas
+---@param graphics table<string, function> host graphics boundary
 ---@param capture { _canvases: GxRenderer.Canvas[] } partial capture accumulating its canvases
+---@param staged { key: FieldRenderer.CapturePlaneKey, canvas: GxRenderer.Canvas?, previous: GxRenderer.Canvas? }[] replacements committed after every plane succeeds
+---@param fresh GxRenderer.Canvas[] newly allocated surfaces released by the caller on failure
+---@param key FieldRenderer.CapturePlaneKey plane key within the record
+---@param source GxRenderer.Canvas? renderer-owned scratch plane or nil when absent this tick
 ---@param targetWidth integer physical capture width
 ---@param targetHeight integer physical capture height
----@return GxRenderer.Canvas
-function FieldRenderer:_copyCanvas(graphics, source, capture, targetWidth, targetHeight)
-  -- Launch-owned transition planes keep the live presentation sampling: the
-  -- copy resamples each renderer-owned scratch plane into an independent
-  -- physical capture through one GPU blit, so a default-filtered
-  -- DPI-following canvas would blur and mis-size the frozen field behind
-  -- the effect.
-  assert(
-    type(targetWidth) == "number" and targetWidth > 0 and type(targetHeight) == "number" and targetHeight > 0,
-    "transition plane copies target positive physical dimensions"
-  )
+function FieldRenderer:_stagePlane(graphics, capture, staged, fresh, key, source, targetWidth, targetHeight)
+  local existing = capture[key]
+  if source == nil then
+    if existing ~= nil then
+      staged[#staged + 1] = { key = key, canvas = nil, previous = existing }
+    end
+    return
+  end
+  if existing ~= nil and existing:getWidth() == targetWidth and existing:getHeight() == targetHeight then
+    self:_blitCopy(graphics, source, existing, targetWidth, targetHeight)
+    return
+  end
   local canvas = graphics.newCanvas(targetWidth, targetHeight, {
     format = "rgba8",
     dpiscale = 1,
   })
+  fresh[#fresh + 1] = canvas
+  -- Launch-owned transition planes keep the live presentation sampling:
+  -- the copy resamples each renderer-owned scratch plane into an
+  -- independent physical capture through one GPU blit, so a
+  -- default-filtered DPI-following canvas would blur and mis-size the
+  -- frozen field behind the effect.
   canvas:setFilter("nearest", "nearest")
-  capture._canvases[#capture._canvases + 1] = canvas
+  self:_blitCopy(graphics, source, canvas, targetWidth, targetHeight)
+  staged[#staged + 1] = { key = key, canvas = canvas, previous = existing }
+end
 
+---@param graphics table<string, function> host graphics boundary
+---@param source GxRenderer.Canvas renderer-owned scratch plane
+---@param destination GxRenderer.Canvas launch-owned physical capture plane
+---@param targetWidth integer physical capture width
+---@param targetHeight integer physical capture height
+function FieldRenderer:_blitCopy(graphics, source, destination, targetWidth, targetHeight)
+  assert(
+    type(targetWidth) == "number" and targetWidth > 0 and type(targetHeight) == "number" and targetHeight > 0,
+    "transition plane copies target positive physical dimensions"
+  )
   local previousCanvas = graphics.getCanvas()
   local previousShader = graphics.getShader()
   local previousBlend, previousBlendAlpha = graphics.getBlendMode()
   local red, green, blue, alpha = graphics.getColor()
   local sx, sy, sw, sh = graphics.getScissor()
   local ok, err = pcall(function()
-    graphics.setCanvas(canvas)
+    graphics.setCanvas(destination)
     graphics.setScissor()
     graphics.setShader()
     graphics.setBlendMode("replace", "premultiplied")
@@ -661,7 +762,6 @@ function FieldRenderer:_copyCanvas(graphics, source, capture, targetWidth, targe
   if not restored then
     error(restoreErr, 0)
   end
-  return canvas
 end
 
 ---@param capture FieldRenderer.Capture

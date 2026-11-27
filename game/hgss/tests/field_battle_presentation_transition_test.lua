@@ -8,14 +8,16 @@ function T.accepted_transition_ticks_refresh_owned_planes_and_draw_only_reads_th
   local draws = 0
   local disposed = 0
   local captures = 0
+  local captureCalls = {}
   local function acceptFieldLayers(_, layers)
     Assert.equal(layers.index, captures, "the active family receives its matching source capture")
   end
   local function disposeCapture()
     disposed = disposed + 1
   end
-  local function capture()
+  local function capture(spare)
     captures = captures + 1
+    captureCalls[#captureCalls + 1] = { index = captures, spare = spare }
     return { index = captures, dispose = disposeCapture }
   end
   local function transitionStatus()
@@ -51,7 +53,10 @@ function T.accepted_transition_ticks_refresh_owned_planes_and_draw_only_reads_th
   envelope:_stepTransition()
   Assert.equal(steps, 1, "one accepted update advances one source task tick")
   Assert.equal(captures, 2, "the source task captures fresh field planes after its mutation")
-  Assert.equal(disposed, 1, "replaced launch-owned planes are released exactly once")
+  Assert.isNil(captureCalls[2].spare, "the first tick fills a fresh spare")
+  Assert.equal(disposed, 0, "an accepted tick swaps slots instead of disposing the previous frame")
+  Assert.equal(envelope._transitionCapture.index, 2, "the latest accepted capture publishes the draw frame")
+  Assert.equal(envelope._transitionCaptureSpare.index, 1, "the previous frame survives as the reusable spare")
   Assert.isTrue(envelope:drawTransition({ x = 0, y = 0, width = 512, height = 384 }), "running route draws")
   Assert.isTrue(
     envelope:drawTransition({ x = 0, y = 0, width = 512, height = 384 }),
@@ -61,9 +66,22 @@ function T.accepted_transition_ticks_refresh_owned_planes_and_draw_only_reads_th
   Assert.equal(captures, 2, "draw never captures or regenerates source planes")
   Assert.equal(draws, 2, "each host draw presents the latest frame")
 
+  envelope:_stepTransition()
+  Assert.equal(steps, 2, "the next accepted update advances the source task again")
+  Assert.equal(captures, 3, "the next tick captures after its own mutation")
+  Assert.isTrue(
+    captureCalls[3].spare ~= nil and captureCalls[3].spare.index == 1,
+    "the next tick refills the retired spare instead of allocating"
+  )
+  Assert.equal(disposed, 1, "a spare the producer did not reuse releases exactly once")
+  Assert.equal(envelope._transitionCapture.index, 3, "approval publishes the newest frame")
+  Assert.equal(envelope._transitionCaptureSpare.index, 2, "roles swap on every accepted tick")
+  Assert.isTrue(envelope:drawTransition({ x = 0, y = 0, width = 512, height = 384 }), "draw reads the newest frame")
+  Assert.equal(draws, 3, "each host draw presents the latest frame")
+
   envelope:_disposeTransition()
   envelope:_disposeTransition()
-  Assert.equal(disposed, 2, "launch disposal releases the final field capture once")
+  Assert.equal(disposed, 3, "launch disposal releases every distinct slot exactly once")
 end
 
 -- A rejected field-layer accept releases the replacement capture
@@ -347,6 +365,229 @@ function T.verified_core_serves_repeat_preparation_and_transition_without_reread
   if not ok then
     error(failure, 0)
   end
+end
+
+-- A capture failure mid-launch keeps the last published frame untouched
+-- until teardown: the failed tick releases only its replacement, the
+-- active and spare slots release exactly once each, and the host hears
+-- the source-update failure.
+function T.transition_capture_failure_releases_replacement_and_reports_source_update()
+  local events = {}
+  local activeDisposed = 0
+  local spareDisposed = 0
+  local transitionDisposed = 0
+  local captures = 0
+  local active = {
+    index = 1,
+    dispose = function()
+      activeDisposed = activeDisposed + 1
+    end,
+  }
+  local spare = {
+    index = 0,
+    dispose = function()
+      spareDisposed = spareDisposed + 1
+    end,
+  }
+  local function capture(_)
+    captures = captures + 1
+    error("injected captureFieldLayers failure")
+  end
+  local phase = "running"
+  local transition = {
+    status = function()
+      return { phase = phase }
+    end,
+    stepSourceTick = function() end,
+    acceptFieldLayers = function() end,
+    frame = function()
+      return { sourcePhase = 1, requiresCurrentFieldLayers = phase == "running" }
+    end,
+    dispose = function()
+      transitionDisposed = transitionDisposed + 1
+    end,
+  }
+  local envelope = setmetatable({
+    _launchId = "wild#capture-fail",
+    _descriptor = {
+      launchId = "wild#capture-fail",
+      host = {
+        notify = function(event, detail)
+          events[#events + 1] = { event = event, detail = detail }
+        end,
+      },
+    },
+    _transition = transition,
+    _transitionCapture = active,
+    _transitionCaptureSpare = spare,
+    _captureFieldLayers = capture,
+    _transitionContext = {},
+  }, FieldBattlePresentation)
+
+  envelope:_stepTransition()
+  Assert.equal(captures, 1, "the failed tick attempted its capture after the source mutation")
+  Assert.equal(activeDisposed, 1, "teardown releases the last published frame exactly once")
+  Assert.equal(spareDisposed, 1, "teardown releases the retired spare exactly once")
+  Assert.equal(transitionDisposed, 1, "the native family releases exactly once through the failure path")
+  Assert.isNil(envelope._transition, "a failed fill drops the native family")
+  Assert.isNil(envelope._transitionCapture, "a failed fill drops the published capture")
+  Assert.isNil(envelope._transitionCaptureSpare, "a failed fill drops the spare slot")
+  Assert.isTrue(envelope._transitionFailed, "a failed fill marks the launch failed")
+  Assert.equal(#events, 1, "the launch host hears the failure exactly once")
+  Assert.isTrue(
+    events[1].detail:find("injected captureFieldLayers failure", 1, true) ~= nil,
+    "failure context carries the original capture cause"
+  )
+end
+
+-- Completion releases both distinct slots exactly once: the published
+-- frame and the retired spare never outlive the transition, and a second
+-- observation stays a no-op.
+function T.transition_completion_releases_active_and_spare_slots_once()
+  local disposed = {}
+  local function slot(index)
+    return {
+      index = index,
+      dispose = function()
+        disposed[#disposed + 1] = index
+      end,
+    }
+  end
+  local active, spare = slot(2), slot(1)
+  local phase = "running"
+  local transition = {
+    status = function()
+      return { phase = phase }
+    end,
+    stepSourceTick = function()
+      phase = "complete"
+    end,
+    acceptFieldLayers = function()
+      error("completion accepts no new field planes", 0)
+    end,
+    frame = function()
+      return { sourcePhase = 1, requiresCurrentFieldLayers = phase == "running" }
+    end,
+    dispose = function() end,
+  }
+  local envelope = setmetatable({
+    _transition = transition,
+    _transitionCapture = active,
+    _transitionCaptureSpare = spare,
+    _captureFieldLayers = function()
+      error("completion captures no new field planes", 0)
+    end,
+  }, FieldBattlePresentation)
+
+  envelope:_stepTransition()
+  Assert.equal(#disposed, 2, "completion releases both distinct slots")
+  Assert.isTrue(
+    (disposed[1] == 2 and disposed[2] == 1) or (disposed[1] == 1 and disposed[2] == 2),
+    "completion releases the published frame and the spare"
+  )
+  Assert.isNil(envelope._transitionCapture, "completion drops the published capture")
+  Assert.isNil(envelope._transitionCaptureSpare, "completion drops the spare slot")
+  envelope:_stepTransition()
+  envelope:_disposeTransition()
+  Assert.equal(#disposed, 2, "repeat observations never redispose either slot")
+end
+
+-- The replacement predicate stays read-only and conservative: only a
+-- running launch with published planes and a full-viewport replace
+-- motion-blur frame without wipe reports a proven cover.
+function T.replaces_field_world_reports_only_proven_full_replacement()
+  local function envelopeFor(options)
+    local transition = nil
+    if options.hasTransition then
+      transition = {
+        status = function()
+          return { phase = options.phase or "running" }
+        end,
+        frame = function()
+          return options.frame or {}
+        end,
+      }
+    end
+    return setmetatable({
+      _transitionFailed = options.failed == true,
+      _transition = transition,
+      _transitionCapture = options.capture,
+    }, FieldBattlePresentation)
+  end
+  local function liveCapture()
+    return { dispose = function() end }
+  end
+  local function liveBlur()
+    return { dispose = function() end }
+  end
+  local fullReplace = { motionBlur = liveBlur() }
+  Assert.isFalse(
+    envelopeFor({}):replacesFieldWorld(),
+    "no transition never replaces the field world"
+  )
+  Assert.isFalse(
+    envelopeFor({ hasTransition = true, failed = true, capture = liveCapture(), frame = fullReplace })
+      :replacesFieldWorld(),
+    "a failed launch never replaces the field world"
+  )
+  Assert.isFalse(
+    envelopeFor({ hasTransition = true, phase = "complete", capture = liveCapture(), frame = fullReplace })
+      :replacesFieldWorld(),
+    "a settled transition never replaces the field world"
+  )
+  Assert.isFalse(
+    envelopeFor({ hasTransition = true, frame = fullReplace }):replacesFieldWorld(),
+    "a missing published capture never replaces the field world"
+  )
+  Assert.isFalse(
+    envelopeFor({ hasTransition = true, capture = { _disposed = true, dispose = function() end }, frame = fullReplace })
+      :replacesFieldWorld(),
+    "a disposed capture never replaces the field world"
+  )
+  Assert.isFalse(
+    envelopeFor({ hasTransition = true, capture = liveCapture(), frame = {} }):replacesFieldWorld(),
+    "a frame without motion blur never replaces the field world"
+  )
+  Assert.isFalse(
+    envelopeFor({
+      hasTransition = true,
+      capture = liveCapture(),
+      frame = { motionBlur = { _disposed = true, dispose = function() end } },
+    }):replacesFieldWorld(),
+    "disposed feedback never replaces the field world"
+  )
+  Assert.isFalse(
+    envelopeFor({
+      hasTransition = true,
+      capture = liveCapture(),
+      frame = { motionBlur = liveBlur(), wipe = { rows = {} } },
+    }):replacesFieldWorld(),
+    "a wipe frame still exposes the underlying field"
+  )
+  Assert.isFalse(
+    envelopeFor({
+      hasTransition = true,
+      capture = liveCapture(),
+      frame = { motionBlur = liveBlur(), blendAlpha = 8 },
+    }):replacesFieldWorld(),
+    "a translucent composite still exposes the underlying field"
+  )
+  Assert.isTrue(
+    envelopeFor({ hasTransition = true, capture = liveCapture(), frame = fullReplace }):replacesFieldWorld(),
+    "an opaque motion-blur frame provably covers the field world"
+  )
+  Assert.isTrue(
+    envelopeFor({
+      hasTransition = true,
+      capture = liveCapture(),
+      frame = { motionBlur = liveBlur(), blendAlpha = 16 },
+    }):replacesFieldWorld(),
+    "a fully opaque blend still counts as replacement"
+  )
+  local queried = envelopeFor({ hasTransition = true, capture = liveCapture(), frame = fullReplace })
+  queried:replacesFieldWorld()
+  Assert.isTrue(queried._transition ~= nil, "the predicate advances nothing")
+  Assert.isTrue(queried._transitionCapture ~= nil, "the predicate releases nothing")
 end
 
 return { tests = T }
