@@ -209,4 +209,285 @@ function T.unknown_owner_fails_without_touching_existing_draws()
   runtime:release()
 end
 
+-- A stub graphics namespace for the pool's mesh seam: each created mesh
+-- records its own release, so the suite can prove shared ownership without
+-- a real GPU context.
+local function stubGraphics(failNewMesh)
+  return {
+    newImage = function()
+      error("this scene uses no textures", 0)
+    end,
+    newMesh = function(_, vertexCount, _, _)
+      if failNewMesh then
+        error("injected mesh upload failure", 0)
+      end
+      local mesh = { vertexCount = vertexCount, released = false, releaseCount = 0 }
+      function mesh:setVertices() end
+      function mesh:setVertexMap() end
+      function mesh:release()
+        self.released = true
+        self.releaseCount = self.releaseCount + 1
+      end
+      return mesh
+    end,
+  }
+end
+
+-- A minimal cache facade serving model descriptors, packed geometry, and
+-- resident collision bytes for physical-cell builds.
+local function cellCache(backend)
+  local references = {}
+  return {
+    read = function(_, path)
+      return backend:read(path)
+    end,
+    loadLua = function(_, path)
+      local data = assert(backend:read(path), "missing cache file " .. path)
+      local chunk = assert(loadstring(data, path))
+      setfenv(chunk, {})
+      local ok, result = pcall(chunk)
+      assert(ok, result)
+      return result
+    end,
+    resolveAsset = function(_, path)
+      local payload = backend:read(path)
+      if type(payload) ~= "string" then
+        return nil
+      end
+      local reference = references[path]
+      if reference == nil then
+        reference = {
+          path = path,
+          sourceId = "base:cell-mesh-sharing-test",
+          contentId = "cell-mesh-sharing-test\0" .. path,
+          size = #payload,
+          data = assert(love.data.newByteData(payload)),
+        }
+        references[path] = reference
+      end
+      return reference
+    end,
+    acquireSource = function(reference)
+      local lease = { value = assert(reference).data }
+      function lease:release()
+        self.value = nil
+      end
+      return lease
+    end,
+  }
+end
+
+local function writeCellFixtures(backend, descriptors, collisionPaths)
+  for _, desc in ipairs(descriptors) do
+    backend:write(MapAssetCache.modelPath(desc.key), LuaWriter.encode(desc))
+    for _, batch in ipairs(desc.batches) do
+      backend:write(batch.geometry, MeshWriter.encode(quad()))
+    end
+  end
+  local cells = {}
+  for index = 1, 32 * 32 do
+    cells[index] = { behavior = 0, terrainResponseId = 0, blocked = false }
+  end
+  for _, path in ipairs(collisionPaths) do
+    backend:write(path, CollisionGridAsset.encode({ width = 32, height = 32, cells = cells }))
+  end
+end
+
+local function physicalCell(modelKeys, collisionPath)
+  local instances = {}
+  for index, modelKey in ipairs(modelKeys) do
+    instances[index] =
+      { placementIndex = index - 1, modelKey = modelKey, transform = placement(index, index).transform }
+  end
+  return {
+    mapHeaderId = 61,
+    batches = {},
+    materials = {},
+    buildingInstances = instances,
+    terrainAnimations = { textureSrt = false },
+    collision = { file = collisionPath },
+  }
+end
+
+-- Two live physical cells covering equal geometry resolve one shared mesh:
+-- a distinct key keeps its own mesh, releasing one cell keeps the survivor
+-- usable, only the final release frees the mesh exactly once, and a failed
+-- sibling acquisition leaves the survivor untouched.
+function T.two_physical_cells_share_one_live_mesh_until_the_last_owner_releases()
+  local sharedKey = "shared:prop"
+  local otherKey = "other:prop"
+  local failingKey = "failing:prop"
+  local descriptors = {
+    staticDescriptor(sharedKey, 1, "shared-"),
+    staticDescriptor(otherKey, 1, "other-"),
+    staticDescriptor(failingKey, 1, "failing-"),
+  }
+  local backend = FakeCache.new()
+  writeCellFixtures(backend, descriptors, {
+    "test/cell-a.g4collision",
+    "test/cell-b.g4collision",
+    "test/cell-c.g4collision",
+    "test/cell-d.g4collision",
+  })
+  local cache = cellCache(backend)
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
+  local group = {}
+  local function cellOptions(graphics)
+    return {
+      graphics = graphics,
+      assetPreparation = assetPreparation,
+      decoded = decoded,
+      acquireSource = cache.acquireSource,
+      meshGroup = group,
+    }
+  end
+  local runtimeA = MapSceneLoader.loadCell(
+    cache,
+    physicalCell({ sharedKey }, "test/cell-a.g4collision"),
+    cellOptions(stubGraphics(false))
+  )
+  local runtimeB = MapSceneLoader.loadCell(
+    cache,
+    physicalCell({ sharedKey }, "test/cell-b.g4collision"),
+    cellOptions(stubGraphics(false))
+  )
+  local runtimeC = MapSceneLoader.loadCell(
+    cache,
+    physicalCell({ otherKey }, "test/cell-c.g4collision"),
+    cellOptions(stubGraphics(false))
+  )
+
+  local meshA = runtimeA.staticBuildingDraws[1].mesh
+  local meshB = runtimeB.staticBuildingDraws[1].mesh
+  Assert.isTrue(meshA == meshB, "cells covering equal geometry resolve one live mesh")
+  local meshC = runtimeC.staticBuildingDraws[1].mesh
+  Assert.isTrue(meshC ~= meshA, "a distinct effective key keeps its own mesh")
+
+  runtimeA:release()
+  Assert.isFalse(meshB.released, "releasing one cell keeps the shared mesh alive for its sibling")
+
+  local failed = Assert.throws(function()
+    MapSceneLoader.loadCell(
+      cache,
+      physicalCell({ sharedKey, failingKey }, "test/cell-d.g4collision"),
+      cellOptions(stubGraphics(true))
+    )
+  end)
+  Assert.isTrue(
+    tostring(failed):find("injected mesh upload failure", 1, true) ~= nil,
+    "the failed acquisition reports its own upload failure"
+  )
+  Assert.isFalse(meshB.released, "a failed sibling acquisition keeps the survivor alive")
+
+  runtimeB:release()
+  Assert.isTrue(meshB.released, "the final owner releases the shared mesh")
+  Assert.equal(meshB.releaseCount, 1, "the shared mesh is released exactly once")
+  runtimeC:release()
+end
+
+-- Mesh groups are scoped to one live coverage: equal geometry under different
+-- groups resolves to distinct Mesh objects, and releasing one coverage never
+-- frees the other's mesh. The emptied group retains no idle entry.
+function T.mesh_groups_are_scoped_to_one_coverage()
+  local sharedKey = "shared:prop"
+  local descriptors = { staticDescriptor(sharedKey, 1, "shared-") }
+  local backend = FakeCache.new()
+  writeCellFixtures(backend, descriptors, {
+    "test/scope-a.g4collision",
+    "test/scope-b.g4collision",
+    "test/scope-c.g4collision",
+  })
+  local cache = cellCache(backend)
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
+  local groupA = {}
+  local groupB = {}
+  local function cellOptions(group, graphics)
+    return {
+      graphics = graphics,
+      assetPreparation = assetPreparation,
+      decoded = decoded,
+      acquireSource = cache.acquireSource,
+      meshGroup = group,
+    }
+  end
+  local runtimeA1 = MapSceneLoader.loadCell(
+    cache,
+    physicalCell({ sharedKey }, "test/scope-a.g4collision"),
+    cellOptions(groupA, stubGraphics(false))
+  )
+  local runtimeA2 = MapSceneLoader.loadCell(
+    cache,
+    physicalCell({ sharedKey }, "test/scope-b.g4collision"),
+    cellOptions(groupA, stubGraphics(false))
+  )
+  local runtimeB = MapSceneLoader.loadCell(
+    cache,
+    physicalCell({ sharedKey }, "test/scope-c.g4collision"),
+    cellOptions(groupB, stubGraphics(false))
+  )
+  local meshA1 = runtimeA1.staticBuildingDraws[1].mesh
+  local meshA2 = runtimeA2.staticBuildingDraws[1].mesh
+  local meshB = runtimeB.staticBuildingDraws[1].mesh
+  Assert.isTrue(meshA1 == meshA2, "cells in one coverage share one live mesh")
+  Assert.isTrue(meshB ~= meshA1, "a separate coverage keeps its own mesh")
+  runtimeA1:release()
+  Assert.isFalse(meshA2.released, "releasing one owner keeps the coverage survivor alive")
+  Assert.isFalse(meshB.released, "releasing one coverage never frees another coverage mesh")
+  runtimeA2:release()
+  Assert.isTrue(meshA1.released, "the final owner of the coverage releases its mesh")
+  Assert.equal(meshA1.releaseCount, 1, "a coverage mesh is released exactly once")
+  Assert.isFalse(meshB.released, "the other coverage survivor stays usable")
+  Assert.isTrue(next(groupA.entries) == nil, "the emptied group retains no idle entry")
+  runtimeB:release()
+  Assert.isTrue(meshB.released, "the separate coverage releases its own mesh")
+end
+
+-- Sharing preserves per-scene statistics and exactly-once release: each pool
+-- counts its own unique mesh, and a repeated release never frees twice.
+function T.shared_mesh_counts_locally_and_releases_idempotently()
+  local sharedKey = "shared:prop"
+  local descriptors = { staticDescriptor(sharedKey, 1, "shared-") }
+  local backend = FakeCache.new()
+  writeCellFixtures(backend, descriptors, {
+    "test/stats-a.g4collision",
+    "test/stats-b.g4collision",
+  })
+  local cache = cellCache(backend)
+  local assetPreparation, decoded = ScenePreparationFixture.new(cache)
+  local group = {}
+  local function cellOptions(graphics)
+    return {
+      graphics = graphics,
+      assetPreparation = assetPreparation,
+      decoded = decoded,
+      acquireSource = cache.acquireSource,
+      meshGroup = group,
+    }
+  end
+  local runtimeA = MapSceneLoader.loadCell(
+    cache,
+    physicalCell({ sharedKey }, "test/stats-a.g4collision"),
+    cellOptions(stubGraphics(false))
+  )
+  local runtimeB = MapSceneLoader.loadCell(
+    cache,
+    physicalCell({ sharedKey }, "test/stats-b.g4collision"),
+    cellOptions(stubGraphics(false))
+  )
+  Assert.equal(runtimeA.stats.meshCount, 1, "a borrowing cell counts its own unique mesh")
+  Assert.equal(runtimeB.stats.meshCount, 1, "the sibling counts its own unique mesh")
+  Assert.isTrue(runtimeA.stats.triangleCount > 0, "shared triangles count locally")
+  Assert.equal(
+    runtimeA.stats.triangleCount,
+    runtimeB.stats.triangleCount,
+    "siblings report the same shared triangle count"
+  )
+  local mesh = runtimeA.staticBuildingDraws[1].mesh
+  runtimeA:release()
+  runtimeB:release()
+  Assert.equal(mesh.releaseCount, 1, "the shared mesh is released exactly once")
+  runtimeB:release()
+  Assert.equal(mesh.releaseCount, 1, "a repeated release never frees twice")
+end
+
 return { tests = T }

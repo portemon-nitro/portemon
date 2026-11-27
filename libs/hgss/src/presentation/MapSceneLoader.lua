@@ -101,6 +101,7 @@ local WAIT = {}
 ---@class MapSceneLoader.BuildOptions: GpuAssetPoolOptions
 ---@field timeBand string?
 ---@field acquireSource (fun(reference: unknown): table<string, unknown>)?
+---@field meshGroup table<string, unknown>? live physical-coverage mesh group forwarded to the pool; nil keeps isolated scene-owned meshes
 
 ---@class MapSceneLoader.BuildTask
 ---@field state "active"|"ready"|"transferred"|"released"|"failed"

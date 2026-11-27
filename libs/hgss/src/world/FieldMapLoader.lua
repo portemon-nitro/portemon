@@ -2318,6 +2318,13 @@ local function physicalCoverageOptions(loader, runtimeMap, position)
       end
     )
   end
+  -- One live mesh group per physical coverage: every staged and ordinary
+  -- cell task in this coverage rides the same group, so equal geometry
+  -- resolves to one live Mesh until its last owning cell releases it. The
+  -- group is reachable only through this closure's cell options and pools;
+  -- it is never attached to the logical map, the selected runtime, or
+  -- saved data, and a new coverage allocates a new group.
+  local meshGroup = { entries = {} }
   local function cellOptions(runtime)
     local options = {}
     if sceneOptions then
@@ -2326,6 +2333,7 @@ local function physicalCoverageOptions(loader, runtimeMap, position)
       end
     end
     options.mapProps = runtime.mapProps
+    options.meshGroup = meshGroup
     return options
   end
   if loader.sceneLoader and loader.sceneLoader.beginCell then

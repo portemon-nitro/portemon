@@ -3563,4 +3563,101 @@ function T.a_physically_seeded_record_still_admits_its_logical_closure()
   loader:release()
 end
 
+-- Every cell task in one physical coverage rides the same live mesh group, a
+-- new coverage allocates a new group, and the shared scene options table is
+-- never mutated: the group is reachable only through the coverage closure.
+function T.physical_cell_tasks_share_one_mesh_group_per_coverage()
+  local cache, world, _, _, files = fixture(2)
+  local mapId = 1
+  local scene = files[string.format("data/generated/maps/%04d/scene.lua", mapId)]
+  scene.type = "outdoor"
+  local captured = {}
+  local sceneLoader = {
+    load = function()
+      error("representative scene geometry must not be acquired", 0)
+    end,
+    loadEnvironment = function(_, environmentScene)
+      return { scene = environmentScene, release = function() end }
+    end,
+    beginCell = function(_, cell, opts)
+      captured[#captured + 1] = { x = cell.x, z = cell.z, meshGroup = opts and opts.meshGroup }
+      local task = {}
+      function task:advance(_)
+        return 0
+      end
+      function task:isReady()
+        return true
+      end
+      function task:takeResult()
+        return { cellKey = cell.x .. ":" .. cell.z, release = function() end }
+      end
+      function task:finish()
+        return task:takeResult()
+      end
+      function task:release() end
+      return task
+    end,
+  }
+  cache.exists = function(_, path)
+    return path == FieldCellCache.indexPath()
+  end
+  local cells = {}
+  for z = 0, 1 do
+    for x = 0, 1 do
+      local cellIndex = z * 2 + x
+      local cell = {
+        schema = FieldCellCache.CELL_SCHEMA,
+        matrixMemberId = mapId,
+        index = cellIndex,
+        x = x,
+        z = z,
+        mapHeaderId = mapId,
+        altitude = 0,
+        origin = { x = x * 32, y = 0, z = z * 32 },
+        landDataMemberId = 0,
+        areaDataMemberId = 0,
+        file = FieldCellCache.cellPath(mapId, cellIndex),
+        collision = { file = FieldCellCache.collisionPath(mapId, cellIndex) },
+        terrain = { file = FieldCellCache.terrainPath(mapId, cellIndex), schema = "g4-terrain-surfaces-v1" },
+        batches = {},
+        materials = {},
+        buildingInstances = {},
+        terrainAnimations = { textureSrt = false },
+      }
+      files[cell.file] = cell
+      files[cell.collision.file] = CollisionFixture.asset(32, 32)
+      files[cell.terrain.file] = {
+        schema = "g4-terrain-surfaces-v1",
+        source = { bdhcSha1 = "group-cell-" .. cellIndex },
+        plates = {},
+      }
+      cells[#cells + 1] = cell
+    end
+  end
+  files[FieldCellCache.indexPath()] = {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = { { matrixMemberId = mapId, width = 2, height = 2, cells = cells } },
+  }
+  local sceneOptions = { sentinel = "keep" }
+  local loader = newLoader(cache, world, { sceneLoader = sceneLoader, sceneOptions = sceneOptions })
+  local map = loader:load(mapId)
+  Assert.isNil(map.meshGroup, "the group is never attached to the logical map")
+  local coverage = loader:createPhysicalCoverage(map, { fieldX = 16, fieldZ = 16 })
+  Assert.isTrue(#captured >= 2, "the coverage stages more than one cell task")
+  local first = assert(captured[1].meshGroup, "cell tasks carry the live mesh group")
+  Assert.isTrue(type(first.entries) == "table", "the group owns the live entry table")
+  for _, entry in ipairs(captured) do
+    Assert.isTrue(entry.meshGroup == first, "every cell task in the coverage rides one group")
+  end
+  Assert.isNil(sceneOptions.meshGroup, "the shared scene options table is never mutated")
+  Assert.equal(sceneOptions.sentinel, "keep", "scene options still ride through to cell tasks")
+  coverage:release()
+  captured = {}
+  local secondCoverage = loader:createPhysicalCoverage(map, { fieldX = 16, fieldZ = 16 })
+  local second = assert(captured[1].meshGroup, "a new coverage carries its own group")
+  Assert.isTrue(second ~= first, "a new coverage allocates a new group")
+  secondCoverage:release()
+  loader:release()
+end
+
 return { tests = T }

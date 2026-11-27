@@ -30,6 +30,14 @@ local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 
 ---@class GpuAssetPool.Mesh: love.Mesh
+---@class GpuAssetPool.MeshEntry
+---@field mesh GpuAssetPool.Mesh
+---@field triangles integer
+---@field center number[]
+---@field bounds { minX: number, maxX: number, minY: number, maxY: number, minZ: number, maxZ: number }
+---@class GpuAssetPool.MeshGroupRecord
+---@field entry GpuAssetPool.MeshEntry
+---@field owners integer
 ---@class GpuAssetPool.Image: love.Image
 ---@class GpuAssetPool.Graphics
 ---@field newImage fun(data: unknown): GpuAssetPool.Image
@@ -54,6 +62,8 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field _imageTokens table<string, integer> outstanding shared image request by scene-local path/wrap identity, from the request until its lease replaces it
 ---@field _queue table<string, unknown>? borrowed selected preparation queue
 ---@field _decoded table<string, unknown>? borrowed selected decoded CPU owner
+---@field _meshGroup table<string, unknown>? live physical-coverage mesh group this pool shares immutable geometry through
+---@field _groupOwned table<string, boolean> effective geometry keys this pool owns one group ref for
 local GpuAssetPool = {}
 GpuAssetPool.__index = GpuAssetPool
 
@@ -107,11 +117,92 @@ local function guarded(pool, fn)
   end
 end
 
+-- One live physical coverage shares immutable vertex/index payloads across
+-- its cell pools through a group owned by the coverage closure: the group
+-- holds one live entry per effective geometry key plus an owner count, while
+-- each pool records one owning ref per admitted key in its own cache. Only
+-- the final owner's release frees the Mesh; a borrowed entry counts toward
+-- the borrowing pool's local mesh/triangle stats exactly like a scene-owned
+-- one. The group is reachable only through live coverage options/pools; it
+-- retains no idle entry once its last owner releases it.
+local function groupEntries(pool)
+  local group = pool._meshGroup
+  if group == nil then
+    return nil
+  end
+  local entries = group.entries
+  if type(entries) ~= "table" then
+    return nil
+  end
+  return entries
+end
+
+-- Borrow the live group entry for one effective key when another cell pool
+-- already published it. Records the local ref once (cache entry, mesh list,
+-- triangle count, ownership flag) and cancels this pool's redundant
+-- prefetch token through its existing owner. A pool that already owns the
+-- key borrows nothing twice.
+---@param pool GpuAssetPool
+---@param key string
+---@return GpuAssetPool.MeshEntry? borrowed entry or nil when the group holds no live entry
+local function borrowGroupEntry(pool, key)
+  local entries = groupEntries(pool)
+  if entries == nil then
+    return nil
+  end
+  local record = entries[key]
+  if record == nil then
+    return nil
+  end
+  ---@cast record GpuAssetPool.MeshGroupRecord
+  local cached = pool._meshCache[key]
+  if cached ~= nil then
+    return cached
+  end
+  record.owners = record.owners + 1
+  pool._meshCache[key] = record.entry
+  pool._groupOwned[key] = true
+  pool.meshes[#pool.meshes + 1] = record.entry.mesh
+  pool.triangles = pool.triangles + record.entry.triangles
+  local token = pool._geometryPrefetch[key]
+  if token ~= nil then
+    pool._geometryPrefetch[key] = nil
+    local queue = pool._queue
+    if queue ~= nil then
+      pcall(queue.cancel, queue, token)
+    end
+  end
+  return record.entry
+end
+
+-- Publish one freshly created entry to the live group. The entry is already
+-- recorded locally by the guarded creation; publication only adds the group
+-- record with the first owner. A group entry is published only after mesh
+-- creation, vertex upload, and index-map upload all succeed.
+---@param pool GpuAssetPool
+---@param key string
+---@param entry GpuAssetPool.MeshEntry
+local function publishGroupEntry(pool, key, entry)
+  local entries = groupEntries(pool)
+  if entries == nil then
+    return
+  end
+  if pool._groupOwned[key] then
+    return
+  end
+  if entries[key] ~= nil then
+    return
+  end
+  entries[key] = { entry = entry, owners = 1 }
+  pool._groupOwned[key] = true
+end
+
 ---@class GpuAssetPoolOptions
 ---@field graphics? unknown -- injectable graphics namespace (nil keeps love.graphics)
 ---@field imageAssets? table<string, unknown> -- session-scoped shared GPU image owner; required for every texture acquisition, which borrows a lease instead of owning an Image
 ---@field assetPreparation? table<string, unknown> -- selected preparation queue, paired with decoded
 ---@field decoded? table<string, unknown> -- selected decoded CPU owner, paired with assetPreparation
+---@field meshGroup? table<string, unknown> -- live physical-coverage mesh group ({ entries = {} }) shared by one coverage's cell pools; nil keeps isolated scene-owned meshes
 
 -- The CPU owners a scene's geometry preparation borrows. An explicit pair wins
 -- and must agree with the image owner's own capability; otherwise the session
@@ -175,6 +266,16 @@ function GpuAssetPool.new(cacheFs, opts)
   assert(graphics and graphics.newImage, "GpuAssetPool requires love.graphics")
   ---@cast graphics GpuAssetPool.Graphics|love.graphics
   local queue, decoded = resolvePreparation(opts)
+  local meshGroup = opts.meshGroup
+  if meshGroup ~= nil then
+    assert(type(meshGroup) == "table", "GpuAssetPool meshGroup must be { entries = {} }")
+    -- The frozen cell composition path passes a bare group table; the
+    -- coverage closure owns the canonical { entries = {} } shape, so a
+    -- missing entries table is initialized here rather than rejected.
+    if type(meshGroup.entries) ~= "table" then
+      meshGroup.entries = {}
+    end
+  end
   return setmetatable({
     cacheFs = cacheFs,
     graphics = graphics,
@@ -191,6 +292,8 @@ function GpuAssetPool.new(cacheFs, opts)
     _geometryPrefetch = {},
     _queue = queue,
     _decoded = decoded,
+    _meshGroup = meshGroup,
+    _groupOwned = {},
   }, GpuAssetPool)
 end
 
@@ -260,12 +363,29 @@ function GpuAssetPool:meshFor(reference)
   if entry ~= nil then
     return entry
   end
+  local borrowed = borrowGroupEntry(self, key)
+  if borrowed ~= nil then
+    return borrowed
+  end
   -- Every geometry source is a worker transaction on the selected queue: a
   -- procedural batch requests its packed upload, a native bank requests the
   -- whole bank, and the pool realizes the one payload it needs, then returns
   -- the decoded lease at once so no scene retains decoded bytes after upload.
   local queue = assert(self._queue, "geometry acquisition requires the selected preparation queue")
   local lease = queue:wait(self:_geometryToken(reference, "demand"))
+  -- Another cell pool may have published while this acquisition waited: reuse
+  -- the live group entry and return the unused prepared lease instead of
+  -- uploading a duplicate.
+  local cached = self._meshCache[key]
+  if cached ~= nil then
+    self:_returnPrepared(lease)
+    return cached
+  end
+  local shared = borrowGroupEntry(self, key)
+  if shared ~= nil then
+    self:_returnPrepared(lease)
+    return shared
+  end
   local ok, realized = pcall(function()
     return self:meshFromPrepared(reference, preparedPayload(lease, reference))
   end)
@@ -306,8 +426,17 @@ function GpuAssetPool:preparedMesh(reference, await)
   if entry ~= nil then
     return entry
   end
+  -- Reuse a live group entry before requesting worker preparation, so a cell
+  -- whose geometry a sibling already published never enrolls a duplicate.
+  local borrowed = borrowGroupEntry(self, key)
+  if borrowed ~= nil then
+    return borrowed
+  end
   local kind, source = geometryRequest(reference)
   local lease = await(kind, source, self:_takeGeometryPrefetch(key))
+  -- meshFromPrepared rechecks the group after the yield: the first successful
+  -- realization publishes, and this caller borrows it, leaving the unused
+  -- lease to the staged task's existing lease return.
   return self:meshFromPrepared(reference, preparedPayload(lease, reference))
 end
 
@@ -337,6 +466,12 @@ function GpuAssetPool:prefetchGeometry(reference)
   end
   local key = assetKey(reference)
   if self._meshCache[key] ~= nil or self._geometryPrefetch[key] ~= nil then
+    return
+  end
+  -- A live group entry already covers this source: pre-enrolling another
+  -- decode would be discarded by the later borrow.
+  local entries = groupEntries(self)
+  if entries ~= nil and entries[key] ~= nil then
     return
   end
   local kind, source = geometryRequest(reference)
@@ -540,46 +675,58 @@ end
 function GpuAssetPool:meshFromPrepared(path, prepared)
   local key = assetKey(path)
   local entry = self._meshCache[key]
-  if not entry then
-    guarded(self, function()
-      assert(
-        type(prepared) == "table" and prepared.vertexData and prepared.indexData,
-        "prepared mesh payload is required"
-      )
-      assert(
-        prepared.indexType == "uint16" or prepared.indexType == "uint32",
-        "prepared mesh index type must be uint16 or uint32"
-      )
-      local mesh = self.graphics.newMesh(VertexFormat.LAYOUT, prepared.vertexCount, "triangles", "static")
-      ---@cast mesh GpuAssetPool.Mesh
-      -- Record ownership before the failure-capable upload steps, exactly
-      -- like the synchronous path, so a later failure pops and releases
-      -- exactly this mesh instead of orphaning it.
-      self.meshes[#self.meshes + 1] = mesh
-      if prepared.vertexCount == 0 then
-        Errors.raise(ErrorCodes.SCENE_DESC_EMPTY_MESH, "a mesh must have at least one vertex", { path = key })
-      end
-      mesh:setVertices(prepared.vertexData)
-      mesh:setVertexMap(prepared.indexData, prepared.indexType)
-      local triangleCount = prepared.indexCount / 3
-      ---@cast triangleCount integer
-      entry = {
-        mesh = mesh,
-        triangles = triangleCount,
-        center = { prepared.centerX, prepared.centerY, prepared.centerZ },
-        bounds = {
-          minX = prepared.minX,
-          maxX = prepared.maxX,
-          minY = prepared.minY,
-          maxY = prepared.maxY,
-          minZ = prepared.minZ,
-          maxZ = prepared.maxZ,
-        },
-      }
-      self._meshCache[key] = entry
-      self.triangles = self.triangles + entry.triangles
-    end)
+  if entry ~= nil then
+    return entry
   end
+  -- A sibling cell may have published while this build yielded on worker
+  -- preparation: borrow the live entry instead of uploading a duplicate.
+  local borrowed = borrowGroupEntry(self, key)
+  if borrowed ~= nil then
+    return borrowed
+  end
+  guarded(self, function()
+    assert(
+      type(prepared) == "table" and prepared.vertexData and prepared.indexData,
+      "prepared mesh payload is required"
+    )
+    assert(
+      prepared.indexType == "uint16" or prepared.indexType == "uint32",
+      "prepared mesh index type must be uint16 or uint32"
+    )
+    local mesh = self.graphics.newMesh(VertexFormat.LAYOUT, prepared.vertexCount, "triangles", "static")
+    ---@cast mesh GpuAssetPool.Mesh
+    -- Record ownership before the failure-capable upload steps, exactly
+    -- like the synchronous path, so a later failure pops and releases
+    -- exactly this mesh instead of orphaning it.
+    self.meshes[#self.meshes + 1] = mesh
+    if prepared.vertexCount == 0 then
+      Errors.raise(ErrorCodes.SCENE_DESC_EMPTY_MESH, "a mesh must have at least one vertex", { path = key })
+    end
+    mesh:setVertices(prepared.vertexData)
+    mesh:setVertexMap(prepared.indexData, prepared.indexType)
+    local triangleCount = prepared.indexCount / 3
+    ---@cast triangleCount integer
+    entry = {
+      mesh = mesh,
+      triangles = triangleCount,
+      center = { prepared.centerX, prepared.centerY, prepared.centerZ },
+      bounds = {
+        minX = prepared.minX,
+        maxX = prepared.maxX,
+        minY = prepared.minY,
+        maxY = prepared.maxY,
+        minZ = prepared.minZ,
+        maxZ = prepared.maxZ,
+      },
+    }
+    self._meshCache[key] = entry
+    self.triangles = self.triangles + entry.triangles
+  end)
+  -- Publication happens only after mesh creation, vertex upload, and
+  -- index-map upload all succeed: an upload failure publishes nothing and
+  -- the guarded rollback already released the partial mesh.
+  ---@cast entry GpuAssetPool.MeshEntry
+  publishGroupEntry(self, key, entry)
   return entry
 end
 
@@ -620,8 +767,29 @@ end
 -- behind other scenes keep their own leases and meshes; a release here
 -- never evicts a committed scene's resources.
 function GpuAssetPool:release()
+  -- Group-owned keys decrement the shared owner count: only the final
+  -- owner releases the GPU object, while a survivor keeps it alive. Local
+  -- cache, mesh list, and triangle count clear exactly as before, so a
+  -- repeat release never touches the same object twice.
+  local shared = groupEntries(self)
+  local retained = {}
+  if shared ~= nil then
+    for key in pairs(self._groupOwned) do
+      local record = shared[key]
+      if record ~= nil then
+        record.owners = record.owners - 1
+        if record.owners > 0 then
+          retained[record.entry.mesh] = true
+        else
+          shared[key] = nil
+        end
+      end
+    end
+  end
   for _, mesh in ipairs(self.meshes) do
-    mesh:release()
+    if not retained[mesh] then
+      mesh:release()
+    end
   end
   -- Texture work borrows the session image owner; mesh-only pools without
   -- one skip both loops exactly as before, keeping headless construction
@@ -649,6 +817,7 @@ function GpuAssetPool:release()
   self._geometryPrefetch = {}
   self.meshes = {}
   self._meshCache = {}
+  self._groupOwned = {}
   self.triangles = 0
 end
 
