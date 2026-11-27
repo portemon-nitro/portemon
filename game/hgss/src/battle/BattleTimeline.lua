@@ -63,6 +63,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _itemName (fun(item: string): string?)? borrowed item display-name resolver for use narration
 ---@field _battleItemUse (fun(item: string): table<string, unknown>?)? borrowed generated battle-use facts
 ---@field _breakoutGrowth table<integer, { tick: integer, rowHeight: integer? }>? breakout-open growth progress by combatant for the queued reveal
+---@field _captureBurstPending { ballKey: string, opening: table<string, unknown>?, x: integer, y: integer }? deferred capture-open burst close while the target already shrinks
 ---@field _ballFadeColor (fun(ballKey: string): integer)? Pokepic palette-fade target of a ball (sBallColors)
 ---@field _ballOpening (fun(ballKey: string): { frames: { drawableKey: string, durationTicks: integer }[] }?)? staged opening animation of a ball
 ---@field _ballThrow (fun(ballKey: string): { frames: { drawableKey: string, durationTicks: integer }[] }?)? staged throw animation of a ball
@@ -549,6 +550,8 @@ function BattleTimeline:reset(view)
   self._ballParticleStarts = {}
   self._pendingCries = {}
   self._captureBall = nil
+  self._captureBurstPending = nil
+  self._breakoutGrowth = nil
   -- A fresh opening starts a new launch: the request ledger, its
   -- launch identity, and the known source bindings never leak from
   -- the previous launch into the next one.
@@ -578,6 +581,8 @@ function BattleTimeline:dispose()
   self._encounterAnimation = nil
   self._encounterPalette = nil
   self._encounterWild = nil
+  self._captureBurstPending = nil
+  self._breakoutGrowth = nil
 end
 
 ---@param cue table<string, unknown>
@@ -3351,18 +3356,23 @@ local function translateSwitch(self, event)
     enqueueMessage(self, recallText(self, departed --[[@as integer]], event), false, 0)
     enqueueBallSound(self, departed --[[@as integer]])
     -- Task_RecallPokemon mode-5 opens the ball in place with the shared
-    -- generic burst while the mon fades and shrinks: the particle effect
-    -- starts here and runs concurrently with the withdraw below through
-    -- the owning screen's particle step, exactly like the native ball
-    -- task overlaps the shrink.
+    -- generic burst while the mon fades and shrinks: the ball actor is
+    -- staged here, the particle effect starts with it, the withdraw
+    -- runs the fade/shrink, and the idle join plus the actor retirement
+    -- gate the HUD/send-out continuation on both. Follower recalls run
+    -- Task_RecallFollowMon with no ball at all, so they stage neither
+    -- the burst nor the actor even when the departed carries a ball.
+    local followerRecall = isFollowSendOut(self, departed --[[@as integer]])
     local recallBall = ballKeyOf(self, departed --[[@as integer]])
-    if type(recallBall) == "string" then
+    local recallStaged = false
+    if followerRecall ~= true and type(recallBall) == "string" then
       local recallType = battlerTypeOf(self, departed --[[@as integer]])
       local spot = FOE_BALL_START_BY_BATTLER_TYPE[recallType]
       if spot == nil then
         spot = BattleTimeline.PLAYER_ARC_TARGETS[recallType]
       end
       if spot ~= nil then
+        recallStaged = true
         enqueue(self, {
           kind = "ball-particles",
           effect = "generic-burst",
@@ -3383,6 +3393,15 @@ local function translateSwitch(self, event)
       requiresImage = self:_imageKeyFor(departed),
       keepHud = true,
     })
+    if recallStaged then
+      -- The mode-5 ball task overlaps the shrink and retires with its
+      -- burst: join the generic effect before hiding the actor, so a
+      -- long or delayed burst cannot leak into the incoming scene.
+      -- (CaptureActor.JOIN_GUARD_TICKS; spelled literally because this
+      -- translator precedes the CaptureActor local.)
+      enqueue(self, { kind = "particles-idle", minHold = 2 })
+      enqueue(self, { kind = "ball-recall-end", combatant = departed })
+    end
     enqueue(self, { kind = "hud-slide", combatant = departed, direction = "out" })
   end
   local incoming = payload.to
@@ -4066,8 +4085,9 @@ local function translateThrow(self, event)
       requiresImage = "battle-ball:" .. ballKey .. ":0",
     })
     -- BtlCmd_ThrowPokeball opens the ball with SEQ_SE_DP_BOWA4 once the
-    -- arc lands; the open cue owns the cell sequence, the staged burst
-    -- start, and the burst completion barrier.
+    -- arc lands; the open cue owns the cell sequence and the staged burst
+    -- start, completing on the 23-frame entry counter. The later idle
+    -- join owns the burst retirement barrier before the flash/drop.
     enqueue(self, { kind = "sound", cue = ballCue(BattleAudio.SINK_SOUNDS.captureOpen), duration = 0 })
     local opening = self._ballOpening ~= nil and self._ballOpening(ballKey) or nil
     local burstTick = CaptureActor.openBurstTick(opening)
@@ -5546,6 +5566,24 @@ local function startCue(self, cue)
       x = cue.x,
       y = cue.y,
     }
+    if cue.effect == "generic-burst" and type(cue.ballKey) == "string" then
+      -- Mode-5 recall stages its closed ball actor in place with the
+      -- burst: the actor stays up through the withdraw and the idle
+      -- join, retiring in ball-recall-end before the HUD slides.
+      CaptureActor.ensureStage(self)
+      local stage = self._openingPresentation
+      if stage ~= nil then
+        local key = cue.ballKey --[[@as string]]
+        stage.ballThrow = {
+          selector = "ball:" .. key,
+          x = cue.x,
+          y = cue.y,
+          drawableKey = ballCellKey(key, 0),
+          rotation = 0,
+          visible = true,
+        }
+      end
+    end
   elseif cue.kind == "ball-shake" then
     -- The wobble animates the resting closed ball in place (native
     -- CaptureStateShake changes position/rotation on the same actor).
@@ -6330,12 +6368,13 @@ function CaptureActor.tickBallCaptureOpenCue(self, cue)
   ball.paletteFlash = nil
   ball.paletteFlashColor = nil
   -- The open holds its frame-2 cell once the animation reaches it
-  -- (native SetAnimationFrame hold through the burst): the 23-frame
-  -- entry counter runs independently, so the open completes only after
-  -- both the entry and the burst retire, like BALL_FALL waits for both
-  -- the open and the controller completion. The closing frame 0 is
-  -- restored on the burst retirement edge itself, not deferred to the
-  -- later flash cue.
+  -- (native SetAnimationFrame hold through the burst). The 23-frame
+  -- entry counter is independent of the burst lifetime: the target
+  -- starts shrinking at 23 while the ball still holds its open cell.
+  -- Only the flash/drop wait for both the shrink and the burst
+  -- retirement, like BALL_FALL waits for both the open and the
+  -- controller completion. The closing frame 0 is restored on the
+  -- burst retirement edge itself, wherever that edge lands.
   if elapsed < burstTick then
     ball.drawableKey = CaptureActor.cellKey(cue, ballKey, math.max(1, elapsed))
   elseif cue.burstDone == true then
@@ -6354,10 +6393,9 @@ function CaptureActor.tickBallCaptureOpenCue(self, cue)
       y = cue.y,
     }
   end
-  -- Join the burst retirement edge before completing: with a live idle
-  -- probe the open holds past 23 until the burst retires (and restores
-  -- frame 0 above on that edge); without a probe (headless unit
-  -- fixtures) it completes on the entry counter alone.
+  -- Observe the burst retirement edge without gating entry on it: the
+  -- open completes on the entry counter alone, and a still-live burst
+  -- stashes its close for the absorb/join that follows.
   if elapsed >= burstTick and cue.burstDone ~= true then
     local probe = self._particleIdleProbe
     if probe ~= nil then
@@ -6371,13 +6409,51 @@ function CaptureActor.tickBallCaptureOpenCue(self, cue)
   if elapsed < CaptureActor.ENTRY_TICKS then
     return false
   end
-  if self._particleIdleProbe ~= nil and cue.burstDone ~= true and elapsed >= burstTick then
-    return false
+  if cue.burstDone == true or self._particleIdleProbe == nil then
+    -- Entry edge with a retired (or unobserved headless) burst: the
+    -- closed frame is restored here; headless fixtures with empty
+    -- sets complete on the counter alone.
+    ball.drawableKey = CaptureActor.cellForFrameIndex(cue, ballKey, 0)
+    self._captureBurstPending = nil
+    return true
   end
-  -- Ensure the closed frame is restored even when no probe observed
-  -- the retirement (headless fixtures with empty sets).
-  ball.drawableKey = CaptureActor.cellForFrameIndex(cue, ballKey, 0)
+  -- Entry edge with a live burst: start the shrink on time and leave
+  -- the ball on its open cell. The absorb and the later join own the
+  -- deferred frame-0 close on the actual retirement edge.
+  self._captureBurstPending = { ballKey = ballKey, opening = cue.opening, x = cue.x, y = cue.y }
+  ball.drawableKey = CaptureActor.cellForFrameIndex(cue, ballKey, 2)
   return true
+end
+
+-- Closes a deferred capture-open burst on its actual retirement edge:
+-- restores frame 0 once the particle probe reports idle. No probe
+-- (headless fixtures) leaves the pending close to the cue that owns
+-- it. Returns true once no deferred close remains.
+---@param self BattleTimeline
+---@return boolean closed
+function CaptureActor.closePendingCaptureBurst(self)
+  local pending = self._captureBurstPending
+  if pending == nil then
+    return true
+  end
+  local probe = self._particleIdleProbe
+  if probe == nil then
+    self._captureBurstPending = nil
+    return true
+  end
+  local ok, idle = pcall(probe)
+  if ok and idle == true then
+    local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
+    if ball ~= nil then
+      local key = pending.ballKey --[[@as string]]
+      ball.drawableKey = CaptureActor.cellForFrameIndex({ opening = pending.opening }, key, 0)
+      ball.visible = true
+      ball.rotation = 0
+    end
+    self._captureBurstPending = nil
+    return true
+  end
+  return false
 end
 
 ---@param self BattleTimeline
@@ -6529,21 +6605,21 @@ function CaptureActor.tickBallBreakoutOpenCue(self, cue)
   local stage = self._openingPresentation
   local ball = stage ~= nil and stage.ballThrow or nil
   if ball == nil then
-    return elapsed >= 2 + CaptureActor.BREAKOUT_ARC_TICKS + CaptureActor.BREAKOUT_OPEN_TICKS
+    return elapsed >= CaptureActor.BREAKOUT_ARC_TICKS + CaptureActor.BREAKOUT_OPEN_TICKS
   end
-  -- Native BREAK_OUT runs two independent actors for two frames: the
-  -- old capture ball stays at its resting spot while the fresh
-  -- ThrowArcAndOpen actor already holds at its own send-out spot.
-  -- A single record cannot show both, so the resting cleanup rides
-  -- ballThrowOld until its two-frame retirement while ballThrow ticks
-  -- the fresh actor independently from the same edge.
+  -- Native BREAK_OUT runs two independent clocks from the same edge:
+  -- the old capture ball retires after two cleanup frames while the
+  -- fresh ThrowArcAndOpen actor already ticks its own stationary arc.
+  -- Neither clock depends on deleting the other; the overlap is only
+  -- the first two frames. The resting cleanup rides ballThrowOld
+  -- until its retirement, then clears so no inactive actor lingers.
   assert(stage ~= nil, "breakout opens follow an installed opening")
-  local oldBall = stage.ballThrowOld
-  if type(oldBall) ~= "table" then
-    oldBall = {}
-    stage.ballThrowOld = oldBall
-  end
   if elapsed <= 2 then
+    local oldBall = stage.ballThrowOld
+    if type(oldBall) ~= "table" then
+      oldBall = {}
+      stage.ballThrowOld = oldBall
+    end
     oldBall.selector = "ball:" .. cue.oldBallKey --[[@as string]]
     oldBall.x = cue.oldX ~= nil and cue.oldX or cue.x
     oldBall.y = cue.oldY ~= nil and cue.oldY or cue.y
@@ -6574,8 +6650,10 @@ function CaptureActor.tickBallBreakoutOpenCue(self, cue)
     end
     return false
   end
-  oldBall.visible = false
-  local openElapsed = elapsed - 2
+  -- The two-frame cleanup retired: clear the old actor instead of
+  -- retaining an invisible record indefinitely.
+  stage.ballThrowOld = nil
+  local openElapsed = elapsed
   ball.selector = cue.selector
   ball.x = cue.x
   ball.y = cue.y
@@ -6662,6 +6740,10 @@ end
 ---@param cue table<string, unknown> active effect join cue under advancement
 ---@return boolean finished
 function CaptureActor.tickParticlesIdleCue(self, cue)
+  -- A deferred capture-open close retires on this join's edge: restore
+  -- frame 0 as soon as the burst idles, while the join itself still
+  -- gates the flash on the retirement.
+  CaptureActor.closePendingCaptureBurst(self)
   return CaptureActor.effectJoined(self, cue.elapsed --[[@as integer]], cue.minHold --[[@as integer]] or 0)
 end
 
@@ -6795,6 +6877,10 @@ end
 local function tickWithdrawCue(self, cue)
   local shown = self:_shown(cue.combatant --[[@as integer]])
   if shown ~= nil and cue.captureAbsorb == true then
+    -- A long opening burst still retires while the target already
+    -- shrinks: close the ball on the actual retirement edge without
+    -- gating entry on it.
+    CaptureActor.closePendingCaptureBurst(self)
     -- Task_PokemonEnterBall tints toward the attempted ball, sets
     -- shadow affine, then shrinks -32 per update and moves Y upward by
     -- one pixel per update only while the remaining source height is
@@ -7007,11 +7093,30 @@ local function tickExpCue(self, cue)
   return false
 end
 
+-- Retires the mode-5 recall ball actor after its burst join: the ball
+-- hid only once the withdraw shrink and the generic effect both
+-- retired, so the actor never leaks into the incoming send-out.
+---@param self BattleTimeline
+---@param cue table<string, unknown> recall retirement cue under advancement
+---@return boolean finished
+local function tickBallRecallEndCue(self, cue)
+  local _ = cue
+  local stage = self._openingPresentation
+  if stage ~= nil then
+    local ball = stage.ballThrow
+    if type(ball) == "table" then
+      ball.visible = false
+    end
+  end
+  return true
+end
+
 local TICK_CUE_HANDLERS = {
   ["native-effect"] = tickNativeEffectCue,
   ["message"] = tickMessageCue,
   ["sound"] = tickSoundCue,
   ["ball-particles"] = tickImmediateCue,
+  ["ball-recall-end"] = tickBallRecallEndCue,
   ["particles-idle"] = CaptureActor.tickParticlesIdleCue,
   ["ball-capture-open"] = CaptureActor.tickBallCaptureOpenCue,
   ["ball-flash"] = CaptureActor.tickBallFlashCue,

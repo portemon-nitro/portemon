@@ -313,11 +313,11 @@ end
 
 function T.open_joins_burst_retirement_before_entry_and_flash()
   -- The 23-frame entry counter runs independently of the open burst:
-  -- the open holds its frame-2 cell through the burst and restores
-  -- frame 0 on the retirement edge itself, completing only after both
-  -- the entry and the burst retire. Varying the burst on both sides of
-  -- 23 proves the join without freezing an empty-set duration.
-  local function runWithBurstHold(holdTicks)
+  -- the target starts shrinking at 23 while the ball still holds its
+  -- frame-2 cell; frame 0 restores on the burst retirement edge itself,
+  -- and the flash waits for the later of the shrink and the burst.
+  -- Varying the burst on both sides of 23 proves the independence.
+  local function runWithBurstHold(holdAfterOpen)
     local sounds = sink()
     local timeline = BattleTimeline.new({
       sound = function(name)
@@ -327,17 +327,22 @@ function T.open_joins_burst_retirement_before_entry_and_flash()
     stageBallArt(timeline)
     timeline:reset(openingView())
     local driver = driveParticles(timeline)
-    -- Override the particle-idle probe: false through the staged burst
-    -- lifetime, true once it retires. The empty-set owner stays idle;
-    -- only this probe gates the open.
+    -- Controlled burst lifetime measured from the opening edge: false
+    -- through the staged burst, true once it retires.
     local ticks = 0
+    local openSeenAt = nil
     timeline:setParticleIdleProbe(function()
-      return ticks >= holdTicks
+      if openSeenAt == nil then
+        return false
+      end
+      return (ticks - openSeenAt) >= holdAfterOpen
     end)
     Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
     local openStart = nil
     local shrinkStart = nil
+    local closeTick = nil
     local flashStart = nil
+    local sawOpenCell = false
     for _ = 1, 3000 do
       timeline:update(TICK, function(_)
         return true
@@ -357,21 +362,36 @@ function T.open_joins_burst_retirement_before_entry_and_flash()
         -- the open sound marks the 23-frame entry counter start.
         if voiced(sounds, "SEQ_SE_DP_BOWA4") then
           openStart = ticks
+          openSeenAt = ticks
         end
-      elseif shrinkStart == nil then
-        for _, entry in ipairs(timeline:battlers()) do
-          if entry.combatant == 3 and entry.affineMode == true then
-            shrinkStart = ticks
+      else
+        if type(ball) == "table" and ball.drawableKey == "cell:POKE_BALL:2" then
+          sawOpenCell = true
+        end
+        -- The close edge is independent of the shrink edge: once the
+        -- open cell showed, the first frame-0 is the retirement.
+        if sawOpenCell and closeTick == nil and type(ball) == "table" and ball.drawableKey == "cell:POKE_BALL:0" then
+          closeTick = ticks
+        end
+        if shrinkStart == nil then
+          for _, entry in ipairs(timeline:battlers()) do
+            if entry.combatant == 3 and entry.affineMode == true then
+              shrinkStart = ticks
+              break
+            end
+          end
+        end
+        if shrinkStart ~= nil and flashStart == nil and type(ball) == "table" and ball.paletteFlash ~= nil then
+          flashStart = ticks
+          if closeTick ~= nil then
             break
           end
         end
-      elseif flashStart == nil then
-        if type(ball) == "table" and ball.paletteFlash ~= nil then
-          flashStart = ticks
+        if shrinkStart ~= nil and closeTick ~= nil and flashStart ~= nil then
           break
         end
       end
-      if shrinkStart ~= nil and flashStart ~= nil then
+      if shrinkStart ~= nil and closeTick ~= nil and flashStart ~= nil then
         break
       end
       if timeline:settled() then
@@ -380,29 +400,33 @@ function T.open_joins_burst_retirement_before_entry_and_flash()
     end
     Assert.notNil(openStart, "the open starts its ball")
     Assert.notNil(shrinkStart, "the entry shrink starts after the open")
+    Assert.notNil(closeTick, "the ball closes on the burst retirement edge")
     Assert.notNil(flashStart, "the flash starts after the join")
-    assert(openStart ~= nil and shrinkStart ~= nil and flashStart ~= nil, "the open/entry/flash edges exist")
-    -- The open holds through the staged burst: short bursts complete on
-    -- the 23-frame entry counter, long bursts on the retirement edge.
-    -- The hold counts loop ticks from the packet start (including the
-    -- ~21-tick arc before the open), so relate it to the open edge.
-    local expectedOpen = math.max(23, holdTicks - openStart)
+    assert(openStart ~= nil and shrinkStart ~= nil and closeTick ~= nil and flashStart ~= nil, "the open/entry/close/flash edges exist")
+    -- Entry is independent of the burst lifetime: both cases shrink at
+    -- 23 past the open (allow the dispatch/update boundary).
     local openToShrink = shrinkStart - openStart
-    Assert.isTrue(openToShrink >= expectedOpen, "the entry waits for both the counter and the burst (openStart=" .. tostring(openStart) .. " shrink=" .. tostring(shrinkStart) .. " hold=" .. tostring(holdTicks) .. " expected=" .. tostring(expectedOpen) .. " got=" .. tostring(openToShrink) .. ")")
-    Assert.isTrue(openToShrink <= expectedOpen + 3, "the entry joins promptly once both retire")
-    -- The closed frame restores on the burst retirement edge itself:
-    -- by the time the entry starts, the ball already shows frame 0.
-    local ball = ballOf(timeline)
-    Assert.isTrue(type(ball.drawableKey) == "string", "the joined open leaves a staged ball cell")
-    -- No fall before both retire: the flash (which precedes the drop)
-    -- starts only after the entry shrink began.
-    Assert.isTrue(flashStart > shrinkStart, "the flash waits for the joined entry")
-    return openToShrink
+    Assert.isTrue(openToShrink >= 23, "the entry starts at 23 frames after the open (got " .. tostring(openToShrink) .. ")")
+    Assert.isTrue(openToShrink <= 26, "the entry joins promptly at 23 without waiting for the burst (got " .. tostring(openToShrink) .. ")")
+    Assert.isTrue(sawOpenCell, "the open holds its frame-2 cell through the burst")
+    -- Frame 0 appears on the burst edge itself, not deferred to flash.
+    local openToClose = closeTick - openStart
+    if holdAfterOpen <= 23 then
+      Assert.isTrue(openToClose <= openToShrink, "a short burst already closed before entry (hold=" .. tostring(holdAfterOpen) .. " close=" .. tostring(openToClose) .. ")")
+    else
+      Assert.isTrue(openToClose >= holdAfterOpen, "a long burst closes no earlier than its retirement (hold=" .. tostring(holdAfterOpen) .. " close=" .. tostring(openToClose) .. ")")
+      Assert.isTrue(openToClose <= holdAfterOpen + 3, "the close joins promptly on the retirement edge (hold=" .. tostring(holdAfterOpen) .. " close=" .. tostring(openToClose) .. ")")
+      Assert.isTrue(closeTick > shrinkStart, "the long burst still holds frame 2 while the target already shrinks")
+    end
+    -- The flash waits for the later of the shrink and the burst.
+    Assert.isTrue(flashStart > shrinkStart, "the flash waits for the entry shrink")
+    Assert.isTrue(flashStart >= closeTick, "the flash waits for the burst retirement")
+    return { shrinkDelta = openToShrink, flashDelta = flashStart - openStart }
   end
-  local shortOpen = runWithBurstHold(5)
-  local longOpen = runWithBurstHold(120)
-  Assert.isTrue(longOpen > shortOpen, "a longer burst delays the joined entry")
-  Assert.isTrue(longOpen - shortOpen >= 7, "the long burst holds past the 23-frame counter")
+  local short = runWithBurstHold(5)
+  local long = runWithBurstHold(60)
+  Assert.equal(short.shrinkDelta, long.shrinkDelta, "entry timing is independent of the burst lifetime")
+  Assert.isTrue(long.flashDelta > short.flashDelta, "a longer burst delays the flash, not the entry")
 end
 
 function T.bounce_runs_source_rows_and_returns()
@@ -809,6 +833,16 @@ function T.flash_traces_yellow_black_restoration_and_final_hold()
   timeline:reset(openingView())
   local driver = driveParticles(timeline)
   Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
+  -- The flash starts from zero: the closed ball carries no palette
+  -- flash before the yellow ramp (zero publishes as nil, distinct from
+  -- a missing ball).
+  Assert.isTrue(
+    waitFor(timeline, driver, function()
+      local ok, ball = pcall(ballOf, timeline)
+      return ok and ball.visible == true and ball.paletteFlash == nil
+    end, 3000),
+    "the closed ball starts with no palette flash"
+  )
   local yellow = {}
   local sawYellow = false
   for _ = 1, 3000 do
@@ -830,6 +864,13 @@ function T.flash_traces_yellow_black_restoration_and_final_hold()
     end
   end
   Assert.deepEqual(yellow, { 3, 6, 9, 12, 9, 6, 3 }, "the yellow flash samples 0 -> 12 -> 0 by threes with an initial applied step")
+  -- Structural source properties behind that sequence, not just its
+  -- literals: peak 12, step 3, symmetric ramp, terminal zero as nil.
+  Assert.equal(yellow[1], 3, "the yellow ramp applies its first step at once")
+  Assert.equal(yellow[4], 12, "the yellow ramp peaks at native 12")
+  for index = 2, #yellow do
+    Assert.isTrue(math.abs(yellow[index] - yellow[index - 1]) == 3, "the yellow ramp steps by threes")
+  end
   local clickPeak = nil
   for _ = 1, 3000 do
     timeline:update(TICK, function(_)
@@ -983,24 +1024,42 @@ function T.absorb_shrinks_affine_before_hiding()
   timeline:reset(openingView())
   local driver = driveParticles(timeline)
   Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
-  local shrank = waitFor(timeline, driver, function()
-    for _, entry in ipairs(timeline:battlers()) do
-      if entry.combatant == 3 and entry.affineWidth ~= nil and entry.affineWidth < 0x100 then
-        return true
-      end
+  -- Trace every shrink update: the absorb tints exactly one unit per
+  -- update toward the attempted ball (-32 affine per step) and moves Y
+  -- upward by one pixel per update while source height remains.
+  local trace = {}
+  for _ = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+    local entry = battler(timeline:battlers(), 3)
+    if entry.affineMode == true and entry.affineWidth ~= nil then
+      trace[#trace + 1] = {
+        intensity = entry.paletteFade ~= nil and entry.paletteFade.intensity or nil,
+        affine = entry.affineWidth,
+        yOffset = entry.pictureYOffset,
+        shadow = entry.shadowAffine,
+        color = entry.paletteFade ~= nil and entry.paletteFade.targetColor or nil,
+      }
     end
-    return false
-  end, 3000)
-  Assert.isTrue(shrank, "the target shrinks through affine before vanishing")
-  local target = battler(timeline:battlers(), 3)
-  -- Capture absorb keeps shadow affine on (retail POKEPIC_SHADOW_AFFINE)
-  -- and tints one unit per update toward the attempted ball, never the
-  -- recall double-step.
-  Assert.isTrue(target.shadowAffine == true, "the absorb keeps shadow affine on")
-  Assert.isTrue(target.paletteFade ~= nil, "the absorb tints toward the attempted ball")
-  if target.paletteFade ~= nil then
-    Assert.equal(target.paletteFade.targetColor, 21, "the absorb uses the attempted-ball color")
-    Assert.isTrue(target.paletteFade.intensity <= 16, "the absorb tint steps one unit per update")
+    if not entry.visible then
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(#trace >= 7, "the absorb publishes each shrink step before vanishing (got " .. tostring(#trace) .. ")")
+  for step, sample in ipairs(trace) do
+    if step <= 8 then
+      Assert.equal(sample.intensity, step, "the absorb tints one unit per update at step " .. tostring(step))
+      Assert.equal(sample.color, 21, "the absorb uses the attempted-ball color at step " .. tostring(step))
+      Assert.equal(sample.affine, 0x100 - 0x20 * step, "the absorb shrinks -32 per update at step " .. tostring(step))
+      Assert.isTrue(sample.shadow == true, "the absorb keeps shadow affine on at step " .. tostring(step))
+      -- Base offset 0 minus one pixel per consumed source-height unit.
+      Assert.equal(sample.yOffset, -step, "the absorb displaces one pixel per update at step " .. tostring(step))
+    end
   end
   Assert.isTrue(
     waitFor(timeline, driver, function()
@@ -1013,6 +1072,47 @@ function T.absorb_shrinks_affine_before_hiding()
   local hidden = battler(timeline:battlers(), 3)
   Assert.isTrue(hidden.affineMode == nil, "the retired absorb clears affine")
   Assert.isTrue(hidden.shadowAffine == nil, "the retired absorb clears shadow affine")
+  Assert.isTrue(hidden.pictureYOffset == 0 or hidden.pictureYOffset == nil, "the retired absorb restores the base offset")
+end
+
+function T.absorb_zero_height_never_displaces()
+  -- Zero-height targets still tint and shrink through affine but never
+  -- consume source height, so the picture never displaces.
+  local timeline = BattleTimeline.new({
+    ballFadeColor = function(_)
+      return 21
+    end,
+    faintAppearance = function(_)
+      return { height = 0, shadowHeight = 0 }
+    end,
+  })
+  stageBallArt(timeline)
+  timeline:reset(openingView())
+  local driver = driveParticles(timeline)
+  Assert.isTrue(timeline:present(caughtPacket(1)), "the capture packet is accepted")
+  local displaced = false
+  local shrank = false
+  for _ = 1, 3000 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    driver.step()
+    local entry = battler(timeline:battlers(), 3)
+    if entry.affineMode == true and entry.affineWidth ~= nil and entry.affineWidth < 0x100 then
+      shrank = true
+      if entry.pictureYOffset ~= nil and entry.pictureYOffset ~= 0 then
+        displaced = true
+      end
+    end
+    if not entry.visible then
+      break
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(shrank, "the zero-height absorb still shrinks through affine")
+  Assert.isFalse(displaced, "the zero-height absorb never displaces")
 end
 
 function T.breakout_runs_concurrent_old_and_new_ball_actors()
@@ -1058,25 +1158,39 @@ function T.breakout_runs_concurrent_old_and_new_ball_actors()
     "the breakout retry carrying its selected source text is accepted"
   )
   -- Drive until the breakout-open cue publishes the resting-ball
-  -- cleanup actor alongside the fresh send-out actor.
+  -- cleanup actor alongside the fresh send-out actor. The two clocks
+  -- run independently from the same edge: the old actor clears after
+  -- two frames while the fresh actor ticks its own arc and open.
   local sawOverlap = false
   local sawOldRetired = false
   local sawSealWithGrowth = false
+  local overlapElapsed = nil
+  local retiredElapsed = nil
+  local ticks = 0
   for _ = 1, 3000 do
     timeline:update(TICK, function(_)
       return true
     end)
     driver.step()
+    ticks = ticks + 1
     local presentation = timeline:openingPresentation()
     if type(presentation) == "table" then
       local fresh = presentation.ballThrow
       local old = presentation.ballThrowOld
       if type(fresh) == "table" and fresh.visible == true and type(old) == "table" and old.visible == true then
         sawOverlap = true
+        if overlapElapsed == nil then
+          overlapElapsed = ticks
+        end
         Assert.isTrue(fresh.selector ~= nil, "the fresh actor names its attempted ball")
         Assert.isTrue(old.x ~= nil and fresh.x ~= nil, "both actors carry positions during overlap")
       end
-      if sawOverlap and type(old) == "table" and old.visible ~= true then
+      -- Retirement clears the old actor instead of retaining an
+      -- invisible record: nil or hidden both read as retired.
+      if sawOverlap and (old == nil or (type(old) == "table" and old.visible ~= true)) then
+        if retiredElapsed == nil then
+          retiredElapsed = ticks
+        end
         sawOldRetired = true
       end
       if sawOldRetired and type(fresh) == "table" and fresh.visible == true then
@@ -1099,6 +1213,8 @@ function T.breakout_runs_concurrent_old_and_new_ball_actors()
   Assert.isTrue(sawOverlap, "the old ball stays up while the fresh send-out actor ticks")
   Assert.isTrue(sawOldRetired, "the old actor retires after two frames while the fresh actor continues")
   Assert.isTrue(sawSealWithGrowth, "the seal edge joins the zero-affine tinted growth")
+  assert(overlapElapsed ~= nil and retiredElapsed ~= nil, "the overlap and retirement edges exist")
+  Assert.isTrue(retiredElapsed - overlapElapsed <= 3, "the old cleanup retires after two frames without delaying the fresh clock")
   drive(timeline, driver, 3000)
   Assert.isTrue(timeline:settled(), "the breakout sequence drains")
   Assert.isTrue(battler(timeline:battlers(), 3).visible, "the breakout reveals its target")

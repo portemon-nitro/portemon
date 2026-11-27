@@ -3738,6 +3738,81 @@ function T.recall_wires_mode5_generic_burst_through_its_production_route()
   Assert.equal(#generics, 1, "the recall starts one mode-5 generic burst")
   Assert.equal(generics[1].ballKey, "POKE_BALL", "the generic burst rides the recalled ball")
   Assert.isTrue(type(generics[1].x) == "number" and type(generics[1].y) == "number", "the generic burst carries its in-place spot")
+  -- The mode-5 ball actor stages with the burst and stays up through
+  -- the shrink: it retires in ball-recall-end after the idle join,
+  -- before the HUD slides and the incoming send-out.
+  do
+    local presentation = timeline:openingPresentation()
+    local actor = type(presentation) == "table" and presentation.ballThrow or nil
+    Assert.isTrue(type(actor) == "table" and actor.visible == true, "the recall stages its in-place ball actor")
+    Assert.equal(actor.selector, "ball:POKE_BALL", "the recall actor rides the recalled ball")
+  end
+  for _ = 1, 600 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the recall drains through its burst join before the send-out")
+  do
+    local presentation = timeline:openingPresentation()
+    local actor = type(presentation) == "table" and presentation.ballThrow or nil
+    Assert.isTrue(actor == nil or actor.visible ~= true, "the recall actor retires before the incoming scene")
+  end
+end
+
+-- Follower recalls run Task_RecallFollowMon with no ball: even a
+-- departed carrying a ball identity stages no generic burst.
+function T.recall_skips_mode5_generic_burst_for_followers()
+  local timeline = BattleTimeline.new({ sound = sink().sound })
+  local view = openingView()
+  view.own[1].slot = 0
+  view.followMonSlot = 0
+  view.own[2] = {
+    combatant = 2,
+    participant = 1,
+    side = 1,
+    controller = "player",
+    active = false,
+    slot = 1,
+    hp = 30,
+    maxHp = 30,
+    species = "EEVEE",
+    form = 0,
+    name = "BENCH",
+    ballKey = "POKE_BALL",
+    level = 20,
+    experience = 8000,
+  }
+  timeline:reset(view)
+  local after = openingView()
+  after.own[1].slot = 0
+  after.followMonSlot = 0
+  after.own[2] = view.own[2]
+  local swap = event("switch", { from = 1, to = 2, position = 1 }, { [1] = 52, [3] = 57 })
+  swap.cause = { kind = "switch" }
+  local delivery = packet(1, { swap }, after)
+  delivery.before.own[2] = view.own[2]
+  delivery.before.own[1].slot = 0
+  delivery.before.followMonSlot = 0
+  Assert.isTrue(timeline:present(delivery), "the follower switch is accepted")
+  local generics = 0
+  for _ = 1, 600 do
+    timeline:update(TICK, function(_)
+      return true
+    end)
+    for _, start in ipairs(timeline:takeBallParticleStarts()) do
+      if type(start) == "table" and start.effect == "generic-burst" then
+        generics = generics + 1
+      end
+    end
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.equal(generics, 0, "the follower recall stages no mode-5 burst")
 end
 
 -- subscript_0011_ThrowBall names the throwing trainer, the target enters
@@ -4051,6 +4126,25 @@ function T.mid_battle_send_out_flashes_the_ball_white_through_the_arc()
   }
   local switch = event("switch", { from = 1, incoming = 2 }, { [1] = 52, [3] = 57 })
   Assert.isTrue(timeline:present(packet(1, { switch }, after)), "the mid-battle switch is accepted")
+  -- The mode-5 recall stages its own ball first: drain it through its
+  -- retirement before observing the send-out throw.
+  do
+    local sawRecall = false
+    for _ = 1, 600 do
+      if timeline:messageActive() then
+        timeline:ack()
+      end
+      advance(timeline, TICK)
+      timeline:takeBallParticleStarts()
+      local ball = timeline:openingPresentation().ballThrow
+      if type(ball) == "table" and ball.visible == true then
+        sawRecall = true
+      end
+      if sawRecall and (type(ball) ~= "table" or ball.visible ~= true) then
+        break
+      end
+    end
+  end
   -- The send-out script prints its line and slides the party gauge before
   -- the throw, so advance to the first visible ball and then observe it
   -- frame by frame.
@@ -4184,6 +4278,25 @@ function T.mid_battle_foe_send_out_shows_the_source_open_cell_and_flash()
   local switch = event("switch", { from = 3, incoming = 5 }, { [1] = 52, [5] = 57 })
   switch.sequence = 2
   Assert.isTrue(timeline:present(packet(2, { switch }, after)), "the mid-battle foe switch is accepted")
+  -- The mode-5 recall stages its own ball first: drain it through its
+  -- retirement before observing the send-out throw.
+  do
+    local sawRecall = false
+    for _ = 1, 600 do
+      if timeline:messageActive() then
+        timeline:ack()
+      end
+      advance(timeline, TICK)
+      timeline:takeBallParticleStarts()
+      local ball = timeline:openingPresentation().ballThrow
+      if type(ball) == "table" and ball.visible == true then
+        sawRecall = true
+      end
+      if sawRecall and (type(ball) ~= "table" or ball.visible ~= true) then
+        break
+      end
+    end
+  end
   local throwStart = nil
   for tick = 1, 600 do
     if timeline:messageActive() then

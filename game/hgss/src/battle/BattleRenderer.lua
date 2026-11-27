@@ -1307,25 +1307,53 @@ local function compositionAnimation(view, engine, priorityOverride)
   end
   local captureBlendActive = false
   if engine == "main" then
+    -- Capture owns the blend register only while its translucent actor
+    -- is live: a generic scalar patch must never expand the capture
+    -- masks or suppress an explicit compositor write. Both branches
+    -- share the ball actor as the single source of truth.
+    local captureBallActive = false
+    local opening = view.openingPresentation
+    if type(opening) == "table" then
+      local fadeBall = opening.ballThrow
+      if type(fadeBall) == "table" and fadeBall.visible == true and fadeBall.oamMode == "translucent" then
+        local fadeA = fadeBall.fadeAlpha
+        local fadeB = fadeBall.fadeBeta
+        if type(fadeA) == "number" and fadeA >= 0 and fadeA <= 16 and type(fadeB) == "number" then
+          captureBallActive = true
+        end
+      end
+    end
     local spriteBlend = view.spriteBlend --[[@as table<string, unknown>?]]
     if type(spriteBlend) == "table" and type(spriteBlend.blendCoefficientA) == "number" then
-      blend = {
-        mode = "alpha",
-        eva = clampCoefficient(spriteBlend.blendCoefficientA),
-        evb = clampCoefficient(spriteBlend.blendCoefficientB),
-        evy = 0,
-      }
-      -- Native ball first-target NONE: the translucent OBJ blends
-      -- against the second planes, never by marking the world plane
-      -- first-target. Mark every native second plane eligible so the
-      -- ball stays translucent over world3d/window/transition as well
-      -- as the battlefield; an ineligible immediate second plane would
-      -- otherwise force the shader back to opaque.
-      secondTarget.world3d = true
-      secondTarget.window = true
-      secondTarget.transition = true
-      secondTarget.battlefield = true
-      captureBlendActive = true
+      if captureBallActive then
+        blend = {
+          mode = "alpha",
+          eva = clampCoefficient(spriteBlend.blendCoefficientA),
+          evb = clampCoefficient(spriteBlend.blendCoefficientB),
+          evy = 0,
+        }
+        -- Native ball first-target NONE: the translucent OBJ blends
+        -- against the second planes, never by marking the world plane
+        -- first-target. Mark every native second plane eligible so the
+        -- ball stays translucent over world3d/window/transition as well
+        -- as the battlefield; an ineligible immediate second plane would
+        -- otherwise force the shader back to opaque.
+        secondTarget.world3d = true
+        secondTarget.window = true
+        secondTarget.transition = true
+        secondTarget.battlefield = true
+        captureBlendActive = true
+      else
+        -- Ordinary move-animation scalar patch: publish its coefficients
+        -- without capture masks or precedence. An explicit compositor
+        -- blend below still wins, preserving the generic arbitration.
+        blend = {
+          mode = "alpha",
+          eva = clampCoefficient(spriteBlend.blendCoefficientA),
+          evb = clampCoefficient(spriteBlend.blendCoefficientB),
+          evy = 0,
+        }
+      end
     end
   else
     -- Ordinary sub-engine menus blend BG1 over the planes below it

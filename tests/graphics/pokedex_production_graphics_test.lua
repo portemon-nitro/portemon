@@ -2388,10 +2388,15 @@ function T.registration_child_runs_source_phases_with_fades_and_departure(scope)
     end, 400, "the card becomes dismissible after its fades and cry")
     local readyImage = drawCard(child:view())
     do
+      -- The banner strip flashes its first two tile rows at (0, 0)
+      -- through 256x16 while the popup lives, so a probe inside that
+      -- strip observes the bank-7 flash whenever the free-running
+      -- banner reads 7 at ready. Pin stable authored background below
+      -- the strip instead.
       local layers = bgLayersFor(rig.cacheFs, rig.manifest, "registration", "information")
       local priorities = Renderer.layerPrioritiesOf(rig.manifest, "registration", "information")
-      local er, eg, eb = expectedBackground(layers, priorities, backdrop, 2, 2)
-      assertPixel(readyImage, 2, 2, er, eg, eb, "the ready card paints its authored background")
+      local er, eg, eb = expectedBackground(layers, priorities, backdrop, 2, 20)
+      assertPixel(readyImage, 2, 20, er, eg, eb, "the ready card paints its authored background")
     end
     assertPixel(readyImage, 48, 72, er, eg, eb, "the ready card paints the captured specimen at center 48")
     Assert.equal(#audio.calls, 1, "the card cry plays exactly once")

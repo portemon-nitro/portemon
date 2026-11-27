@@ -463,6 +463,16 @@ function T.nickname_question_centers_caught_specimen_over_black()
   local compositor = type(main) == "table" and main.compositor or nil
   local fade = type(compositor) == "table" and compositor.battlefieldFade or nil
   Assert.isTrue(type(fade) == "table" and fade.amount == 16, "the nickname scene fades the battlefield to black")
+  -- Scene replacement: exactly one visible specimen owns the main
+  -- scene; the old player, donor foe, shadows, and HUD retire with
+  -- the battle main instead of lingering behind the question.
+  local visible = {}
+  for _, battler in ipairs(snapshot.battlers) do
+    if type(battler) == "table" and battler.visible == true and battler.dontDraw ~= true and battler.vanished ~= true then
+      visible[#visible + 1] = battler
+    end
+  end
+  Assert.equal(#visible, 1, "the nickname scene shows exactly one main-scene picture")
   local specimen = nil
   for _, battler in ipairs(snapshot.battlers) do
     if type(battler) == "table" and battler.side ~= 1 and battler.visible == true and type(battler.portraitSelector) == "string" then
@@ -472,6 +482,18 @@ function T.nickname_question_centers_caught_specimen_over_black()
   end
   Assert.notNil(specimen, "the nickname scene shows the centered caught specimen")
   assert(specimen ~= nil, "the centered specimen exists")
+  Assert.isTrue(specimen.hudVisible == false, "the specimen carries no health box")
+  Assert.isTrue(specimen.affineMode == nil, "the specimen stands unscaled")
+  Assert.isTrue(specimen.shadowAffine == nil, "the specimen carries no battle shadow")
+  Assert.isTrue(specimen.paletteFade == nil, "the specimen carries no battle tint")
+  for _, battler in ipairs(snapshot.battlers) do
+    if type(battler) == "table" and battler ~= specimen and battler.visible == true then
+      error("the nickname scene retains a stale battle picture", 0)
+    end
+    if type(battler) == "table" and battler.side == 1 and battler.hudVisible ~= false then
+      error("the old player HUD survives into the nickname scene", 0)
+    end
+  end
   local BattleScene = require("libs.hgss.src.presentation.BattleScene")
   local row = BattleScene.slotRow(specimen, nil, rig.screen._manifest.battlefield.slots)
   local sourceHeight = type(specimen.sourceHeight) == "number" and specimen.sourceHeight or 0
