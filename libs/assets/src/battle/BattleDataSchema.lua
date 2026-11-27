@@ -126,6 +126,9 @@ function BattleDataSchema.assertBattleRecord(battle, context, field)
   BattleDataSchema.assertBehaviorRef(battle.behavior, context, field .. " behavior")
   checkNonEmptyString(battle.target, context, "BATTLE_DATA_INVALID", field .. " target")
   checkFlags(battle.flags, context, "BATTLE_DATA_INVALID", field .. " flags")
+  if type(battle.flags.protectable) ~= "boolean" or type(battle.flags.flinchEligible) ~= "boolean" then
+    fail("BATTLE_DATA_INVALID", field .. " flags must declare protection and flinch eligibility", context)
+  end
   return true
 end
 

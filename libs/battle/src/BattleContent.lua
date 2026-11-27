@@ -71,6 +71,7 @@ end
 
 ---@class TypeChart
 ---@field private _matrix table<string, table<string, unknown>>
+---@field private _order table<string, string[]>
 local TypeChart = {}
 TypeChart.__index = TypeChart
 
@@ -136,6 +137,31 @@ function TypeChart:effectiveness(attack, defend)
   return { numerator = rational.numerator, denominator = rational.denominator }
 end
 
+---@param attack string
+---@param defenders string[] defending types under ordering
+---@return string[] defender types in the composed matchup row's source order
+function TypeChart:orderedDefenders(attack, defenders)
+  assert(type(attack) == "string", "ordered effectiveness requires its attacking type")
+  local wanted = {} ---@type table<string, boolean>
+  for _, defend in ipairs(defenders) do
+    wanted[defend] = true
+  end
+  local ordered = {} ---@type string[]
+  for _, defend in ipairs(self._order[attack] or {}) do
+    if wanted[defend] then
+      ordered[#ordered + 1] = defend
+      wanted[defend] = nil
+    end
+  end
+  for _, defend in ipairs(defenders) do
+    if wanted[defend] then
+      ordered[#ordered + 1] = defend
+      wanted[defend] = nil
+    end
+  end
+  return ordered
+end
+
 ---@param rulesetKey string
 ---@return TypeChart an isolated chart view over the composition type matrix
 function BattleContent:typeChart(rulesetKey)
@@ -161,8 +187,10 @@ function BattleContent:typeChart(rulesetKey)
   end
   local keys = self._resolved:keys("types")
   local matrix = {}
+  local order = {}
   for _, key in ipairs(keys) do
     matrix[key] = {}
+    order[key] = {}
   end
   for _, key in ipairs(keys) do
     local record = self._resolved:get("types", key)
@@ -170,6 +198,7 @@ function BattleContent:typeChart(rulesetKey)
       local row = matrix[relation.attack]
       if row ~= nil then
         row[relation.defend] = { numerator = relation.numerator, denominator = relation.denominator }
+        order[relation.attack][#order[relation.attack] + 1] = relation.defend
       end
     end
   end
@@ -182,7 +211,7 @@ function BattleContent:typeChart(rulesetKey)
       end
     end
   end
-  return setmetatable({ _matrix = matrix }, TypeChart)
+  return setmetatable({ _matrix = matrix, _order = order }, TypeChart)
 end
 
 return BattleContent

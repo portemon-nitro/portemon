@@ -43,6 +43,9 @@
 ---@field solarBeam boolean? whether the strike is the charging grass special case
 ---@field flashFireBoost boolean? whether the attacker has absorbed fire and boosts fire damage
 ---@field meFirst boolean? whether the source Me First flag scales this damage instance
+---@field lifeOrb boolean? whether Life Orb scales post-critical pre-range damage
+---@field metronomeTurns integer? consecutive-use count scaling post-critical pre-range damage
+---@field expertBelt boolean? whether Expert Belt scales post-chart super-effective damage
 ---@field randomPercent integer?
 
 ---@class DamageFixedSpec
@@ -241,6 +244,23 @@ local function runStages(spec, stream, stages)
     current = multiplied
   end
 
+  if spec.lifeOrb == true then
+    local boosted = math.floor((current * 130) / 100)
+    recordStage(boosted, stages, "life_orb", current, "floor(damage*130/100) before Me First and range")
+    current = boosted
+  end
+  if (spec.metronomeTurns or 0) > 0 then
+    local boosted = math.floor(
+      (
+        current * (
+          10 + spec.metronomeTurns --[[@as integer]]
+        )
+      ) / 10
+    )
+    recordStage(boosted, stages, "metronome", current, "floor(damage*(10+turns)/10) before Me First and range")
+    current = boosted
+  end
+
   -- DamageCalcDefault applies Me First after CalcMoveDamage and the
   -- critical multiplier, immediately before ApplyDamageRange.
   if spec.meFirst == true then
@@ -264,6 +284,9 @@ local function runStages(spec, stream, stages)
 
   for _, factor in ipairs(spec.effectivenessFactors) do
     local typed = math.floor((current * factor.numerator) / factor.denominator)
+    if current > 0 and factor.numerator > 0 and typed == 0 then
+      typed = 1
+    end
     recordStage(
       typed,
       stages,
@@ -284,6 +307,12 @@ local function runStages(spec, stream, stages)
     )
     recordStage(adjusted, stages, "ability_effectiveness", current, "post-chart ability effectiveness ratio")
     current = adjusted
+  end
+
+  if spec.expertBelt == true and spec.effectiveness.numerator > spec.effectiveness.denominator then
+    local boosted = math.floor((current * 120) / 100)
+    recordStage(boosted, stages, "expert_belt", current, "floor(damage*120/100) after chart and Filter/Solid Rock")
+    current = boosted
   end
 
   if current < 1 then

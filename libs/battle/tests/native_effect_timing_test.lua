@@ -203,6 +203,25 @@ function T.recharge_blocks_exactly_the_next_action()
   Assert.equal(state.turns, 0, "the one-turn marker is spent by the blocked action")
 end
 
+function T.charge_expires_after_two_residual_passes()
+  local Handlers = handlersOwner("residual handlers expire the turn-limited Charge boost")
+  local bag = liveBag()
+  local marker = addInstance(
+    bag,
+    "charge",
+    { kind = "active", combatant = 2, activation = 1 },
+    { version = 1, turns = 2 }
+  )
+  local handlers = Handlers.handlersFor(beforeFacts(), "residual")
+  local first = invoke(bag, handlers, "residual", { health = { [2] = 96 } })
+  Assert.equal(#first.events, 0, "Charge remains active through its first turn-end tick")
+  Assert.equal(bag:get(marker.id).state.turns, 1, "the first residual spends one native turn")
+  local second = invoke(bag, handlers, "residual", { health = { [2] = 96 } })
+  Assert.equal(#second.events, 1, "Charge expires at the second turn-end tick")
+  Assert.equal(second.events[1].kind, "expire", "the residual pass reports the timed condition expiry")
+  Assert.equal(bag:get(marker.id).state.turns, 0, "the timing owner leaves removal to the residual sweep")
+end
+
 function T.bide_waits_for_persistent_status_gates_before_release()
   local Handlers = handlersOwner("before-action handlers preserve Bide for its controller checkpoint")
   local bag = liveBag()
@@ -499,7 +518,12 @@ function T.toxic_spikes_poison_absorb_or_repel()
   local magicGuard = Handlers.handlersFor(entryFacts({ "normal" }, true, { [3] = true }), "entry")
   local guardedBag = liveBag()
   local guardedLayers = addInstance(guardedBag, "toxicspikes", { kind = "side", side = 2 }, { version = 1, layers = 1 })
-  local guardedContext = { health = { [3] = 96 }, clearHazard = function() return guardedBag:remove(guardedLayers.id) end }
+  local guardedContext = {
+    health = { [3] = 96 },
+    clearHazard = function()
+      return guardedBag:remove(guardedLayers.id)
+    end,
+  }
   local guarded = invoke(guardedBag, magicGuard, "entry", guardedContext)
   Assert.equal(#guarded.events, 0, "Magic Guard skips Toxic Spikes before poison or absorption")
   Assert.notNil(guardedBag:get(guardedLayers.id), "Magic Guard leaves the toxic layers intact")
@@ -736,6 +760,7 @@ local function strikeFactsFor(seeds)
     TACKLE = catalog:move("TACKLE"),
     STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
   }
+  facts.TACKLE.accuracy = 100
   for _, seed in ipairs(seeds) do
     for _, entry in ipairs(seed.mon.moves or {}) do
       if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then

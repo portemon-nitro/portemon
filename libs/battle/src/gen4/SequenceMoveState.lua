@@ -51,11 +51,11 @@ local function validateState(candidate)
         error("sequence ramp state names its move, count, and native turn")
       end
       state.ramp = { move = value.move, count = value.count, turn = value.turn }
-    elseif key == "electricBoost" then
-      if value ~= true then
-        error("Charge state is present only while its boost is available")
+    elseif key == "fatiguePending" then
+      if type(value) ~= "boolean" then
+        error("sequence fatigue state is boolean")
       end
-      state.electricBoost = true
+      state.fatiguePending = value
     elseif key ~= "version" then
       error("sequence move state carries no unknown fields")
     end
@@ -126,6 +126,19 @@ function M.semiInvulnerable(state, combatant)
   return SEMI_INVULNERABLE[stored.chargeMove]
 end
 
+---@param context BattleContext mechanics context under a field transition
+---@param combatant integer battler whose aerial charge is cancelled
+---@param source table<string, unknown> cause of the grounding transition
+function M.cancelAirborne(context, combatant, source)
+  M.update(context, combatant, source, function(state)
+    if state.chargeMove ~= "FLY" and state.chargeMove ~= "BOUNCE" then
+      return state
+    end
+    state.chargeMove = nil
+    return state
+  end)
+end
+
 ---@param context BattleContext mechanics context under a sequence transition
 ---@param combatant integer user whose stored state is read
 ---@return table<string, unknown>? validated state, nil if absent
@@ -177,6 +190,32 @@ function M.update(context, combatant, source, transition)
       validated
     )
   end
+end
+
+---@param context BattleContext residual context owning sequence transitions
+---@param stream BattleRng native stream used by fatigue
+---@param combatant integer active battler whose pending fatigue settles
+function M.settleFatigue(context, stream, combatant)
+  local current = M.read(context, combatant)
+  if current == nil or current.fatiguePending ~= true then
+    return
+  end
+  M.update(context, combatant, { kind = "residual", key = "rampage" }, function(state)
+    state.fatiguePending = nil
+    return state
+  end)
+  local entry = context:entryOf(combatant)
+  assert(entry.activation ~= nil, "rampage fatigue scopes to the active entry")
+  if entry.hp <= 0 or context:hasBattleEffect(combatant, "confusion") then
+    return
+  end
+  local turns = 2 + stream:nextU16("rampage_confusion", { kind = "rampage", combatant = combatant }) % 4
+  context:addBattleEffect(
+    require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers").definitionFor("confusion"),
+    { kind = "active", combatant = combatant, activation = entry.activation },
+    { kind = "residual", key = "rampage" },
+    { version = 1, turns = turns }
+  )
 end
 
 return M

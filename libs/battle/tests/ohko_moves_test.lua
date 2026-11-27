@@ -108,6 +108,20 @@ local function runStrike(moveKey, extra)
       { version = 1, attacker = extra.lockOnAttacker }
     )
   end
+  if type(extra.defenderHp) == "number" then
+    local currentHp = ctx:damage(2, 0, { kind = "probe" }).before
+    ctx:damage(2, currentHp - extra.defenderHp, { kind = "probe" })
+  end
+  if type(extra.substituteHp) == "number" then
+    local entry = ctx:entryOf(2)
+    local handlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+    ctx:addBattleEffect(
+      handlers.definitionFor("substitute"),
+      { kind = "active", combatant = 2, activation = entry.activation },
+      { kind = "move", key = "SUBSTITUTE" },
+      { version = 1, hp = extra.substituteHp }
+    )
+  end
   local beforeFoe = ctx:damage(2, 0, { kind = "probe" }).before
   local stream = BattleRng.new(extra.seed or HANDLER_SEED)
   local inputs = {
@@ -157,6 +171,7 @@ local function runStrike(moveKey, extra)
     outcome = finished,
     dealt = beforeFoe - ctx:damage(2, 0, { kind = "probe" }).before,
     foeAfter = ctx:damage(2, 0, { kind = "probe" }).after,
+    doll = ctx:battleEffectState(2, "substitute"),
     draws = stream:capture().calls,
   }
 end
@@ -210,6 +225,21 @@ function T.no_guard_guarantees_ohko_accuracy_for_either_combatant()
   Assert.equal(foe.outcome.result, "hit", "the target's No Guard guarantees the OHKO")
 end
 
+function T.other_battlers_lock_on_preserves_the_ohko_bypassed_accuracy_flag()
+  local probe = runStrike("FISSURE", {
+    foeLevel = 50,
+    accuracy = 1,
+    seed = 0,
+    lockOnAttacker = 3,
+    targetFacts = { [2] = { semiInvulnerable = "dig" } },
+  })
+  Assert.equal(
+    probe.outcome.result,
+    "hit",
+    "the successful OHKO fallback keeps the bypassed-accuracy semi-invulnerability flag"
+  )
+end
+
 function T.mold_breaker_bypasses_sturdy_for_an_ohko()
   local probe = runStrike("FISSURE", {
     foeLevel = 50,
@@ -217,6 +247,13 @@ function T.mold_breaker_bypasses_sturdy_for_an_ohko()
   })
   Assert.equal(probe.outcome.result, "hit", "Mold Breaker bypasses Sturdy's OHKO immunity")
   Assert.equal(probe.foeAfter, 0, "the OHKO removes the sturdy foe's health")
+end
+
+function T.ohko_breaks_a_doll_with_maximum_health_damage()
+  local probe = runStrike("GUILLOTINE", { foeLevel = 50, defenderHp = 5, substituteHp = 25 })
+  Assert.equal(probe.outcome.result, "hit", "the knockout connects through the doll")
+  Assert.equal(probe.foeAfter, 5, "the doll absorbs the knockout without spilling into body health")
+  Assert.isNil(probe.doll, "maximum-health knockout damage breaks the surviving doll")
 end
 
 return { tests = T }

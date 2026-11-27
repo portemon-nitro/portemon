@@ -205,6 +205,7 @@ local function tacticMoveFacts(seeds)
     TACKLE = catalog:move("TACKLE"),
     STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
   }
+  facts.TACKLE.accuracy = 100
   for _, seed in ipairs(seeds) do
     local learned = seed.mon --[[@as table<string, unknown>]]
     for _, entry in

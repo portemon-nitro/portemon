@@ -227,6 +227,10 @@ function T.native_chart_declares_every_directed_pair_explicitly()
   local resolved = builder:freeze()
   local content = BattleContent.new(resolved, behaviors:freeze())
   local chart = content:typeChart("test:native")
+  local iceDefenders = chart:orderedDefenders("ice", { "fire", "flying" })
+  Assert.deepEqual(iceDefenders, { "flying", "fire" }, "native Ice row puts Fire after Flying")
+  local ghostDefenders = chart:orderedDefenders("ghost", { "ghost", "steel", "dark" })
+  Assert.deepEqual(ghostDefenders, { "dark", "steel", "ghost" }, "native Ghost row applies Dark and Steel before Ghost")
   -- The native inventory declares every ordered pair itself instead of
   -- leaning on the composed neutral fallback, and the chart agrees.
   local declared = {} ---@type table<string, table<integer, integer>>

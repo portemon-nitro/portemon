@@ -74,8 +74,12 @@ else
   if [[ -n "$message_text" ]]; then
     requested="$message_text"
   fi
-  mkdir -p .agents/tmp
-  scratch="$(mktemp -d .agents/tmp/read-asset.XXXXXXXX)"
+  scratch_parent=.agents/tmp
+  if [[ ! -w "$scratch_parent" ]]; then
+    scratch_parent="${TMPDIR:-/tmp}"
+  fi
+  mkdir -p "$scratch_parent"
+  scratch="$(mktemp -d "$scratch_parent/read-asset.XXXXXXXX")"
   filename="${requested##*/}"
   if [[ -z "$filename" || "$filename" == . || "$filename" == .. ]]; then
     echo "read-asset: invalid output filename" >&2

@@ -896,7 +896,7 @@ function T.shared_prerequisite_inherits_urgent_demand()
     return curve
   end
   local catalog = {
-    schema = "g4-mon-catalog-v5",
+    schema = "g4-mon-catalog-v6",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},
@@ -2163,7 +2163,7 @@ local function sessionMinimalCatalog()
     return curve
   end
   return {
-    schema = "g4-mon-catalog-v5",
+    schema = "g4-mon-catalog-v6",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},

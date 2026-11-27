@@ -1,6 +1,6 @@
 -- Turn-scoped move redirection for the HGSS native session. Magic Coat
 -- reflects an eligible move from its selected recipient; Snatch transfers
--- an eligible move to the first armed battler in queued turn order. Source
+-- an eligible move to the first armed battler in native turn order. Source
 -- references: BtlCmd_TrySetMagicCoat, BtlCmd_TrySnatch, and
 -- BattleControllerPlayer_CheckMagicCoat in the decomp.
 
@@ -9,25 +9,6 @@ local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 
 ---@class NativeMoveInterference
 local NativeMoveInterference = {}
-
----@param state table<string, unknown> live battle state under interception
----@return boolean true when the field topology has more than one slot per side
-local function hasPartners(state)
-  local counts = {} ---@type table<integer, integer>
-  for _, positionId in
-    ipairs(state.positionOrder --[[@as integer[] ]])
-  do
-    local position = BattleState.position(state, positionId)
-    local side = position.side --[[@as integer]]
-    counts[side] = (counts[side] or 0) + 1
-  end
-  for _, count in pairs(counts) do
-    if count > 1 then
-      return true
-    end
-  end
-  return false
-end
 
 ---@param state table<string, unknown> live battle state under marker lookup
 ---@param combatantId integer combatant whose marker is read
@@ -362,16 +343,15 @@ end
 ---@param actor integer original move user
 ---@param targets integer[] sampled target identities
 ---@param flags table<string, unknown> semantic move flags from compiled move facts
+---@param orderedIds integer[] frozen controller battler order
 ---@return table<string, unknown>? intercept record with actor, target, and kind
-function NativeMoveInterference.resolve(state, move, actor, targets, flags)
+function NativeMoveInterference.resolve(state, move, actor, targets, flags, orderedIds)
   assert(type(state) == "table", "move interception reads live battle state")
   assert(type(move) == "string" and move ~= "", "move interception names its move")
   assert(type(actor) == "number", "move interception reads its original actor")
   assert(type(targets) == "table", "move interception reads sampled recipients")
   assert(type(flags) == "table", "move interception reads compiled semantic flags")
-  if not hasPartners(state) then
-    return nil
-  end
+  assert(type(orderedIds) == "table", "move interception reads frozen controller order")
   if flags.reflectable == true then
     for _, target in ipairs(targets) do
       if hasMarker(state, target, "magiccoat") then
@@ -386,22 +366,15 @@ function NativeMoveInterference.resolve(state, move, actor, targets, flags)
     end
   end
   if flags.snatchable == true then
-    local queue = state.queue --[[@as table<integer, table<string, unknown>>?]]
-    if type(queue) == "table" then
-      for _, action in ipairs(queue) do
-        local queuedActor = action.actor --[[@as table<string, unknown>?]]
-        if type(queuedActor) == "table" and type(queuedActor.combatant) == "number" then
-          local candidate = queuedActor.combatant --[[@as integer]]
-          if hasMarker(state, candidate, "snatch") then
-            return {
-              actor = candidate,
-              target = actor,
-              kind = "snatch",
-              markerOwner = candidate,
-              markerKey = "snatch",
-            }
-          end
-        end
+    for _, candidate in ipairs(orderedIds) do
+      if hasMarker(state, candidate, "snatch") then
+        return {
+          actor = candidate,
+          target = actor,
+          kind = "snatch",
+          markerOwner = candidate,
+          markerKey = "snatch",
+        }
       end
     end
   end

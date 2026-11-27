@@ -131,6 +131,8 @@ local function moveEntry(nativeId, name, description, category, power, moveType,
         dealsDamage = power > 0,
         checksAccuracy = accuracy > 0,
         contact = contactMoves[nativeId] == true,
+        protectable = true,
+        flinchEligible = false,
         reflectable = false,
         snatchable = false,
         mirrorable = false,
@@ -248,7 +250,7 @@ end
 
 function CatalogFixture.buildAssetRoot()
   local root = {
-    schema = "g4-mon-catalog-v5",
+    schema = "g4-mon-catalog-v6",
     version = { id = "heartgold", language = "english" },
     species = {
       CHIKORITA = speciesEntry({

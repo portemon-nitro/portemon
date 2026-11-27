@@ -132,16 +132,27 @@ end
 -- handling).
 ---@param moveType string executing move type under the strike
 ---@param defenderTypes string[] semantic defender types under filtering
----@param immunities table<string, unknown>|nil airborne, foresight, Miracle Eye, and gravity facts for the strike
+---@param immunities table<string, unknown>|nil airborne, grounding, identification, and ability facts for the strike
 ---@return string[] defender types with identification applied
 ---@return table<string, unknown> immunity context for the resolution
 local function immunityFor(moveType, defenderTypes, immunities)
   local facts = immunities or {}
   local filtered = {}
   for _, defenderType in ipairs(defenderTypes) do
-    filtered[#filtered + 1] = defenderType
+    if not (facts.roost == true and defenderType == "flying") then
+      filtered[#filtered + 1] = defenderType
+    end
   end
   if facts.foresight == true and (moveType == "normal" or moveType == "fighting") then
+    local identified = {}
+    for _, defenderType in ipairs(filtered) do
+      if defenderType ~= "ghost" then
+        identified[#identified + 1] = defenderType
+      end
+    end
+    filtered = identified
+  end
+  if facts.scrappy == true and (moveType == "normal" or moveType == "fighting") then
     local identified = {}
     for _, defenderType in ipairs(filtered) do
       if defenderType ~= "ghost" then
@@ -153,7 +164,7 @@ local function immunityFor(moveType, defenderTypes, immunities)
   if facts.miracleEye == true and moveType == "psychic" then
     return filtered, { psychicDarkImmunityBypassed = true }
   end
-  if facts.gravity == true and moveType == "ground" then
+  if (facts.gravity == true or facts.grounded == true) and moveType == "ground" then
     local grounded = {}
     for _, defenderType in ipairs(filtered) do
       if defenderType ~= "flying" then
@@ -170,7 +181,7 @@ end
 
 ---@param frame table<string, unknown> move frame under execution
 ---@param defender integer defender combatant under the strike
----@param immunities table<string, unknown>|nil airborne, foresight, Miracle Eye, and gravity facts for the strike
+---@param immunities table<string, unknown>|nil airborne, grounded, identification, and gravity facts for the strike
 ---@param moveTypeOverride string|nil source-computed move type replacing the compiled one
 ---@return table<string, integer> exact STAB rational for the staged arithmetic
 ---@return table<string, unknown> exact effectiveness rational with ordered per-type factors

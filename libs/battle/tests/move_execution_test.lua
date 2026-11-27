@@ -904,6 +904,52 @@ function T.sequence_strikes_read_power_from_compiled_move_facts()
   Assert.equal(missing.code, "BATTLE_MISSING_BEHAVIOR", "the missing power names its behavior")
 end
 
+function T.sequence_recharge_waits_for_a_successful_native_hit()
+  local Execution = executionOwner("sequence strikes use the native accuracy and protection checkpoint")
+  local state = liveState()
+  local ctx = liveContext(state)
+  local NativeEffects = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+  local defender = ctx:entryOf(2)
+  ctx:addBattleEffect(
+    NativeEffects.definitionFor("protect"),
+    { kind = "active", combatant = 2, activation = defender.activation },
+    { kind = "probe" },
+    { version = 1, turns = 1 }
+  )
+  local frame = Execution.start({
+    actionId = 1,
+    actor = actorRef(0),
+    requestedMove = "HYPER_BEAM",
+    executingMove = "HYPER_BEAM",
+    ppOwnerSlot = 0,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = "HYPER_BEAM", pp = 5, ppUps = 0 } },
+    moveFacts = { HYPER_BEAM = { power = 150, accuracy = 90, category = "special", moveType = "normal" } },
+    combat = {
+      level = 50,
+      attack = 120,
+      defense = 90,
+      rawAttack = 120,
+      rawDefense = 90,
+      attackStage = 0,
+      defenseStage = 0,
+    },
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "NONE", foe = "NONE" },
+    attackerTypes = typeFacts().attackerTypes,
+    defenderTypes = typeFacts().defenderTypes,
+    typeChart = typeFacts().typeChart,
+    stream = fixedStream(),
+  })
+  local outcome = Execution.step(ctx, frame)
+  Assert.equal(outcome.result, "missed", "Protect rejects the release through the native hit checkpoint")
+  Assert.isFalse(ctx:hasBattleEffect(1, "recharge"), "a protected sequence strike does not consume a recharge turn")
+end
+
 -- Delayed strikes calculate and save their damage at launch from the
 -- compiled move facts; the residual slot consumes the saved amount later.
 function T.delayed_strikes_read_power_from_compiled_move_facts()
@@ -1415,6 +1461,25 @@ function T.helping_hand_fails_without_a_sampled_ally()
   Assert.equal(outcome.result, "failed", "helping hand fails with only its user sampled")
   Assert.equal(#state.outbox, eventsBefore, "the failed boost emits no successful move-used")
   Assert.equal(slots[1].pp, 14, "the failed attempt still spends its power point")
+end
+
+function T.gravity_blocks_selected_moves_from_executing()
+  local Execution = executionOwner("gravity legality belongs to move execution")
+  local frame = Execution.start({
+    actionId = 7,
+    actor = actorRef(0),
+    requestedMove = "FLY",
+    executingMove = "FLY",
+    ppOwnerSlot = 0,
+    calledBy = nil,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = "FLY", pp = 15, ppUps = 0 } },
+    moveFacts = { FLY = { power = 90, accuracy = 95, category = "physical", moveType = "flying" } },
+    gravity = true,
+    stream = fixedStream(),
+  })
+  Assert.equal(frame.locals.failed, "gravity", "Gravity refuses the selected move before its strike")
 end
 
 return { tests = T }

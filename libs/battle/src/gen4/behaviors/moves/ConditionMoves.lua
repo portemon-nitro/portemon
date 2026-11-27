@@ -12,6 +12,7 @@ local Accuracy = require("libs.battle.src.gen4.Accuracy")
 local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+local SequenceMoveState = require("libs.battle.src.gen4.SequenceMoveState")
 local NativePassiveBridge = require("libs.battle.src.gen4.NativePassiveBridge")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local TypeEffectiveness = require("libs.battle.src.gen4.TypeEffectiveness")
@@ -1302,10 +1303,8 @@ local function stepRecover(ctx, frame)
   return { kind = "complete", result = "hit" }
 end
 
--- Roost restores half the battle maximum health through the entry
--- projection, like the flat recovery family. Full health refuses without
--- effect. The grounded-landing type suppression is not yet implemented
--- and is not claimed here.
+-- Roost restores half the battle maximum and removes the user's Flying
+-- matchup contribution through the end of this turn.
 local function stepRoost(ctx, frame)
   assert(type(ctx) == "table", "conditions step through the battle context")
   assert(type(frame) == "table", "conditions step from their move frame")
@@ -1319,6 +1318,12 @@ local function stepRoost(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   local outcome = ctx:heal(user, math.floor(entry.maxHp --[[@as integer]] / 2), causeFor(record))
+  ctx:addBattleEffect(
+    NativeEffectHandlers.definitionFor("roost"),
+    activeScope(ctx, user),
+    moveSource(user),
+    { version = 1, turns = 1 }
+  )
   ctx:emit("healed", causeFor(record), { target = user, restored = outcome.after - outcome.before, noBlink = true })
   return { kind = "complete", result = "hit" }
 end
@@ -2065,6 +2070,7 @@ local function stepGravity(ctx, frame)
   )
   for _, combatant in ipairs(ctx:activeCombatants()) do
     ctx:removeBattleEffect(combatant, "magnetrise")
+    SequenceMoveState.cancelAirborne(ctx, combatant, moveSource(userOf(record)))
   end
   emitUsed(ctx, record)
   return { kind = "complete", result = "hit" }

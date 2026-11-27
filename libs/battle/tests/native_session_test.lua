@@ -77,6 +77,7 @@ local function scenarioMoveFacts(seeds)
     SPLASH = { power = 0, accuracy = 0, category = "other", moveType = "normal", priority = 0 },
     STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 },
   }
+  facts.TACKLE.accuracy = 100
   for _, seed in ipairs(seeds or {}) do
     local learned = seed.mon --[[@as table<string, unknown>]]
     for _, entry in
@@ -822,13 +823,13 @@ function T.magic_coat_reflects_a_flagged_move_and_snatch_uses_the_snatcher_as_ac
   local singleMons = singleSnapshot.combatants --[[@as table<integer, table<string, unknown>>]]
   Assert.equal(
     (singleMons[1].stages --[[@as table<string, integer>]]).attack,
-    -1,
-    "Magic Coat does not arm in a one-on-one battle"
+    0,
+    "Magic Coat leaves its user's attack unchanged in a one-on-one battle"
   )
   Assert.equal(
     (singleMons[2].stages --[[@as table<string, integer>]]).attack,
-    0,
-    "a one-on-one single-target move keeps its ordinary recipient"
+    -1,
+    "Magic Coat reflects a one-on-one single-target move back to its user"
   )
   single:dispose()
 
@@ -1767,7 +1768,7 @@ function T.departed_slots_keep_native_speed_facts_through_replacement_and_restor
     local tieDraws = rngLabelCount(session, "speed_tie", callsBefore)
     Assert.equal(
       tieDraws,
-      equalFoes and 35 or 0,
+      equalFoes and 18 or 0,
       "native action-slot visits retain each independent action-end and closing sort; actual " .. tieDraws
     )
     if not equalFoes then
@@ -2556,7 +2557,7 @@ function T.unequal_speeds_order_without_tie_draws_while_true_ties_draw_independe
   tied:dispose()
   Assert.equal(
     tiedCalls,
-    mixedCalls + 15,
+    mixedCalls + 8,
     "a genuine tie draws at each source execution and battler sort; mixed " .. mixedCalls .. ", tied " .. tiedCalls
   )
   for seed = 1, 8 do
@@ -6893,7 +6894,7 @@ function T.power_trick_swaps_the_effective_physical_attack_and_defense()
     local physicalStats = scenario.speciesFacts.CHIKORITA[0].baseStats
     physicalStats.attack = 10
     physicalStats.defense = 100
-    local facts = { TACKLE = handFacts(40, 95, "physical", "normal", 0) }
+    local facts = { TACKLE = handFacts(40, 100, "physical", "normal", 0) }
     if enabled then
       local trick = handFacts(0, 0, "other", "psychic", 0)
       trick.effect = 0
@@ -9882,6 +9883,53 @@ function T.pressure_deducts_an_extra_point_from_the_targeted_move()
   session:dispose()
 end
 
+function T.counter_charges_pressure_again_after_selecting_its_retaliation_target()
+  local striker = singleMoveCombatant(1, 11, "CHIKORITA", "COUNTER")
+  striker.mon.moves[1].pp = 10
+  local defender = singleMoveCombatant(2, 23, "EEVEE", "TACKLE")
+  defender.mon.ability = "PRESSURE"
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local session = projectionDuel(striker, defender, {
+    COUNTER = { power = 1, accuracy = 100, category = "physical", moveType = "normal", priority = -5 },
+    TACKLE = strikeFacts(0, "normal", 20),
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED)
+
+  playOpeningTurn(session)
+  local snapshot = session:capture()
+  Assert.isTrue(snapshot.combatants[2].hp < snapshot.combatants[2].maxHp, "Counter damages its selected recipient")
+  Assert.equal(
+    snapshot.combatants[1].mon.moves[1].pp,
+    7,
+    "Counter pays its use, initial Pressure cost, and final-recipient Pressure checkpoint"
+  )
+  session:dispose()
+end
+
+function T.failed_counter_does_not_charge_retaliation_pressure()
+  local striker = singleMoveCombatant(1, 11, "CHIKORITA", "COUNTER")
+  striker.mon.moves[1].pp = 10
+  local defender = singleMoveCombatant(2, 23, "EEVEE", "SPLASH")
+  defender.mon.ability = "PRESSURE"
+  local species = typedSpeciesFacts({
+    { species = "CHIKORITA", types = { "grass" } },
+    { species = "EEVEE", types = { "normal" } },
+  })
+  local session = projectionDuel(striker, defender, {
+    COUNTER = { power = 1, accuracy = 100, category = "physical", moveType = "normal", priority = -5 },
+    SPLASH = strikeFacts(0, "normal", 0),
+    STRUGGLE = struggleFacts(),
+  }, species, NATIVE_SEED)
+
+  playOpeningTurn(session)
+  local snapshot = session:capture()
+  Assert.equal(snapshot.combatants[1].mon.moves[1].pp, 8, "failed Counter pays only its use and initial Pressure cost")
+  session:dispose()
+end
+
 -- Damp checks every living active combatant, including an opposing holder,
 -- before an explosive move can spend PP or execute.
 function T.opposing_damp_blocks_explosion_before_pp_is_spent()
@@ -11203,7 +11251,7 @@ end
 -- A denied strike spends nothing and draws only its prescribed timing
 -- rolls: the sleep-locked lead keeps its power points while the healthy
 -- foe spends exactly one, the turn emits the executed strike before the
--- single status gate over nine stream draws, and the same turn replays
+-- single status gate over thirteen stream draws, and the same turn replays
 -- identically through an interruption capture.
 function T.denied_strikes_spend_no_power_and_replay_identically_across_restore()
   local contracts = SessionFixture.sessionContracts()
@@ -11236,7 +11284,7 @@ function T.denied_strikes_spend_no_power_and_replay_identically_across_restore()
   Assert.equal(gated, 1, "the denied turn gates the sleep-locked lead")
   Assert.equal(
     directCapture.rng.calls - callsBefore,
-    19,
+    13,
     "the denied turn draws send-out, action-end and battler sorts independently; actual "
       .. tostring(directCapture.rng.calls - callsBefore)
   )

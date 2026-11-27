@@ -1153,6 +1153,7 @@ local function buildResidualHandlers(facts)
     "magiccoat",
     "snatch",
     "protect",
+    "roost",
     "detect",
     "endure",
     "destinybond",
@@ -1161,6 +1162,7 @@ local function buildResidualHandlers(facts)
     "embargo",
     "healblock",
     "magnetrise",
+    "charge",
   }) do
     local expire = makeExpiry()
     if key == "raindance" or key == "sunnyday" then

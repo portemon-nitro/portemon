@@ -64,7 +64,7 @@ end
 ---@param moveKey string strike identity under execution
 ---@param duel table<string, unknown> turn facts under the probe
 ---@return table terminal execution step plus observed damage
-local function runStrike(moveKey, duel)
+local function runStrike(moveKey, duel, defenderTypes)
   local Execution = SessionFixture.requirePresent(
     "libs.battle.src.gen4.MoveExecution",
     "the shared move continuation owns native hit progression"
@@ -116,7 +116,7 @@ local function runStrike(moveKey, duel)
     weatherSuppressed = false,
     abilities = { user = "NONE", foe = "NONE" },
     attackerTypes = { "fighting" },
-    defenderTypes = { [2] = { "normal" } },
+    defenderTypes = { [2] = defenderTypes or { "normal" } },
     typeChart = nativeChart(content),
     stream = BattleRng.new(HANDLER_SEED),
     duel = duel,
@@ -165,6 +165,18 @@ function T.counter_fails_without_physical_damage()
   local probe = runStrike("COUNTER", freshDuel())
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "failed", "the unanswered counter fails")
+end
+
+function T.counter_still_obeys_its_recipient_type_immunity()
+  local probe = runStrike("COUNTER", {
+    foeActed = true,
+    foeHurt = false,
+    userHurt = true,
+    revengePhysical = { attacker = 2, amount = 40 },
+    revengeSpecial = nil,
+  }, { "ghost" })
+  Assert.equal(probe.outcome.result, "missed", "the Fighting-type reaction cannot hit a Ghost")
+  Assert.equal(probe.dealt, 0, "an immune reaction does not mutate recipient health")
 end
 
 function T.counter_ignores_special_damage()

@@ -7,6 +7,9 @@
 -- constant; compiler implementation versions are deliberately absent (producer
 -- freshness belongs to the romdump source fingerprint).
 --
+-- revision 21 / battle data v5: move battle flags include source flinch
+-- eligibility for held-item flinch timing.
+--
 -- revision 19: message banks persist one compact indexed binary payload
 -- (`.g4msg`) whose per-bank glyph dictionary stores each display string once
 -- over a normalized token stream, instead of readable Lua banks that repeated
@@ -244,12 +247,11 @@
 -- loadable, never that its scene geometry compiled; every record carries the
 -- resolver-normalized world origin alongside its source identities.
 --
--- mon catalog v5 / battle data v3: move battle flags include
--- the semantic contact bit used by contact-triggered abilities.
+-- battle data v5: move battle flags include source flinch eligibility.
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 19
+DerivedAssetContract.revision = 21
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v8",
@@ -545,8 +547,8 @@ DerivedAssetContract.starterChoice = {
 -- hectograms (cacheFormat v2), so a stale v3 catalog without those facts
 -- must fail readiness.
 DerivedAssetContract.mons = {
-  cacheFormat = "mon-cache-v3",
-  catalogSchema = "g4-mon-catalog-v5",
+  cacheFormat = "mon-cache-v4",
+  catalogSchema = "g4-mon-catalog-v6",
   -- v2 replaces the whole-atlas index with a page inventory: the index binds
   -- the catalog hash to one marker per icon/portrait page.
   indexSchema = "g4-mon-index-v2",
@@ -562,8 +564,8 @@ DerivedAssetContract.mons = {
 -- its own cache format, so one family rebuilds without disturbing the
 -- others or any unrelated cache job.
 DerivedAssetContract.battleData = {
-  cacheFormat = "battle-data-cache-v3",
-  schema = "g4-battle-data-v3",
+  cacheFormat = "battle-data-cache-v5",
+  schema = "g4-battle-data-v5",
 }
 
 DerivedAssetContract.trainerCatalog = {

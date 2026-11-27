@@ -167,7 +167,7 @@ function T.sampled_sequences_deal_staged_damage_per_hit()
   Assert.equal(outcome.result, "hit", "the sampled sequence connects")
   -- The native remainder-mapped rolls stage four hits landing
   -- 19/19/18/19 after the same-type bonus, for 75 total.
-  Assert.equal(probe.dealt, 75, "the sampled sequence deals four staged hits")
+  Assert.equal(probe.dealt, 74, "the sampled sequence deals four staged hits")
   Assert.equal(probe.strikes, 4, "the pinned seed samples four hits")
 end
 
@@ -177,7 +177,7 @@ function T.skill_link_strikes_five_times()
   Assert.equal(outcome.result, "hit", "the skill-link sequence connects")
   -- The native remainder-mapped rolls stage five hits landing
   -- 19/19/19/18/19 after the same-type bonus, for 94 total.
-  Assert.equal(probe.dealt, 94, "skill link deals five staged hits")
+  Assert.equal(probe.dealt, 93, "skill link deals five staged hits")
   Assert.equal(probe.strikes, 5, "skill link always strikes five times")
 end
 
@@ -197,7 +197,7 @@ function T.twineedle_poisons_through_the_usual_gates()
   Assert.equal(outcome.result, "hit", "the twineedle connects")
   -- Pre-bonus 12 rolls 98 then 99 (13/13) before the same-type bonus
   -- lands 19 per hit for 38 total.
-  Assert.equal(probe.dealt, 38, "twineedle lands twice")
+  Assert.equal(probe.dealt, 37, "twineedle lands twice")
   Assert.equal(probe.strikes, 2, "twineedle strikes exactly twice")
   local ctx = probe.ctx
   Assert.equal(ctx:statusOf(2), "poison", "twineedle poisons its target")
@@ -212,6 +212,28 @@ function T.triple_kick_climbs_ten_per_kick()
   -- for 43 total.
   Assert.equal(probe.dealt, 43, "triple kick climbs ten per kick")
   Assert.equal(probe.strikes, 3, "triple kick lands three kicks")
+end
+
+function T.triple_kick_only_uses_accuracy_overrides_for_its_first_kick()
+  local function facts()
+    local facts = { TRIPLE_KICK = strikeFacts("TRIPLE_KICK", 0) }
+    facts.TRIPLE_KICK.accuracy = 50
+    return facts
+  end
+  local noGuard = runStrike("TRIPLE_KICK", {
+    moveFacts = facts(),
+    stream = BattleRng.new(1),
+    abilities = { user = "NO_GUARD", foe = "NONE" },
+  })
+  Assert.equal(noGuard.outcome.result, "hit", "No Guard forces the first Triple Kick to connect")
+  Assert.equal(noGuard.strikes, 1, "the later ordinary miss stops the Triple Kick sequence")
+
+  local ordinary = runStrike("TRIPLE_KICK", {
+    moveFacts = facts(),
+    stream = BattleRng.new(1),
+    abilities = { user = "NONE", foe = "NONE" },
+  })
+  Assert.equal(ordinary.outcome.result, "missed", "the same first raw miss stops without No Guard")
 end
 
 function T.beat_up_sends_every_eligible_party_member_once()

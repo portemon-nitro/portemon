@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local CacheArchive = require("romdump.src.build.CacheArchive")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -1268,8 +1269,8 @@ end
 -- centroid must hold within per-pixel tolerance, and a resize plus a
 -- repeated draw must not move the pose or the pixels.
 local function soulsilverLegendaryFramingMatchesSourceProjectionAtTwoPoses(scope, context)
-  if not RomImporter.isReady("soulsilver") then
-    context:skip("no user-owned SoulSilver dump is ready")
+  if CacheArchive.recoverableFileName("soulsilver") == nil then
+    context:skip("no runner-prepared SoulSilver snapshot is available")
   end
   local scene = openTitleScene(scope, "soulsilver", REFERENCE_WIDTH, REFERENCE_HEIGHT, "single")
   local timeline = assert(scene.bundle.timeline, "title bundle carries its camera timeline")

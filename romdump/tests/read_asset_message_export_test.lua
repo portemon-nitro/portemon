@@ -364,6 +364,7 @@ end
 local function shellCommand(extraEnv, argv)
   local parts = { "env", "PATH=" .. shellQuote(extraEnv.fakeBinPath .. ":" .. (os.getenv("PATH") or "")) }
   parts[#parts + 1] = "PORTEMON_SAVE_DIR=" .. shellQuote(extraEnv.dataHome)
+  parts[#parts + 1] = "TMPDIR=" .. shellQuote(extraEnv.tempDir)
   parts[#parts + 1] = HELPER
   parts[#parts + 1] = "--version"
   parts[#parts + 1] = "heartgold"
@@ -438,7 +439,7 @@ end
 function T.output_modes_are_mutually_exclusive_before_any_preparation()
   local root = ensureRoot()
   local fakeLove = ensureFakeLove()
-  local env = { fakeBinPath = fakeLove.binPath, dataHome = root .. "/data" }
+  local env = { fakeBinPath = fakeLove.binPath, dataHome = root .. "/data", tempDir = root .. "/tmp" }
   local bank = bankPath(EXPORTED_BANK_ID)
   local before = scratchDirectories()
 
@@ -457,7 +458,7 @@ end
 function T.message_text_mode_routes_through_targeted_preparation()
   local root = ensureRoot()
   local fakeLove = ensureFakeLove()
-  local env = { fakeBinPath = fakeLove.binPath, dataHome = root .. "/data" }
+  local env = { fakeBinPath = fakeLove.binPath, dataHome = root .. "/data", tempDir = root .. "/tmp" }
   local bank = bankPath(EXPORTED_BANK_ID)
   local before = scratchDirectories()
 
@@ -481,7 +482,7 @@ function T.message_text_mode_routes_through_targeted_preparation()
     assert(exportedPath):sub(-#"/0543.messages.lua") == "/0543.messages.lua",
     "a message export writes beside the compact bank as 0543.messages.lua, got: " .. tostring(exportedPath)
   )
-  contains(assert(exportedPath), "/.agents/tmp/read-asset.", "the export")
+  contains(assert(exportedPath), env.tempDir .. "/read-asset.", "the export")
 end
 
 -- Removes exactly the scratch root this suite acquired. A test failure is

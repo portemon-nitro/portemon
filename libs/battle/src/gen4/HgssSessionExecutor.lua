@@ -1181,10 +1181,8 @@ local function statusAdjustedSpeed(speed, combatantId, mon, bridge)
   return speed
 end
 
--- Applies the native physical-attack interaction for abilities answering
--- the attack checkpoint while statused (the resilient boost being the
--- current case): the holder keeps that passive ratio. Burn itself never
--- reshapes the attack stat here; the canonical damage owner halves
+-- Applies raw attack ability multipliers before stat stages. Burn itself
+-- never reshapes the attack stat here; the canonical damage owner halves
 -- post-division damage instead. Ability meaning stays in the passive
 -- families.
 ---@param attacker table<string, integer> live attacker level and battle stats under adjustment
@@ -1203,10 +1201,8 @@ local function statusAdjustedAttack(attacker, combatantId, mon, category, bridge
   end
 end
 
--- Applies the native defense interaction for abilities answering the
--- defense checkpoint while statused (the scale mail being the current
--- case): the holder keeps that passive ratio on the staged category
--- stat. Ability meaning stays in the passive families.
+-- Applies raw defense ability multipliers before stat stages. Ability
+-- meaning stays in the passive families.
 ---@param defender table<string, integer> live defender level and battle stats under adjustment
 ---@param combatantId integer holder combatant under the checkpoint
 ---@param mon unknown battle-local mon record carrying ability and condition
@@ -1768,6 +1764,25 @@ function StrikeFacts.duel(state, userId, foeId, moveFacts, pursuitInterruption)
     revengeAny = lastAny,
     followMeTarget = followMeTarget,
   }
+end
+
+function StrikeFacts.retaliationRecipient(state, userId, targetId, moveFacts, pursuitInterruption, factKey)
+  local duel = StrikeFacts.duel(state, userId, targetId, moveFacts, pursuitInterruption)
+  local answer = duel[factKey]
+  if type(answer) ~= "table" then
+    return nil
+  end
+  local recipient = answer.attacker --[[@as integer]]
+  local followMe = duel.followMeTarget
+  if
+    type(followMe) == "number"
+    and BattleState.combatant(state, followMe).hp > 0
+    and BattleState.participant(state, BattleState.combatant(state, followMe).participant --[[@as integer]]).side
+      == BattleState.participant(state, BattleState.combatant(state, recipient).participant --[[@as integer]]).side
+  then
+    recipient = followMe
+  end
+  return recipient
 end
 
 -- Beat Up party facts: the defender base defense plus the eligible
@@ -2606,11 +2621,11 @@ local function strikeCombatFacts(state, combatant, defender, speciesFacts, categ
       attackerStages[key] = math.max(StatStages.MIN, math.min(StatStages.MAX, attackerStages[key] * 2))
     end
   end
+  statusAdjustedAttack(attackerRaw, combatant.id --[[@as integer]], combatant.mon, "physical", bridge)
+  statusAdjustedAttack(attackerRaw, combatant.id --[[@as integer]], combatant.mon, "special", bridge)
   for _, key in ipairs({ "attack", "defense", "specialAttack", "specialDefense" }) do
     attackerStats[key] = StatStages.effective(attackerRaw[key], attackerStages[key], key)
   end
-  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "physical", bridge)
-  statusAdjustedAttack(attackerStats, combatant.id --[[@as integer]], combatant.mon, "special", bridge)
   local defenderStats = projectCombatant(defender, speciesFacts, bridge, state)
   local defenderRaw, liveDefenderStages = unstagedCombatant(defender, speciesFacts)
   local defenderStages = {} ---@type table<string, integer>
@@ -2629,11 +2644,13 @@ local function strikeCombatFacts(state, combatant, defender, speciesFacts, categ
       defenderStages[key] = math.max(StatStages.MIN, math.min(StatStages.MAX, defenderStages[key] * 2))
     end
   end
+  if attackerAbility ~= "MOLD_BREAKER" then
+    statusAdjustedDefense(defenderRaw, defender.id --[[@as integer]], defender.mon, "physical", bridge)
+    statusAdjustedDefense(defenderRaw, defender.id --[[@as integer]], defender.mon, "special", bridge)
+  end
   for _, key in ipairs({ "attack", "defense", "specialAttack", "specialDefense" }) do
     defenderStats[key] = StatStages.effective(defenderRaw[key], defenderStages[key], key)
   end
-  statusAdjustedDefense(defenderStats, defender.id --[[@as integer]], defender.mon, "physical", bridge)
-  statusAdjustedDefense(defenderStats, defender.id --[[@as integer]], defender.mon, "special", bridge)
   local _, attackerCondition = statusFacts(combatant.mon)
   -- Called moves resolve after this projection, while HGSS CalcMoveDamage
   -- selects the stat pair from the executed move's category.
@@ -2752,6 +2769,12 @@ local function recipientStrikeFacts(
   local targets = {} ---@type table<integer, table<string, unknown>>
   local targetFacts = {} ---@type table<integer, table<string, unknown>>
   local defenderTypes = {} ---@type table<integer, string[]>
+  for _, positionId in ipairs(state.positionOrder) do
+    local occupant = BattleState.position(state, positionId).occupant
+    if occupant ~= nil then
+      defenderTypes[occupant] = combatantTypes(BattleState.combatant(state, occupant), speciesFacts, state)
+    end
+  end
   local genders = {} ---@type table<integer, string>
   local userGender = genderOf(userMon, speciesFacts)
   if userGender ~= nil then
@@ -2830,7 +2853,6 @@ local function recipientStrikeFacts(
       foeSpecies = foeSpecies,
       foeTransformed = NativePassiveBridge.wrap(state):hasVolatile(defenderId, "TRANSFORM"),
     }
-    defenderTypes[defenderId] = combatantTypes(defender, speciesFacts, state)
     targets[#targets + 1] = { combatant = defenderId }
     if head == nil then
       head = defenderId
@@ -4637,20 +4659,52 @@ function StrikeFacts.redrawCalledTargets(state, combatant, actor, payload, strea
     error(unknownRangeError(drawn, drawnFacts))
   end
   drawnPolicy = effectivePolicy(state, actor.combatant --[[@as integer]], drawnPolicy)
-  if drawnPolicy == started.policy then
+  local retaliationKey = nil
+  if drawn == "COUNTER" then
+    retaliationKey = "revengePhysical"
+  elseif drawn == "MIRROR_COAT" then
+    retaliationKey = "revengeSpecial"
+  elseif drawn == "METAL_BURST" then
+    retaliationKey = "revengeAny"
+  end
+  if drawnPolicy == started.policy and retaliationKey == nil then
     return nil
   end
   local drawnCategory = type(drawnFacts) == "table" and (drawnFacts --[[@as table<string, unknown>]]).category or nil
-  local redrawn = resolveStrikeRecipients(
-    state,
-    actor.combatant --[[@as integer]],
-    drawnPolicy,
-    payload.target --[[@as table<string, unknown>]],
-    stream
-  )
+  local redrawn = {} ---@type integer[]
+  if drawnPolicy == started.policy then
+    for _, target in
+      ipairs(node.targets --[[@as table<integer, table<string, unknown>>]])
+    do
+      redrawn[#redrawn + 1] = target.combatant --[[@as integer]]
+    end
+  else
+    redrawn = resolveStrikeRecipients(
+      state,
+      actor.combatant --[[@as integer]],
+      drawnPolicy,
+      payload.target --[[@as table<string, unknown>]],
+      stream
+    )
+  end
   if #redrawn == 0 then
     frame.failed = "no-targets"
     return nil
+  end
+  frame.retaliationPrepared = false
+  if retaliationKey ~= nil then
+    local recipient = StrikeFacts.retaliationRecipient(
+      state,
+      actor.combatant --[[@as integer]],
+      redrawn[1],
+      started.moveFacts,
+      false,
+      retaliationKey
+    )
+    if recipient ~= nil then
+      redrawn = { recipient }
+      frame.retaliationPrepared = true
+    end
   end
   local rebuilt =
     recipientStrikeFacts(state, combatant, redrawn, started.speciesFacts, drawnCategory, drawn, started.moveFacts)
@@ -6223,8 +6277,34 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     if #targetIds == 0 then
       return
     end
-    local executionActorId = actor.combatant --[[@as integer]]
+    local pressureExtraPp =
+      NativeAbilitySupport.handlers.pressureCost(state, actor.combatant --[[@as integer]], targetIds)
+    local retaliationPrepared = false
     local selectedTarget = payload.target --[[@as table<string, unknown>]]
+    local retaliationKey = nil
+    if moveName == "COUNTER" then
+      retaliationKey = "revengePhysical"
+    elseif moveName == "MIRROR_COAT" then
+      retaliationKey = "revengeSpecial"
+    elseif moveName == "METAL_BURST" then
+      retaliationKey = "revengeAny"
+    end
+    if retaliationKey ~= nil then
+      local recipient = StrikeFacts.retaliationRecipient(
+        state,
+        actor.combatant --[[@as integer]],
+        targetIds[1],
+        moveFacts,
+        pursuitInterruption,
+        retaliationKey
+      )
+      if recipient ~= nil then
+        targetIds = { recipient }
+        selectedTarget = { kind = "combatant", combatant = recipient }
+        retaliationPrepared = true
+      end
+    end
+    local executionActorId = actor.combatant --[[@as integer]]
     local MoveInterference = require("libs.battle.src.gen4.NativeMoveInterference")
     local redirectOrder = NativeAbilitySupport.combatantsAtPositions(
       state,
@@ -6238,7 +6318,8 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         moveName,
         executionActorId,
         targetIds,
-        moveFlags --[[@as table<string, unknown>]]
+        moveFlags --[[@as table<string, unknown>]],
+        redirectOrder
       )
     end
     if interception ~= nil then
@@ -6304,7 +6385,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         interception.redirectMoveType = redirected.moveType
       end
     end
-    local chargeBoost = sequenceState ~= nil and sequenceState.electricBoost == true
+    local chargeBoost = context:hasBattleEffect(executionActorId, "charge")
     local category = type(moveRecord) == "table" and (moveRecord --[[@as table<string, unknown>]]).category or nil
     -- One strike-facts projection keeps the turn closure inside its
     -- upvalue budget: every recipient's staged pair, types, speeds,
@@ -6321,15 +6402,6 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       moveFacts,
       payload.pursuitInterruption == true
     )
-    local pressureTargets = {} ---@type integer[]
-    for _, target in
-      ipairs(strike.targets --[[@as table<integer, table<string, unknown>>]])
-    do
-      local targetId = (target --[[@as table<string, unknown>]]).combatant
-      assert(type(targetId) == "number", "pressure targets carry combatant identities")
-      pressureTargets[#pressureTargets + 1] = targetId --[[@as integer]]
-    end
-    local pressureExtraPp = NativeAbilitySupport.handlers.pressureCost(state, executionActorId, pressureTargets)
     local facts = strike.facts
     local attackerAbility = strike.attackerAbility
     local attackerCondition = strike.attackerCondition
@@ -6467,30 +6539,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       beatup = strike.beatup,
       chargeBoost = chargeBoost,
       helpingHand = BattleContext.wrap(state):hasBattleEffect(executionActorId, "helpinghand"),
+      gravity = NativeAbilitySupport.fieldActive(state, "gravity"),
     }
     local node = MoveExecution.start(inputs)
     if pursuitInterruption then
       (node.locals --[[@as table<string, unknown>]]).pursuitInterruption = true
     end
-    local executedFacts = type(node.executingMove) == "string" and moveFacts[node.executingMove] or nil
     local nodeLocals = node.locals --[[@as table<string, unknown>]]
-    if
-      chargeBoost
-      and nodeLocals.failed == nil
-      and type(executedFacts) == "table"
-      and (executedFacts --[[@as table<string, unknown>]]).moveType == "electric"
-    then
-      local function consumeElectricBoost(current)
-        current.electricBoost = nil
-        return current
-      end
-      require("libs.battle.src.gen4.SequenceMoveState").update(
-        context,
-        executionActorId,
-        { kind = "charge", combatant = executionActorId },
-        consumeElectricBoost
-      )
-    end
+    nodeLocals.retaliationPrepared = retaliationPrepared
     if interception ~= nil and nodeLocals.failed == nil then
       local redirectAbility = interception.redirectAbility
       if type(redirectAbility) == "string" then
@@ -6530,6 +6586,29 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         node = node,
         policy = policy,
       }) or settledTargets
+    end
+    local executed = node.executingMove
+    if
+      nodeLocals.failed == nil
+      and nodeLocals.retaliationPrepared == true
+      and (executed == "COUNTER" or executed == "MIRROR_COAT" or executed == "METAL_BURST")
+    then
+      local pressureTargetIds = {} ---@type integer[]
+      for _, target in ipairs(settledTargets) do
+        pressureTargetIds[#pressureTargetIds + 1] = target.combatant --[[@as integer]]
+      end
+      local latePressure = NativeAbilitySupport.handlers.pressureCost(state, executionActorId, pressureTargetIds)
+      local slotIndex = node.ppOwnerSlot
+      if latePressure > 0 and type(slotIndex) == "number" then
+        local slot = (ppOwnerMoves --[[@as table<integer, table<string, unknown>>]])[slotIndex + 1]
+        assert(type(slot) == "table" and type(slot.pp) == "number", "retaliation PP checkpoint owns its selected slot")
+        for _ = 1, latePressure do
+          if slot.pp <= 0 then
+            break
+          end
+          slot.pp = slot.pp - 1
+        end
+      end
     end
     StrikeFacts.recordHistory(state, executionActor, node, settledTargets)
     -- The terminal step drops the executed identity, so the streak
@@ -6704,7 +6783,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         end
       end
     end
-    local exchangeReason = reason or "voluntary"
+    local exchangeReason = reason == "u_turn_after_pursuit" and "u_turn" or reason or "voluntary"
     local reserves = eligibleReserves(state, combatant.participant --[[@as integer]], {})
     local reserved = siblingReserves(state, payload.replacement --[[@as integer]])
     local fainted = faintedIds(state)
@@ -7803,6 +7882,9 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
         break
       end
       resume = outcome.frame
+    end
+    for _, combatantId in ipairs(turnOrder) do
+      require("libs.battle.src.gen4.SequenceMoveState").settleFatigue(context, stream, combatantId)
     end
     sweepExpiredEffects(state)
     sweepFaints(state)

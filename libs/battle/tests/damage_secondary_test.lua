@@ -104,6 +104,7 @@ local function moveFacts(moveKey, overrides)
     category = "physical",
     moveType = "normal",
     effectChance = 0,
+    flags = { flinchEligible = false },
   }
   for key, value in pairs(overrides or {}) do
     facts[key] = value
@@ -171,6 +172,7 @@ local function runStrike(moveKey, facts, seed, extra)
     restored = ctx:damage(1, 0, { kind = "probe" }).before - beforeUser,
     ctx = ctx,
     state = state,
+    stream = inputs.stream,
   }
 end
 
@@ -182,6 +184,72 @@ function T.ordinary_strikes_deal_staged_damage()
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the ordinary strike connects")
   Assert.isTrue(probe.dealt --[[@as integer]] > 0, "the ordinary strike deals staged damage")
+end
+
+function T.focus_band_rolls_on_nonlethal_body_damage()
+  local stream = BattleRng.new(FIXED_SEED)
+  local probe = runStrike("SCRATCH", moveFacts("SCRATCH", { power = 1 }), FIXED_SEED, {
+    stream = stream,
+    setup = function(ctx)
+      ctx:setHeldItem(2, "FOCUS_BAND")
+    end,
+  })
+  Assert.isTrue(probe.dealt > 0, "the body takes ordinary nonlethal damage")
+  Assert.equal(stream:capture().calls, 4, "Focus Band consumes its check after the body damage roll")
+end
+
+function T.charge_uses_hidden_powers_resolved_electric_type_and_power()
+  local facts = moveFacts("HIDDEN_POWER", { power = 30, accuracy = 100, category = "special", moveType = "normal" })
+  local ivs = { hp = 1, attack = 1, defense = 1, speed = 1, specialAttack = 0, specialDefense = 1 }
+  local plain = runStrike("HIDDEN_POWER", facts, FIXED_SEED, { userIvs = ivs })
+  local charged = runStrike("HIDDEN_POWER", facts, FIXED_SEED, { userIvs = ivs, chargeBoost = true })
+  Assert.isTrue(charged.dealt > plain.dealt, "Charge doubles Hidden Power after its electric type and power resolve")
+  local compiledElectric =
+    moveFacts("THUNDERBOLT", { power = 30, accuracy = 100, category = "special", moveType = "electric" })
+  local normalized = runStrike("THUNDERBOLT", compiledElectric, FIXED_SEED, {
+    abilities = { user = "NORMALIZE", foe = "NONE" },
+  })
+  local normalizedCharged = runStrike("THUNDERBOLT", compiledElectric, FIXED_SEED, {
+    abilities = { user = "NORMALIZE", foe = "NONE" },
+    chargeBoost = true,
+  })
+  Assert.equal(normalizedCharged.dealt, normalized.dealt, "Normalize prevents Charge on an effectively Normal move")
+end
+
+function T.flower_gift_follows_held_raw_stat_modifiers()
+  local facts = moveFacts("TACKLE", { power = 23, accuracy = 100, category = "physical", moveType = "normal" })
+  local rawCombat = {
+    level = 50,
+    attack = 101,
+    defense = 90,
+    rawAttack = 101,
+    rawDefense = 90,
+    attackStage = 0,
+    defenseStage = 0,
+    partnerAbilities = { user = { "FLOWER_GIFT" }, foe = {} },
+  }
+  local withModifiers = runStrike("TACKLE", facts, FIXED_SEED, {
+    heldItem = "THICK_CLUB",
+    userSpecies = "MAROWAK",
+    weather = "sun",
+    combat = rawCombat,
+  })
+  local expected = runStrike("TACKLE", facts, FIXED_SEED, {
+    combat = {
+      level = 50,
+      attack = 303,
+      defense = 90,
+      rawAttack = 303,
+      rawDefense = 90,
+      attackStage = 0,
+      defenseStage = 0,
+    },
+  })
+  Assert.equal(
+    withModifiers.dealt,
+    expected.dealt,
+    "floor(101 * 2 * 1.5) supplies raw Attack 303 at a distinguishing damage boundary"
+  )
 end
 
 function T.hyper_voice_deals_ordinary_staged_damage()
@@ -201,7 +269,7 @@ end
 
 function T.psycho_boost_lowers_its_users_special_attack_after_a_hit()
   damageOwner("Psycho Boost owns its guaranteed self stage effect")
-  local probe = runStrike("PSYCHO_BOOST", moveFacts("PSYCHO_BOOST", { power = 1 }), FIXED_SEED, {
+  local probe = runStrike("PSYCHO_BOOST", moveFacts("PSYCHO_BOOST", { power = 1, effectChance = 100 }), FIXED_SEED, {
     combat = probeCombat(5, 16, 16),
   })
   Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Psycho Boost connects")
@@ -326,6 +394,18 @@ function T.metal_burst_returns_one_and_a_half_times_last_any_damage()
   })
   Assert.equal((probe.outcome --[[@as table<string, unknown>]]).result, "hit", "Metal Burst connects")
   Assert.equal(probe.dealt, 12, "Metal Burst deals 150 percent of the last hit")
+  local normalized = runStrike("METAL_BURST", moveFacts("METAL_BURST", { power = 1 }), FIXED_SEED, {
+    abilities = { user = "NORMALIZE", foe = "NONE" },
+    defenderTypes = { [2] = { "ghost" } },
+    duel = {
+      foeActed = false,
+      foeHurt = false,
+      userHurt = true,
+      revengeAny = { attacker = 2, amount = 8 },
+      followMeTarget = false,
+    },
+  })
+  Assert.equal(normalized.dealt, 0, "Metal Burst preserves the effective Normal immunity against Ghost")
   local empty = runStrike("METAL_BURST", moveFacts("METAL_BURST", { power = 1 }), FIXED_SEED, {
     duel = {
       foeActed = false,
@@ -452,7 +532,6 @@ function T.high_critical_strikes_roll_the_raised_stage()
   local seed = nil
   for candidate = 1, 500 do
     local probe = BattleRng.new(candidate)
-    probe:nextU16("accuracy_check", { kind = "probe" })
     local draw = probe:nextU16("critical_check", { kind = "probe" })
     if draw % 8 == 0 and draw % 16 ~= 0 then
       seed = candidate
@@ -531,9 +610,9 @@ function T.burn_secondaries_roll_the_compiled_chance()
   local burnSeed = nil
   for candidate = 1, 500 do
     local probe = BattleRng.new(candidate)
-    probe:nextU16("accuracy_check", { kind = "probe" })
     probe:nextU16("critical_check", { kind = "probe" })
     probe:nextU16("damage_roll", { kind = "probe" })
+    probe:nextU16("accuracy_check", { kind = "probe" })
     local draw = probe:nextU16("secondary_effect", { kind = "probe" }) % 100
     if draw < 10 then
       burnSeed = candidate
@@ -584,9 +663,9 @@ end
 local function seedInWindow(seed, window)
   for candidate = seed, seed + 500 do
     local probe = BattleRng.new(candidate)
-    probe:nextU16("accuracy_check", { kind = "probe" })
     probe:nextU16("critical_check", { kind = "probe" })
     probe:nextU16("damage_roll", { kind = "probe" })
+    probe:nextU16("accuracy_check", { kind = "probe" })
     if probe:nextU16("secondary_effect", { kind = "probe" }) % 100 < window then
       return candidate
     end
@@ -915,9 +994,9 @@ function T.weather_strikes_follow_their_sky_law()
   local rainyOutcome = rainy.outcome --[[@as table<string, unknown>]]
   Assert.equal(rainyOutcome.result, "hit", "thunder never misses under rain")
   Assert.equal(accuracyDraws(rainy.stream), 1, "rain clears the result after spending the ordinary accuracy draw")
-  local suppressedRain = runUnder("THUNDER", thunderFacts, "raindance", nil, true)
+  local suppressedRain = runUnder("THUNDER", thunderFacts, "raindance", 1, true)
   Assert.equal(suppressedRain.outcome.result, "missed", "Cloud Nine suppression restores Thunder's ordinary rain roll")
-  local sunny = runUnder("THUNDER", thunderFacts, "sunnyday", 1)
+  local sunny = runUnder("THUNDER", thunderFacts, "sunnyday", 4)
   Assert.equal(sunny.outcome.result, "hit", "sun substitutes 50 accuracy instead of halving the compiled 70")
   local clear = runUnder("THUNDER", thunderFacts, nil)
   local clearOutcome = clear.outcome --[[@as table<string, unknown>]]
@@ -940,9 +1019,9 @@ function T.fanged_strikes_roll_both_effects()
   local seed = FIXED_SEED
   for candidate = FIXED_SEED, FIXED_SEED + 500 do
     local probe = BattleRng.new(candidate)
-    probe:nextU16("accuracy_check", { kind = "probe" })
     probe:nextU16("critical_check", { kind = "probe" })
     probe:nextU16("damage_roll", { kind = "probe" })
+    probe:nextU16("accuracy_check", { kind = "probe" })
     local first = probe:nextU16("secondary_effect", { kind = "probe" }) % 100
     local second = probe:nextU16("secondary_effect", { kind = "probe" }) % 100
     if first < 10 and second < 10 then
@@ -1083,6 +1162,69 @@ function T.sport_markers_halve_the_weakened_type_power()
   Assert.isTrue(plain.dealt --[[@as integer]] > dealt, "the sport halves the weakened power")
 end
 
+function T.sandstorm_raises_rock_special_defense_before_stages()
+  local facts = moveFacts("THUNDERBOLT", {
+    power = 40,
+    accuracy = 100,
+    category = "special",
+    moveType = "electric",
+  })
+  local extra = { defenderTypes = { [2] = { "rock" } } }
+  local clear = runStrike("THUNDERBOLT", facts, FIXED_SEED, extra)
+  local sand = runStrike("THUNDERBOLT", facts, FIXED_SEED, {
+    defenderTypes = extra.defenderTypes,
+    weather = "sand",
+  })
+  local suppressed = runStrike("THUNDERBOLT", facts, FIXED_SEED, {
+    defenderTypes = extra.defenderTypes,
+    weather = "sand",
+    weatherSuppressed = true,
+  })
+  Assert.isTrue(
+    sand.dealt < clear.dealt,
+    "sandstorm increases a Rock defender's special defense (" .. clear.dealt .. " vs " .. sand.dealt .. ")"
+  )
+  Assert.equal(suppressed.dealt, clear.dealt, "Cloud Nine suppression removes the sandstorm defense boost")
+end
+
+function T.technician_checks_power_before_sport_halving()
+  damageOwner("Technician's power checkpoint precedes type sports")
+  local NativeEffectHandlers = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "native definitions resolve for typed battle-local writes"
+  )
+  local function underMudSport(power)
+    return runStrike(
+      "THUNDER_SHOCK",
+      moveFacts("THUNDER_SHOCK", {
+        power = power,
+        accuracy = 100,
+        category = "special",
+        moveType = "electric",
+      }),
+      FIXED_SEED,
+      {
+        abilities = { user = "TECHNICIAN", foe = "NONE" },
+        setup = function(ctx)
+          local entry = ctx:entryOf(1)
+          ctx:addBattleEffect(
+            NativeEffectHandlers.definitionFor("mudsport"),
+            { kind = "active", combatant = 1, activation = entry.activation },
+            { kind = "move", key = "MUD_SPORT" },
+            { version = 1 }
+          )
+        end,
+      }
+    )
+  end
+  local threshold = underMudSport(60)
+  local above = underMudSport(61)
+  Assert.isTrue(
+    threshold.dealt > above.dealt,
+    "Technician boosts 60 power before Mud Sport, while 61 power remains unboosted"
+  )
+end
+
 -- Focus energy raises later strikes by two stages: with a draw in the
 -- focused-only remainder window (a multiple of 4 that is not a multiple
 -- of 16), the focused strike crits.
@@ -1099,7 +1241,6 @@ function T.focus_energy_raises_later_strikes_by_two_stages()
   local seed = nil
   for candidate = 1, 2000 do
     local probe = BattleRng.new(candidate)
-    probe:nextU16("accuracy_check", { kind = "probe" })
     local draw = probe:nextU16("critical_check", { kind = "probe" })
     if draw % 4 == 0 and draw % 16 ~= 0 then
       seed = candidate
@@ -1171,7 +1312,6 @@ function T.lucky_chant_shields_its_side_from_critical_strikes()
   local seed = nil
   for candidate = 1, 500 do
     local probe = BattleRng.new(candidate)
-    probe:nextU16("accuracy_check", { kind = "probe" })
     local draw = probe:nextU16("critical_check", { kind = "probe" })
     if draw % 8 == 0 then
       seed = candidate
@@ -1344,6 +1484,136 @@ function T.secondaries_respect_immunities_and_substitutes()
   Assert.isFalse(burnLands({ [2] = { "normal" } }, true), "a marked doll absorbs the burn")
 end
 
+function T.landed_ability_admitted_strikes_keep_their_secondaries()
+  local bodySlam = runStrike(
+    "BODY_SLAM",
+    moveFacts("BODY_SLAM", {
+      power = 40,
+      accuracy = 100,
+      category = "physical",
+      moveType = "normal",
+      effectChance = 100,
+    }),
+    FIXED_SEED,
+    {
+      abilities = { user = "SCRAPPY", foe = "NONE" },
+      combat = probeCombat(5, 16, 16),
+      defenderTypes = { [2] = { "ghost" } },
+    }
+  )
+  Assert.equal(bodySlam.outcome.result, "hit", "Scrappy admits Body Slam against a Ghost")
+  Assert.equal(bodySlam.ctx:statusOf(2), "paralysis", "the admitted hit still applies its secondary")
+
+  local thunderbolt = runStrike(
+    "THUNDERBOLT",
+    moveFacts("THUNDERBOLT", {
+      power = 40,
+      accuracy = 100,
+      category = "special",
+      moveType = "electric",
+      effectChance = 100,
+    }),
+    FIXED_SEED,
+    {
+      abilities = { user = "NORMALIZE", foe = "NONE" },
+      combat = probeCombat(5, 16, 16),
+      defenderTypes = { [2] = { "ground" } },
+    }
+  )
+  Assert.equal(thunderbolt.outcome.result, "hit", "Normalize admits Thunderbolt against a Ground type")
+  Assert.equal(thunderbolt.ctx:statusOf(2), "paralysis", "Normalize's admitted hit keeps Thunderbolt's secondary")
+end
+
+function T.live_gravity_and_roost_change_the_landed_type_matchup()
+  local function installGravity(ctx)
+    local handlers = SessionFixture.requirePresent(
+      "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+      "native definitions resolve for typed battle-local writes"
+    )
+    ctx:addBattleEffect(
+      handlers.definitionFor("gravity"),
+      { kind = "field" },
+      { kind = "move", key = "GRAVITY" },
+      { version = 1, turns = 5 }
+    )
+  end
+  local facts = moveFacts("EARTHQUAKE", {
+    power = 40,
+    accuracy = 100,
+    category = "physical",
+    moveType = "ground",
+  })
+  local defenderTypes = { [2] = { "flying" } }
+  local ordinary = runStrike("EARTHQUAKE", facts, FIXED_SEED, {
+    combat = probeCombat(5, 16, 16),
+    defenderTypes = defenderTypes,
+  })
+  local gravity = runStrike("EARTHQUAKE", facts, FIXED_SEED, {
+    combat = probeCombat(5, 16, 16),
+    defenderTypes = defenderTypes,
+    setup = installGravity,
+  })
+  Assert.equal(ordinary.outcome.result, "missed", "Flying immunity blocks Earthquake without Gravity")
+  Assert.equal(gravity.outcome.result, "hit", "live Gravity removes the Flying immunity")
+
+  local inaccurateFacts = moveFacts("TACKLE", {
+    power = 40,
+    accuracy = 50,
+    category = "physical",
+    moveType = "normal",
+  })
+  local missesWithoutGravity = runStrike("TACKLE", inaccurateFacts, 2, { combat = probeCombat(5, 16, 16) })
+  local hitsUnderGravity = runStrike("TACKLE", inaccurateFacts, 2, {
+    combat = probeCombat(5, 16, 16),
+    setup = installGravity,
+  })
+  Assert.equal(missesWithoutGravity.outcome.result, "missed", "the chosen ordinary accuracy roll misses")
+  Assert.equal(hitsUnderGravity.outcome.result, "hit", "Gravity raises the same live accuracy roll")
+
+  local roost = runStrike("EARTHQUAKE", facts, FIXED_SEED, {
+    combat = probeCombat(5, 16, 16),
+    defenderTypes = defenderTypes,
+    setup = function(ctx)
+      local handlers = SessionFixture.requirePresent(
+        "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+        "native definitions resolve for typed battle-local writes"
+      )
+      local entry = ctx:entryOf(2)
+      ctx:addBattleEffect(
+        handlers.definitionFor("roost"),
+        { kind = "active", combatant = 2, activation = entry.activation },
+        { kind = "move", key = "ROOST" },
+        { version = 1, turns = 1 }
+      )
+    end,
+  })
+  Assert.equal(roost.outcome.result, "hit", "Roost removes the Flying matchup for the current turn")
+end
+
+function T.target_abilities_control_held_item_grounding()
+  local facts = moveFacts("EARTHQUAKE", {
+    power = 40,
+    accuracy = 100,
+    category = "physical",
+    moveType = "ground",
+  })
+  local function strike(targetFacts)
+    return runStrike("EARTHQUAKE", facts, FIXED_SEED, {
+      combat = probeCombat(5, 16, 16),
+      abilities = { user = "NONE", foe = "KLUTZ" },
+      targetFacts = targetFacts,
+      defenderTypes = { [2] = { "flying" } },
+      setup = function(ctx)
+        ctx:setHeldItem(2, "IRON_BALL")
+      end,
+    })
+  end
+  local legacy = strike(nil)
+  local recipient = strike({ [2] = { abilities = { user = "NONE", foe = "NONE" } } })
+  Assert.equal(legacy.outcome.result, "missed", "the shared Klutz fact suppresses Iron Ball")
+  Assert.equal(recipient.outcome.result, "hit", "the target's own ability facts preserve Iron Ball grounding")
+end
+
 -- Feint fails outright without protection to break, and breaks through
 -- otherwise.
 function T.feint_needs_protection_to_break()
@@ -1460,7 +1730,135 @@ local function runPreparedStrike(moveKey, facts, seed, extra, setup)
     dealt = beforeFoe - ctx:damage(2, 0, { kind = "probe" }).before,
     ctx = ctx,
     state = state,
+    stream = inputs.stream,
   }
+end
+
+function T.close_combat_self_stages_apply_through_faint_and_shield_dust()
+  local facts = moveFacts("CLOSE_COMBAT", {
+    power = 100,
+    accuracy = 100,
+    category = "physical",
+    moveType = "fighting",
+  })
+  local fainting = runPreparedStrike("CLOSE_COMBAT", facts, FIXED_SEED, nil, function(_, ctx)
+    ctx:damage(2, ctx:entryOf(2).maxHp - 1, { kind = "probe" })
+  end)
+  Assert.equal(fainting.ctx:entryOf(1).stages.defense, -1, "Close Combat lowers Defense after knocking out its target")
+  Assert.equal(
+    fainting.ctx:entryOf(1).stages.specialDefense,
+    -1,
+    "Close Combat lowers Special Defense after knocking out its target"
+  )
+  local shieldDust = runPreparedStrike("CLOSE_COMBAT", facts, FIXED_SEED, {
+    abilities = { user = "NONE", foe = "SHIELD_DUST" },
+  })
+  Assert.equal(
+    shieldDust.ctx:entryOf(1).stages.defense,
+    -1,
+    "the target's Shield Dust cannot suppress the user's own stages"
+  )
+end
+
+function T.protection_acceptance_uses_the_compiled_move_flag()
+  local function run(protectable)
+    return runPreparedStrike(
+      "TACKLE",
+      moveFacts("TACKLE", {
+        power = 40,
+        accuracy = 100,
+        flags = { protectable = protectable },
+      }),
+      FIXED_SEED,
+      nil,
+      function(_, ctx)
+        local handlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
+        ctx:addBattleEffect(
+          handlers.definitionFor("protect"),
+          { kind = "active", combatant = 2, activation = ctx:entryOf(2).activation },
+          { kind = "move", combatant = 2 },
+          { version = 1, turns = 1 }
+        )
+      end
+    )
+  end
+  Assert.equal(run(true).outcome.result, "missed", "protect blocks a compiled protectable strike")
+  Assert.equal(run(false).outcome.result, "hit", "a compiled non-protectable strike ignores protect")
+end
+
+function T.effect_204_keeps_its_chance_roll_while_close_combat_does_not()
+  local closeCombat = runPreparedStrike(
+    "CLOSE_COMBAT",
+    moveFacts("CLOSE_COMBAT", {
+      power = 40,
+      accuracy = 100,
+      effectChance = 100,
+      category = "physical",
+      moveType = "fighting",
+    }),
+    FIXED_SEED
+  )
+  local overheat = runPreparedStrike(
+    "OVERHEAT",
+    moveFacts("OVERHEAT", {
+      power = 40,
+      accuracy = 100,
+      effectChance = 100,
+      category = "special",
+      moveType = "fire",
+    }),
+    FIXED_SEED
+  )
+  Assert.equal(closeCombat.ctx:entryOf(1).stages.defense, -1, "the on-hit self effect applies")
+  Assert.equal(overheat.ctx:entryOf(1).stages.specialAttack, -2, "the 100-percent side effect applies")
+  Assert.equal(
+    overheat.stream:capture().calls,
+    closeCombat.stream:capture().calls + 1,
+    "the probability-flagged effect consumes its source chance draw"
+  )
+end
+
+function T.drain_precedes_rough_skin_and_zero_hp_damage_keeps_move_success()
+  local drainFacts = moveFacts("DRAIN_PUNCH", {
+    power = 80,
+    accuracy = 100,
+    category = "physical",
+    moveType = "fighting",
+    contact = true,
+  })
+  local drained = runPreparedStrike("DRAIN_PUNCH", drainFacts, FIXED_SEED, {
+    abilities = { user = "NONE", foe = "ROUGH_SKIN" },
+  }, function(_, ctx)
+    local health = ctx:damage(1, 999999, { kind = "probe" })
+    ctx:heal(1, 1 - health.after, { kind = "probe" })
+  end)
+  local maxHp = drained.ctx:entryOf(1).maxHp
+  local expected = math.max(0, 1 + math.max(1, math.floor(drained.dealt / 2)) - math.max(1, math.floor(maxHp / 8)))
+  Assert.equal(drained.ctx:damage(1, 0, { kind = "probe" }).after, expected, "drain settles before Rough Skin")
+
+  local lifeOrb = runPreparedStrike(
+    "FALSE_SWIPE",
+    moveFacts("FALSE_SWIPE", {
+      power = 40,
+      accuracy = 100,
+      category = "physical",
+      moveType = "normal",
+    }),
+    FIXED_SEED,
+    { heldItem = "LIFE_ORB" },
+    function(_, ctx)
+      ctx:setHeldItem(1, "LIFE_ORB")
+      local health = ctx:damage(2, 999999, { kind = "probe" })
+      ctx:heal(2, 1 - health.after, { kind = "probe" })
+    end
+  )
+  Assert.equal(lifeOrb.dealt, 0, "the one-HP body loses no health")
+  Assert.isTrue(lifeOrb.outcome.bodySuccess == true, "the body-hit success flag survives the leave-one clamp")
+  Assert.equal(
+    lifeOrb.ctx:entryOf(1).maxHp - lifeOrb.ctx:damage(1, 0, { kind = "probe" }).after,
+    math.max(1, math.floor(lifeOrb.ctx:entryOf(1).maxHp / 10)),
+    "Life Orb uses the successful body-hit flag even when damage is zero"
+  )
 end
 
 ---@param ctx table genuine mechanics context under preparation
@@ -1477,6 +1875,54 @@ local function seedDoll(ctx, defender, hp)
     { kind = "active", combatant = defender, activation = entry.activation },
     { kind = "move", combatant = defender },
     { version = 1, hp = hp }
+  )
+end
+
+function T.broken_substitute_keeps_its_secondary_block_for_the_hit()
+  local probe = runPreparedStrike(
+    "BODY_SLAM",
+    moveFacts("BODY_SLAM", {
+      power = 40,
+      accuracy = 100,
+      category = "physical",
+      moveType = "normal",
+      effectChance = 100,
+    }),
+    FIXED_SEED,
+    nil,
+    function(_, ctx)
+      seedDoll(ctx, 2, 1)
+    end
+  )
+  Assert.isFalse(probe.ctx:hasBattleEffect(2, "substitute"), "the hit breaks the doll")
+  Assert.equal(probe.ctx:statusOf(2), nil, "the breaking hit cannot paralyze the body")
+  Assert.equal(probe.stream:capture().calls, 4, "the blocked secondary consumes its chance draw")
+end
+
+function T.false_swipe_damages_the_substitute_without_using_body_health()
+  local probe = runPreparedStrike(
+    "FALSE_SWIPE",
+    moveFacts("FALSE_SWIPE", { power = 40, accuracy = 100, category = "physical", moveType = "normal" }),
+    FIXED_SEED,
+    nil,
+    function(_, ctx)
+      local health = ctx:damage(2, 999999, { kind = "probe" })
+      ctx:heal(2, 1 - health.after, { kind = "probe" })
+      seedDoll(ctx, 2, 100)
+    end
+  )
+  Assert.equal(probe.ctx:damage(2, 0, { kind = "probe" }).before, 1, "the body stays at one HP")
+  local substitute = nil
+  for _, record in ipairs(probe.state.effectBag:capture()) do
+    if record.key == "substitute" then
+      substitute = record.state
+      break
+    end
+  end
+  Assert.isTrue(probe.ctx:hasBattleEffect(2, "substitute"), "the doll survives")
+  Assert.isTrue(
+    substitute.hp < 100 and substitute.hp > 0,
+    "False Swipe reduces the doll's HP without touching the body"
   )
 end
 
@@ -1578,6 +2024,8 @@ function T.missed_strikes_leave_the_doll_untouched()
   local seed = nil
   for candidate = 1, 500 do
     local probe = BattleRng.new(candidate)
+    probe:nextU16("critical_check", { kind = "probe" })
+    probe:nextU16("damage_roll", { kind = "probe" })
     if probe:nextU16("accuracy_check", { kind = "probe" }) % 100 >= 30 then
       seed = candidate
       break
@@ -1712,12 +2160,12 @@ function T.critical_and_brick_break_strikes_ignore_live_barriers()
   end)
   Assert.equal(ordinary.outcome.result, "hit", "the ordinary screened strike connects")
   Assert.equal(ordinary.dealt, 4, "the ordinary screened strike is halved first")
-  -- Seed 7 draws the stage-zero critical window after its accuracy draw
-  -- and then rolls 99 for damage, so the critical strike lands 16.
-  local openCrit = runPreparedStrike("TACKLE", tackleFacts(), 7, { combat = smallCombat() }, nil)
+  -- Seed 38 yields a critical draw and a 99% damage roll before
+  -- accuracy, so the critical strike lands 16.
+  local openCrit = runPreparedStrike("TACKLE", tackleFacts(), 38, { combat = smallCombat() }, nil)
   Assert.equal(openCrit.outcome.result, "hit", "the open critical strike connects")
   Assert.equal(openCrit.dealt, 16, "the open critical strike doubles past staging")
-  local screenedCrit = runPreparedStrike("TACKLE", tackleFacts(), 7, { combat = smallCombat() }, function(_, ctx)
+  local screenedCrit = runPreparedStrike("TACKLE", tackleFacts(), 38, { combat = smallCombat() }, function(_, ctx)
     raiseBarrier(ctx, "reflect")
   end)
   Assert.equal(screenedCrit.outcome.result, "hit", "the screened critical strike connects")
@@ -1956,27 +2404,18 @@ end
 function T.zoom_lens_boosts_accuracy_only_when_moving_last()
   damageOwner("zoom lens owns its moved-last gate")
   local accuracy = 50
-  local seed = nil
-  for candidate = 1, 5000 do
-    local probe = BattleRng.new(candidate)
-    local roll = probe:nextU16("accuracy_check", { kind = "probe" }) % 100 + 1
-    if roll > accuracy and roll <= math.floor(accuracy * 120 / 100) then
-      seed = candidate
-      break
-    end
-  end
-  Assert.notNil(seed, "a zoom-window accuracy draw exists")
+  local seed = 2 -- source-order draws 33676, 28355, then accuracy roll 57
   local facts = function()
     return moveFacts("TACKLE", { power = 40, accuracy = accuracy, category = "physical", moveType = "normal" })
   end
   local function duelFor(movedLast)
     return { foeActed = movedLast, foeHurt = false, userHurt = false }
   end
-  local first = runPreparedStrike("TACKLE", facts(), seed --[[@as integer]], { duel = duelFor(false) }, function(_, ctx)
+  local first = runPreparedStrike("TACKLE", facts(), seed, { duel = duelFor(false) }, function(_, ctx)
     ctx:setHeldItem(1, "ZOOM_LENS")
   end)
   Assert.equal(first.outcome.result, "missed", "zoom lens misses moving first")
-  local last = runPreparedStrike("TACKLE", facts(), seed --[[@as integer]], { duel = duelFor(true) }, function(_, ctx)
+  local last = runPreparedStrike("TACKLE", facts(), seed, { duel = duelFor(true) }, function(_, ctx)
     ctx:setHeldItem(1, "ZOOM_LENS")
   end)
   Assert.equal(last.outcome.result, "hit", "zoom lens connects moving last")
@@ -2020,6 +2459,46 @@ function T.big_root_lifts_draining_recovery()
       .. tostring(userHp(rooted))
       .. ")"
   )
+end
+
+function T.big_root_modifies_liquid_ooze_before_the_damage_branch()
+  damageOwner("drain prices Liquid Ooze after its item modifier")
+  local NativeEffects = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
+    "native Heal Block definitions resolve for the Liquid Ooze probe"
+  )
+  local facts = moveFacts("GIGA_DRAIN", { power = 60, accuracy = 100, category = "special", moveType = "grass" })
+  local plain = runStrike("GIGA_DRAIN", facts, FIXED_SEED, {
+    abilities = { user = "NONE", foe = "LIQUID_OOZE" },
+  })
+  local rooted = runStrike("GIGA_DRAIN", facts, FIXED_SEED, {
+    abilities = { user = "NONE", foe = "LIQUID_OOZE" },
+    heldItem = "BIG_ROOT",
+  })
+  local drained = math.max(1, math.floor(plain.dealt / 2))
+  Assert.equal(-plain.restored, drained, "Liquid Ooze applies the ordinary half-damage amount")
+  Assert.equal(-rooted.restored, math.floor(drained * 130 / 100), "Big Root also boosts Liquid Ooze damage")
+
+  local healBlocked = runStrike("GIGA_DRAIN", facts, FIXED_SEED, {
+    abilities = { user = "NONE", foe = "LIQUID_OOZE" },
+    heldItem = "BIG_ROOT",
+    setup = function(ctx)
+      local entry = ctx:entryOf(1)
+      ctx:addBattleEffect(
+        NativeEffects.definitionFor("healblock"),
+        { kind = "active", combatant = 1, activation = entry.activation },
+        { kind = "move", key = "HEAL_BLOCK", combatant = 2 },
+        { version = 1, turns = 5 }
+      )
+    end,
+  })
+  Assert.equal(-healBlocked.restored, math.floor(drained * 130 / 100), "Heal Block does not suppress Liquid Ooze damage")
+
+  local magicGuard = runStrike("GIGA_DRAIN", facts, FIXED_SEED, {
+    abilities = { user = "MAGIC_GUARD", foe = "LIQUID_OOZE" },
+    heldItem = "BIG_ROOT",
+  })
+  Assert.equal(magicGuard.restored, 0, "Magic Guard prevents boosted Liquid Ooze damage")
 end
 
 -- Draining a heal-blocked holder restores nothing: the native drain
@@ -2072,6 +2551,126 @@ function T.shell_bell_stays_silent_on_a_full_health_holder()
     end
   end
   Assert.isFalse(announced, "a full-health holder rings nothing")
+end
+
+function T.attacker_damage_items_settle_once_from_total_move_damage()
+  local facts = moveFacts("DOUBLE_KICK", { power = 30, accuracy = 100, category = "physical", moveType = "fighting" })
+  local plain = runPreparedStrike("DOUBLE_KICK", facts, FIXED_SEED)
+  local orb = runPreparedStrike("DOUBLE_KICK", facts, FIXED_SEED, { heldItem = "LIFE_ORB" })
+  local recoil = math.max(1, math.floor(orb.ctx:entryOf(1).maxHp / 10))
+  Assert.equal(
+    plain.ctx:damage(1, 0, { kind = "probe" }).before - orb.ctx:damage(1, 0, { kind = "probe" }).before,
+    recoil,
+    "Life Orb recoils once after both hits"
+  )
+
+  local bell = runPreparedStrike("DOUBLE_KICK", facts, FIXED_SEED, { heldItem = "SHELL_BELL" }, function(_, ctx)
+    ctx:damage(1, 20, { kind = "probe" })
+  end)
+  local expectedHeal = math.floor(bell.dealt / 8)
+  Assert.equal(
+    bell.ctx:damage(1, 0, { kind = "probe" }).before,
+    bell.ctx:entryOf(1).maxHp - 20 + expectedHeal,
+    "Shell Bell rounds the total accumulated damage once"
+  )
+  local doll = runPreparedStrike(
+    "TACKLE",
+    moveFacts("TACKLE", { power = 30, accuracy = 100, category = "physical", moveType = "normal" }),
+    FIXED_SEED,
+    { heldItem = "LIFE_ORB" },
+    function(_, ctx)
+      seedDoll(ctx, 2, 1000)
+    end
+  )
+  Assert.equal(doll.dealt, 0, "the attack only damages the doll")
+  Assert.equal(
+    doll.ctx:damage(1, 0, { kind = "probe" }).before,
+    doll.ctx:entryOf(1).maxHp,
+    "a doll-only hit does not set native move success or trigger Life Orb"
+  )
+
+  local drainingFacts = moveFacts("GIGA_DRAIN", {
+    power = 40,
+    accuracy = 100,
+    category = "special",
+    moveType = "grass",
+  })
+  local drained = runPreparedStrike("GIGA_DRAIN", drainingFacts, FIXED_SEED, { heldItem = "LIFE_ORB" }, function(_, ctx)
+    ctx:damage(1, ctx:entryOf(1).maxHp - 5, { kind = "probe" })
+  end)
+  Assert.equal(
+    drained.ctx:damage(1, 0, { kind = "probe" }).before,
+    5 + math.floor(drained.dealt / 2) - math.floor(drained.ctx:entryOf(1).maxHp / 10),
+    "drain resolves before Life Orb settlement"
+  )
+end
+
+function T.shell_bell_minimum_heal_is_one_hp()
+  local probe = runPreparedStrike(
+    "TACKLE",
+    moveFacts("TACKLE", { power = 1, accuracy = 100, category = "physical", moveType = "normal" }),
+    FIXED_SEED,
+    { heldItem = "SHELL_BELL" },
+    function(_, ctx)
+      ctx:damage(1, 10, { kind = "probe" })
+    end
+  )
+  Assert.equal(probe.dealt, 1, "the body takes one damage")
+  Assert.equal(
+    probe.ctx:damage(1, 0, { kind = "probe" }).before,
+    probe.ctx:entryOf(1).maxHp - 9,
+    "Shell Bell's native division restores at least one HP"
+  )
+end
+
+function T.contact_recoil_uses_the_damaged_combatants_maximum_hp()
+  local facts = moveFacts("TACKLE", {
+    power = 40,
+    accuracy = 100,
+    category = "physical",
+    moveType = "normal",
+    contact = true,
+  })
+  local roughSkin = runPreparedStrike("TACKLE", facts, FIXED_SEED, {
+    abilities = { user = "NONE", foe = "ROUGH_SKIN" },
+  })
+  Assert.equal(
+    roughSkin.ctx:entryOf(1).maxHp - roughSkin.ctx:damage(1, 0, { kind = "probe" }).before,
+    math.max(1, math.floor(roughSkin.ctx:entryOf(1).maxHp / 8)),
+    "Rough Skin uses the attacker's maximum HP"
+  )
+  local aftermath = runPreparedStrike("TACKLE", facts, FIXED_SEED, {
+    abilities = { user = "NONE", foe = "AFTERMATH" },
+  }, function(_, ctx)
+    local health = ctx:damage(2, 999999, { kind = "probe" })
+    ctx:heal(2, 1 - health.after, { kind = "probe" })
+  end)
+  Assert.equal(
+    aftermath.ctx:entryOf(1).maxHp - aftermath.ctx:damage(1, 0, { kind = "probe" }).before,
+    math.max(1, math.floor(aftermath.ctx:entryOf(1).maxHp / 4)),
+    "Aftermath uses the attacker's maximum HP"
+  )
+end
+
+function T.multi_hit_stops_before_sampling_the_next_hit_after_attacker_faints()
+  local probe = runPreparedStrike(
+    "DOUBLE_KICK",
+    moveFacts("DOUBLE_KICK", {
+      power = 30,
+      accuracy = 100,
+      category = "physical",
+      moveType = "fighting",
+      contact = true,
+    }),
+    FIXED_SEED,
+    { abilities = { user = "NONE", foe = "ROUGH_SKIN" } },
+    function(_, ctx)
+      local health = ctx:damage(1, 999999, { kind = "probe" })
+      ctx:heal(1, 1 - health.after, { kind = "probe" })
+    end
+  )
+  Assert.equal(probe.ctx:damage(1, 0, { kind = "probe" }).after, 0, "Rough Skin faints the attacker")
+  Assert.equal(probe.stream:capture().calls, 3, "the fainted attacker spends no second-hit critical or damage draws")
 end
 
 -- Jaboca and Rowap answer their matching splits: the physical berry
@@ -2196,6 +2795,7 @@ function T.kings_rock_flinches_through_the_u_turn_pivot()
     category = "physical",
     moveType = "bug",
     contact = true,
+    flags = { flinchEligible = true },
   })
   local stream = {
     nextU16 = function(_, label, _)
@@ -2205,21 +2805,50 @@ function T.kings_rock_flinches_through_the_u_turn_pivot()
       return 1
     end,
   }
-  local probe = runPreparedStrike("U_TURN", facts, FIXED_SEED, { heldItem = "KINGS_ROCK", stream = stream })
+  local probe = runPreparedStrike("U_TURN", facts, FIXED_SEED, {
+    heldItem = "KINGS_ROCK",
+    stream = stream,
+    duel = { foeActed = false, foeHurt = false, userHurt = false },
+  })
   Assert.equal(probe.outcome.result, "hit", "the pivot strike connects")
-  local flinched = false
-  for _, event in
-    ipairs(probe.state.outbox --[[@as table<integer, table<string, unknown>>]])
-  do
-    local record = event --[[@as table<string, unknown>]]
-    if record.kind == "flinch" then
-      local payload = record.payload --[[@as table<string, unknown>]]
-      if payload.target == 2 then
-        flinched = true
-      end
-    end
+  Assert.isTrue(probe.ctx:hasBattleEffect(2, "flinch"), "the low roll marks the unacted defender through the pivot")
+end
+
+function T.kings_rock_rolls_before_eligibility_and_uses_the_native_move_flag()
+  local function run(contact, flinchEligible, foeActed, foeAbility)
+    local calls = 0
+    local stream = {
+      nextU16 = function(_, label)
+        if label == "kings_rock" then
+          calls = calls + 1
+          return 0
+        end
+        return 1
+      end,
+    }
+    local facts = moveFacts("TACKLE", {
+      power = 10,
+      accuracy = 100,
+      category = "physical",
+      moveType = "normal",
+      contact = contact,
+      flags = { flinchEligible = flinchEligible },
+    })
+    local probe = runPreparedStrike("TACKLE", facts, FIXED_SEED, {
+      heldItem = "KINGS_ROCK",
+      stream = stream,
+      duel = { foeActed = foeActed, foeHurt = false, userHurt = false },
+      abilities = { user = "NONE", foe = foeAbility or "NONE" },
+    })
+    Assert.equal(calls, 1, "every damaging body hit spends the item chance before recipient guards")
+    return probe.ctx:hasBattleEffect(2, "flinch")
   end
-  Assert.isTrue(flinched, "the low roll marks the defender through the pivot")
+
+  Assert.isFalse(run(true, false, false), "contact alone does not enable held-item flinch")
+  Assert.isTrue(run(false, true, false), "noncontact moves can enable held-item flinch with native bit 5")
+  Assert.isFalse(run(false, true, true), "an already-acted target still consumes the roll but cannot flinch")
+  Assert.isFalse(run(false, true, false, "INNER_FOCUS"), "Inner Focus prevents flinch after the item roll")
+  Assert.isFalse(run(false, true, false, "SHIELD_DUST"), "Shield Dust prevents flinch after the item roll")
 end
 
 -- Contact abilities answer the U-turn pivot pre-switch: the pivot

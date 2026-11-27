@@ -8,11 +8,10 @@
 -- the hit lands even after the attacker leaves. Source references:
 -- src/battle/battle_command.c and src/battle/overlay_12_0224E4FC.c.
 
-local Accuracy = require("libs.battle.src.gen4.Accuracy")
 local BattleErrors = require("libs.battle.src.errors")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
-local Critical = require("libs.battle.src.gen4.Critical")
 local Damage = require("libs.battle.src.gen4.Damage")
+local DamageMoves = require("libs.battle.src.gen4.behaviors.moves.DamageMoves")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local StagedTypeModifiers = require("libs.battle.src.gen4.behaviors.moves.StagedTypeModifiers")
 local NativeEffectHandlers = require("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers")
@@ -105,73 +104,9 @@ local function combatOf(frame)
   }
 end
 
--- Strike-law facts the executor projects beside the staged pair. Charge
--- and ramp strikes read the live facts; delayed landings carry explicit
--- neutral facts so their typeless arithmetic never guesses.
+-- Delayed impacts retain their bound combatants and neutral type facts.
 ---@param frame table<string, unknown> move frame under execution
----@return boolean whether the attacker carries burn
----@return boolean whether the attacker carries the resilient ability
----@return string active field weather identity
----@return boolean whether a live ability suppresses weather damage
----@return string striking move category
----@return string striking move type under weather law
----@return boolean whether the strike is the charging grass special case
-local function strikeLawOf(frame)
-  local record = frame --[[@as table<string, unknown>]]
-  local key = record.executingMove --[[@as string]]
-  local locals = record.locals --[[@as table<string, unknown>]]
-  for _, fact in ipairs({ "burned", "guts", "weather", "weatherSuppressed" }) do
-    if locals[fact] == nil then
-      error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = fact }))
-    end
-  end
-  if type(locals.burned) ~= "boolean" or type(locals.guts) ~= "boolean" then
-    error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = "burn" }))
-  end
-  if type(locals.weather) ~= "string" or locals.weather == "" or type(locals.weatherSuppressed) ~= "boolean" then
-    error(BattleErrors.missingBehavior("sequences read their real combat facts", { key = key, fact = "weather" }))
-  end
-  local move = locals.move --[[@as table<string, unknown>]]
-  if type(move) ~= "table" then
-    error(BattleErrors.missingBehavior("sequences read their immutable move facts", { key = key, fact = "move" }))
-  end
-  local category = move.category
-  if category ~= "physical" and category ~= "special" then
-    error(BattleErrors.missingBehavior("sequences read their immutable move facts", { key = key, fact = "category" }))
-  end
-  local moveType = move.moveType
-  if type(moveType) ~= "string" or moveType == "" then
-    error(BattleErrors.missingBehavior("sequences read their immutable move facts", { key = key, fact = "moveType" }))
-  end
-  return locals.burned, --[[@as boolean]]
-    locals.guts, --[[@as boolean]]
-    locals.weather, --[[@as string]]
-    locals.weatherSuppressed, --[[@as boolean]]
-    category, --[[@as string]]
-    moveType, --[[@as string]]
-    record.executingMove == "SOLAR_BEAM"
-end
-
--- Whether the striker carries the triple-damage critical ability. Absent
--- ability facts fail instead of defaulting.
----@param frame table<string, unknown> move frame under execution
----@return boolean true when the striker snipes critical hits
-local function sniperOf(frame)
-  local record = frame --[[@as table<string, unknown>]]
-  local locals = record.locals --[[@as table<string, unknown>]]
-  local abilities = locals.abilities
-  if type(abilities) ~= "table" then
-    error(BattleErrors.missingBehavior("sequences read their battle abilities", {
-      key = record.executingMove --[[@as string]],
-    }))
-  end
-  return (abilities --[[@as table<string, unknown>]]).user == "SNIPER"
-end
-
--- Strike power always arrives in the frame move facts; without it the
--- strike cannot resolve and fails explicitly.
----@param frame table<string, unknown> move frame under execution
----@return integer compiled strike power under the staged arithmetic
+---@return integer compiled strike power for the delayed or ramped action
 local function strikePowerOf(frame)
   local record = frame --[[@as table<string, unknown>]]
   local key = record.executingMove --[[@as string]]
@@ -610,128 +545,20 @@ end
 
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
----@param defender integer defender combatant under the strike
 ---@param override integer|nil ramped power under the source doubling rule; when absent the compiled base resolves
 ---@param release boolean? true when this strike releases a charged move, marking the release payload
 ---@param branch string? closed execution branch behind the strike variant
----@return integer damage dealt by the strike
-local function strikeTarget(ctx, frame, defender, override, release, branch)
-  local record = frame --[[@as table<string, unknown>]]
-  local combat = combatOf(record)
-  local power = override
-  if power == nil then
-    power = strikePowerOf(record)
-  end
-  local stream = checkStream(record.stream)
-  local resolution = Accuracy.resolve({
-    target = { kind = "combatant" },
-    cause = causeFor(record),
-    protected = false,
-    skipCheck = true,
-  }, stream)
-  assert(resolution.kind == "hit", "unrolled checks always connect")
-  -- Charge, lock, and ramp strikes roll the base critical stage like any
-  -- unstaged strike and read the live strike-law facts, so the charging
-  -- grass strike halves off sun through the same canonical arithmetic.
-  local burned, guts, weather, weatherSuppressed, category, moveType, solarBeam = strikeLawOf(record)
-  local critical = Critical.resolve(0, stream, causeFor(record), sniperOf(record))
-  local stab, effectiveness = StagedTypeModifiers.forStrike(record, defender)
-  local result = Damage.calculate({
-    level = combat.level,
-    power = power,
-    attack = combat.attack,
-    defense = combat.defense,
-    rawAttack = combat.rawAttack,
-    rawDefense = combat.rawDefense,
-    attackStage = combat.attackStage,
-    defenseStage = combat.defenseStage,
-    criticalMultiplier = critical.multiplier,
-    category = category,
-    burned = burned,
-    guts = guts,
-    stab = stab,
-    effectiveness = { numerator = effectiveness.numerator, denominator = effectiveness.denominator },
-    effectivenessFactors = effectiveness.factors,
-    weather = weather,
-    weatherSuppressed = weatherSuppressed,
-    moveType = moveType,
-    solarBeam = solarBeam,
-  }, stream)
-  local outcome = ctx:damage(defender, result.amount, causeFor(record))
-  if outcome.after > 0 and outcome.before > outcome.after and category ~= "other" and defender ~= userOf(record) then
-    local entry = ctx:entryOf(defender)
-    assert(entry.stages ~= nil, "Rage reads the defender's live stages")
-    if ctx:hasBattleEffect(defender, "rage") and entry.stages.attack < 6 then
-      sequenceChangeStage(ctx, record, defender, "attack", entry.stages.attack + 1)
-    end
-  end
-  -- Charge releases mark their release moment; ordinary sequence
-  -- strikes mark an ordinary use. Focused strikes name their branch
-  -- so the selector maps the release variant without re-reading the
-  -- deleted charge marker.
-  local moment = "use"
-  if release == true then
-    moment = "charge-release"
-  end
-  local strikeBranch = "default"
-  if type(branch) == "string" and branch ~= "" then
-    strikeBranch = branch --[[@as string]]
-  end
-  local userEntry = ctx:entryOf(userOf(record))
-  local defenderEntry = ctx:entryOf(defender)
-  local attacker = { combatant = userOf(record), activation = userEntry.activation }
-  local nativeDefender = { combatant = defender, activation = defenderEntry.activation }
-  local scope = ctx:moveScope()
-  local cycle = 1
-  if
-    type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).hitCycle) == "number"
-  then
-    cycle = (scope --[[@as table<string, unknown>]]).hitCycle --[[@as integer]]
-  end
-  local friendship = 0
-  if
-    type(scope) == "table" and type((scope --[[@as table<string, unknown>]]).friendship) == "number"
-  then
-    friendship = (scope --[[@as table<string, unknown>]]).friendship --[[@as integer]]
-  end
-  local semantic = {
-    execution = {
-      selectedMove = record.requestedMove or record.executingMove,
-      executedMove = record.executingMove,
-      moment = moment,
-      branch = strikeBranch,
-      attacker = attacker,
-      defender = nativeDefender,
-      targets = { nativeDefender },
-      damage = -(outcome.before - outcome.after),
-      power = strikePowerOf(record),
-      friendship = friendship,
-      hitOrdinal = 1,
-      hitCount = 1,
-      hitCycle = cycle,
-    },
-    healthChanges = {
-      {
-        combatant = defender,
-        activation = defenderEntry.activation,
-        before = outcome.before,
-        after = outcome.after,
-        maxHp = defenderEntry.maxHp,
-        kind = "body",
-      },
-    },
-  }
-  if type(scope) == "table" then
-    (scope --[[@as table<string, unknown>]]).primaryMomentMarked = true
-  end
-  ctx:emit("struck", causeFor(record), {
-    target = defender,
-    hitIndex = 1,
-    damage = outcome.before - outcome.after,
-    calculated = outcome.before - outcome.after,
-    release = release == true and true or nil,
-  }, nil, semantic)
-  return outcome.before - outcome.after
+---@param onConnected (fun(ctx: BattleContext))? callback invoked after the strike connects
+---@return boolean true when the sequence strike connected
+---@return boolean true when it committed the native body-success flag
+local function strikeTarget(ctx, frame, override, release, branch, onConnected)
+  local result = DamageMoves.runSequenceStrike(ctx, frame, {
+    power = override,
+    release = release,
+    branch = branch,
+    onConnected = onConnected,
+  })
+  return result.result == "hit", result.bodySuccess == true
 end
 
 local function stepRage(ctx, frame)
@@ -741,15 +568,17 @@ local function stepRage(ctx, frame)
   local user = userOf(record)
   local entry = ctx:entryOf(user)
   assert(entry.activation ~= nil, "Rage scopes to its live entry")
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  strikeTarget(ctx, record, defender)
+  local hit = strikeTarget(ctx, record)
+  if not hit then
+    return { kind = "complete", result = "missed" }
+  end
   ctx:addBattleEffect(
     NativeEffectHandlers.definitionFor("rage"),
     { kind = "active", combatant = user, activation = entry.activation },
     causeFor(record),
     { version = 1 }
   )
-  return { kind = "complete", result = "hit" }
+  return { kind = "complete", result = hit and "hit" or "missed" }
 end
 
 ---@param handler fun(ctx: BattleContext, frame: table<string, unknown>): table<string, unknown> shared family body under binding
@@ -771,11 +600,29 @@ local function makeChargeStrike()
     local record = frame --[[@as table<string, unknown>]]
     local user = userOf(record)
     local move = record.executingMove --[[@as string]]
+    local state = SequenceMoveState.read(ctx, user)
+    local charging = state ~= nil and state.chargeMove == move
+    if move == "SOLAR_BEAM" then
+      local locals = record.locals --[[@as table<string, unknown>]]
+      local weather = locals.weather
+      if ctx:fieldEffect("raindance") ~= nil then
+        weather = "rain"
+      elseif ctx:fieldEffect("sunnyday") ~= nil then
+        weather = "sun"
+      elseif ctx:fieldEffect("sandstorm") ~= nil then
+        weather = "sand"
+      elseif ctx:fieldEffect("hail") ~= nil then
+        weather = "hail"
+      end
+      if weather == "sun" and locals.weatherSuppressed ~= true and not charging then
+        return { kind = "complete", result = strikeTarget(ctx, record) and "hit" or "missed" }
+      end
+    end
     -- Power Herb skips the setup turn and spends itself: the holder
     -- strikes immediately (battle_controller_player.c charge-turn gate
     -- checks HOLD_EFFECT_CHARGE_SKIP). Klutz and Embargo suppress the
     -- holding, matching GetBattlerHeldItemEffect.
-    do
+    if not charging then
       local held = ctx:heldItemOf(user)
       if held == "POWER_HERB" and not ctx:hasBattleEffect(user, "embargo") then
         local locals = record.locals --[[@as table<string, unknown>]]
@@ -787,14 +634,12 @@ local function makeChargeStrike()
         if userAbility ~= "KLUTZ" then
           ctx:consumeHeldItem(user)
           ctx:emit("item", causeFor(record), { target = user, item = "POWER_HERB" })
-          local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-          strikeTarget(ctx, record, defender)
-          return { kind = "complete", result = "hit" }
+          local hit = strikeTarget(ctx, record)
+          return { kind = "complete", result = hit and "hit" or "missed" }
         end
       end
     end
-    local state = SequenceMoveState.read(ctx, user)
-    if state == nil or state.chargeMove ~= move then
+    if not charging then
       local function beginCharge(current)
         current.chargeMove = move
         return current
@@ -814,9 +659,8 @@ local function makeChargeStrike()
       return current
     end
     SequenceMoveState.update(ctx, user, causeFor(record), finishCharge)
-    local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    strikeTarget(ctx, record, defender, nil, true)
-    return { kind = "complete", result = "hit" }
+    local hit = strikeTarget(ctx, record, nil, true)
+    return { kind = "complete", result = hit and "hit" or "missed" }
   end
   return stepChargeStrike
 end
@@ -831,9 +675,45 @@ local function makeLockStrike(marker)
     assert(type(frame) == "table", "sequences step from their move frame")
     local record = frame --[[@as table<string, unknown>]]
     local user = userOf(record)
-    local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    strikeTarget(ctx, record, defender)
+    local hit = false
+    local state = SequenceMoveState.read(ctx, user)
+    local lock = state ~= nil and state.lock or nil
+    local startsLock = marker ~= "RECHARGE" and (type(lock) ~= "table" or lock.move ~= marker)
+    local startedLock = false
+    local function onConnected(currentContext)
+      if not startsLock or startedLock then
+        return
+      end
+      startedLock = true
+      local turns = 2
+      if marker == "UPROAR" then
+        turns = 3
+      else
+        turns = 2 + checkStream(record.stream):nextU16("rampage_duration", causeFor(record)) % 2
+      end
+      SequenceMoveState.update(currentContext, user, causeFor(record), function(current)
+        current.lock = { move = marker, remaining = turns - 1 }
+        return current
+      end)
+      if marker == "UPROAR" then
+        local entry = currentContext:entryOf(user)
+        assert(entry.activation ~= nil, "Uproar scopes to its live entry")
+        currentContext:addBattleEffect(
+          NativeEffectHandlers.definitionFor("uproar"),
+          { kind = "active", combatant = user, activation = entry.activation },
+          causeFor(record),
+          { version = 1, turns = turns }
+        )
+      end
+    end
+    hit = strikeTarget(ctx, record, nil, nil, nil, onConnected)
+    if startedLock then
+      return { kind = "complete", result = hit and "hit" or "missed" }
+    end
     if marker == "RECHARGE" then
+      if not hit then
+        return { kind = "complete", result = "missed" }
+      end
       local entry = ctx:entryOf(user)
       assert(entry.activation ~= nil, "recharge scopes to its live entry")
       ctx:addBattleEffect(
@@ -843,8 +723,8 @@ local function makeLockStrike(marker)
         { version = 1, turns = 1 }
       )
     else
-      local state = SequenceMoveState.read(ctx, user)
-      local lock = state ~= nil and state.lock or nil
+      state = SequenceMoveState.read(ctx, user)
+      lock = state ~= nil and state.lock or nil
       if type(lock) == "table" and lock.move == marker then
         local remaining = lock.remaining --[[@as integer]]
         if remaining > 1 then
@@ -856,46 +736,18 @@ local function makeLockStrike(marker)
         else
           local function finishLock(current)
             current.lock = nil
+            if marker == "UPROAR" then
+              current.fatiguePending = nil
+            else
+              current.fatiguePending = true
+            end
             return current
           end
           SequenceMoveState.update(ctx, user, causeFor(record), finishLock)
-          if marker ~= "UPROAR" then
-            local turns = 2 + checkStream(record.stream):nextU16("rampage_confusion", causeFor(record)) % 4
-            local entry = ctx:entryOf(user)
-            assert(entry.activation ~= nil, "rampage confusion scopes to its live entry")
-            ctx:addBattleEffect(
-              NativeEffectHandlers.definitionFor("confusion"),
-              { kind = "active", combatant = user, activation = entry.activation },
-              causeFor(record),
-              { version = 1, turns = turns }
-            )
-          end
-        end
-      else
-        local turns = 2
-        if marker == "UPROAR" then
-          turns = 3
-        else
-          turns = 2 + checkStream(record.stream):nextU16("rampage_duration", causeFor(record)) % 2
-        end
-        local function beginLock(current)
-          current.lock = { move = marker, remaining = turns - 1 }
-          return current
-        end
-        SequenceMoveState.update(ctx, user, causeFor(record), beginLock)
-        if marker == "UPROAR" then
-          local entry = ctx:entryOf(user)
-          assert(entry.activation ~= nil, "Uproar scopes to its live entry")
-          ctx:addBattleEffect(
-            NativeEffectHandlers.definitionFor("uproar"),
-            { kind = "active", combatant = user, activation = entry.activation },
-            causeFor(record),
-            { version = 1, turns = turns }
-          )
         end
       end
     end
-    return { kind = "complete", result = "hit" }
+    return { kind = "complete", result = hit and "hit" or "missed" }
   end
   return stepLockStrike
 end
@@ -931,10 +783,19 @@ local function makeRampStrike(cap)
     for _ = 2, rung do
       power = power * 2
     end
-    local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    strikeTarget(ctx, record, defender, power)
+    local hit = strikeTarget(ctx, record, power)
     local user = userOf(record)
     local locked = move == "ROLLOUT" or move == "ICE_BALL"
+    if not hit then
+      if state ~= nil then
+        SequenceMoveState.update(ctx, user, causeFor(record), function(current)
+          current.lock = nil
+          current.ramp = nil
+          return current
+        end)
+      end
+      return { kind = "complete", result = "missed" }
+    end
     local function advanceRamp(current)
       if locked and rung < cap + 1 then
         current.lock = { move = move, remaining = cap + 1 - rung }
@@ -1049,9 +910,8 @@ local function stepFocusPunch(ctx, frame)
   if locals.wasHit == true then
     return { kind = "complete", result = "failed" }
   end
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  strikeTarget(ctx, record, defender, nil, nil, "focused-strike")
-  return { kind = "complete", result = "hit" }
+  local hit = strikeTarget(ctx, record, nil, nil, "focused-strike")
+  return { kind = "complete", result = hit and "hit" or "missed" }
 end
 
 -- Sucker Punch checks the defender's selected move before committing its
@@ -1078,9 +938,8 @@ local function stepSuckerPunch(ctx, frame)
   if not foeSelectedDamage then
     return { kind = "complete", result = "failed" }
   end
-  local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  strikeTarget(ctx, record, defender)
-  return { kind = "complete", result = "hit" }
+  local hit = strikeTarget(ctx, record)
+  return { kind = "complete", result = hit and "hit" or "missed" }
 end
 
 -- Fake Out strikes once and records the flinch on the sampled target.
@@ -1107,9 +966,12 @@ local function stepFakeOut(ctx, frame)
     return { kind = "complete", result = "failed" }
   end
   local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-  strikeTarget(ctx, record, defender)
+  local hit, bodySuccess = strikeTarget(ctx, record)
+  if not hit then
+    return { kind = "complete", result = "missed" }
+  end
   local abilities = locals.abilities --[[@as table<string, unknown>]]
-  if not ctx:hasBattleEffect(defender, "substitute") and abilities.foe ~= "INNER_FOCUS" then
+  if bodySuccess and not ctx:hasBattleEffect(defender, "substitute") and abilities.foe ~= "INNER_FOCUS" then
     markFlinch(ctx, defender)
   end
   return { kind = "complete", result = "hit" }
@@ -1352,8 +1214,11 @@ local function stepStockpileRelease(ctx, frame)
     end
   end
   if record.executingMove == "SPIT_UP" then
-    local defender = targetOf((record.targets --[[@as table<integer, unknown>]])[1])
-    strikeTarget(ctx, record, defender, stored.count --[[@as integer]] * 100)
+    if
+      not strikeTarget(ctx, record, stored.count --[[@as integer]] * 100)
+    then
+      return { kind = "complete", result = "missed" }
+    end
   else
     local amount = math.floor(
       entry.maxHp --[[@as integer]]
@@ -1411,11 +1276,12 @@ local function makeCooperation(marker)
       if newSpecialDefense > oldSpecialDefense then
         sequenceChangeStage(ctx, record, user, "specialDefense", newSpecialDefense)
       end
-      local function armElectricBoost(state)
-        state.electricBoost = true
-        return state
-      end
-      SequenceMoveState.update(ctx, user, causeFor(record), armElectricBoost)
+      ctx:addBattleEffect(
+        NativeEffectHandlers.definitionFor("charge"),
+        { kind = "active", combatant = user, activation = entry.activation },
+        causeFor(record),
+        { version = 1, turns = 2 }
+      )
     else
       markVolatile(ctx, user, marker)
     end

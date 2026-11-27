@@ -88,7 +88,7 @@ end
 
 local function catalogWith(species, moves, abilities, growthCurves)
   return {
-    schema = "g4-mon-catalog-v5",
+    schema = "g4-mon-catalog-v6",
     version = { id = "heartgold", language = "english" },
     species = species,
     moves = moves,
@@ -325,7 +325,7 @@ local function battleFacts()
   return {
     behavior = { key = "move_tackle", params = { nativeId = 33 } },
     target = "range_0",
-    flags = { dealsDamage = true, checksAccuracy = true },
+    flags = { dealsDamage = true, checksAccuracy = true, protectable = true, flinchEligible = false },
   }
 end
 
@@ -349,6 +349,11 @@ function T.moves_reject_malformed_battle_facts()
       behavior = { key = "move_tackle", params = {} },
       target = "range_0",
       flags = { dealsDamage = 1 },
+    },
+    missing_protectability = {
+      behavior = { key = "move_tackle", params = {} },
+      target = "range_0",
+      flags = { dealsDamage = true, checksAccuracy = true },
     },
     unknown_field = {
       behavior = { key = "move_tackle", params = {} },

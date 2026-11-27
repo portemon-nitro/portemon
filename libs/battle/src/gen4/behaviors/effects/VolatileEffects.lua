@@ -193,6 +193,13 @@ local DEFINITIONS = {
     lifecycle = lifecycle("replace", "clear"),
   },
   {
+    key = "charge",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 2),
+    timings = { binding("residual", "charge", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
     key = "followme",
     stateVersion = 1,
     validateState = turnsState(1, 0, 1),
@@ -218,6 +225,13 @@ local DEFINITIONS = {
     stateVersion = 1,
     validateState = turnsState(1, 0, 1),
     timings = { binding("residual", "protect", "expiration") },
+    lifecycle = lifecycle("replace", "clear"),
+  },
+  {
+    key = "roost",
+    stateVersion = 1,
+    validateState = turnsState(1, 0, 1),
+    timings = { binding("residual", "roost", "expiration") },
     lifecycle = lifecycle("replace", "clear"),
   },
   {

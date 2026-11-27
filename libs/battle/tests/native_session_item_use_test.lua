@@ -1354,7 +1354,11 @@ function T.tutorial_lessons_skip_their_rolls_and_spend_nothing()
       settled.combatants[2].hp --[[@as integer]] < before.combatants[2].hp --[[@as integer]],
       "the lesson strike deals damage"
     )
-    Assert.equal(settled.rng.calls, before.rng.calls + 1, "the lesson spends only the damage draw")
+    Assert.equal(
+      settled.rng.calls,
+      before.rng.calls + 5,
+      "the lesson spends one damage draw and four turn-order samples"
+    )
     session:dispose()
   end
 end

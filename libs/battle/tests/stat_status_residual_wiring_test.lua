@@ -77,7 +77,14 @@ local function scenarioMoveFacts(seeds)
     DIG = { power = 80, accuracy = 100, category = "physical", moveType = "ground", priority = 0 },
     DIVE = { power = 80, accuracy = 100, category = "physical", moveType = "water", priority = 0 },
     BOUNCE = { power = 85, accuracy = 85, category = "physical", moveType = "flying", priority = 0 },
-    SHADOW_FORCE = { power = 120, accuracy = 100, category = "physical", moveType = "ghost", priority = 0 },
+    SHADOW_FORCE = {
+      power = 120,
+      accuracy = 100,
+      category = "physical",
+      moveType = "ghost",
+      priority = 0,
+      flags = { protectable = false, flinchEligible = false },
+    },
     SKY_UPPERCUT = { power = 85, accuracy = 90, category = "physical", moveType = "fighting", priority = 0 },
     SOLAR_BEAM = { power = 120, accuracy = 100, category = "special", moveType = "grass", priority = 0 },
     AQUA_RING = { power = 0, accuracy = 0, category = "other", moveType = "water", priority = 0 },
@@ -130,6 +137,8 @@ local function scenarioMoveFacts(seeds)
     LEECH_SEED = { power = 0, accuracy = 100, category = "other", moveType = "grass", priority = 0 },
     ROOST = { power = 0, accuracy = 100, category = "other", moveType = "flying", priority = 0 },
   }
+  facts.TACKLE.accuracy = 100
+  facts.QUICK_ATTACK.accuracy = 100
   -- Knockout rewards resolve recipient learnsets through the same
   -- catalog, so every moveset and learnset move carries its facts.
   for _, seed in ipairs(seeds or {}) do
@@ -1326,6 +1335,7 @@ function T.charge_boosts_the_next_electric_strike_and_raises_special_defense()
       moveSlot("THUNDERBOLT", 15),
       moveSlot("SPLASH", 40),
     })
+    user.mon.ability = "NO_GUARD"
     local target = movesetCombatant(16, 171, { moveSlot("SPLASH", 40) })
     local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
     local _, firstEvents = playTurn(
@@ -1350,7 +1360,11 @@ function T.charge_boosts_the_next_electric_strike_and_raises_special_defense()
     local damage = strikeDamage(secondEvents, "THUNDERBOLT")
     Assert.notNil(damage, "Thunderbolt reaches its strike with or without Charge")
     if charged then
-      Assert.equal(#recordsWithKey(session:capture(), "sequencemove"), 0, "Charge is consumed by the Electric strike")
+      Assert.equal(
+        #recordsWithKey(session:capture(), "charge"),
+        0,
+        "Charge expires after the boosted turn's residual pass"
+      )
     end
     session:dispose()
     return damage --[[@as integer]]
@@ -1360,9 +1374,123 @@ function T.charge_boosts_the_next_electric_strike_and_raises_special_defense()
   Assert.isTrue(boosted > ordinary, "Charge doubles the next Electric move's power")
 end
 
+function T.solar_beam_skips_charge_and_power_herb_in_unsuppressed_sun()
+  local contracts = SessionFixture.sessionContracts()
+  local function run(herb)
+    local user = movesetCombatant(31, 321, { moveSlot("SOLAR_BEAM", 10), moveSlot("TACKLE", 35) })
+    if herb then
+      user.mon.heldItem = "POWER_HERB"
+    end
+    local target = movesetCombatant(32, 331, { moveSlot("SPLASH", 40) })
+    local scenario = duelScenario({ user, target }, {}, {})
+    scenario.environment.weather = "sun"
+    local session = contracts.Battle.newSession(scenario, nativeContent())
+    local _, events = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
+    Assert.notNil(strikeDamage(events, "SOLAR_BEAM"), "sun Solar Beam strikes immediately")
+    Assert.equal(
+      #recordsWithKey(session:capture(), "sequencemove"),
+      0,
+      "a fresh sunny Solar Beam leaves no forced sequence marker"
+    )
+    Assert.equal(
+      combatantOf(session:capture(), 31).mon.heldItem,
+      herb and "POWER_HERB" or "NONE",
+      "the sun fast path does not consume Power Herb"
+    )
+    session:dispose()
+  end
+  run(false)
+  run(true)
+end
+
+function T.sunlight_during_solar_beam_charge_cleans_up_the_forced_move()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(35, 361, { moveSlot("SOLAR_BEAM", 5), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(36, 371, { moveSlot("SPLASH", 40) })
+  local content = nativeContent()
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), content)
+  playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.equal(#recordsWithKey(session:capture(), "sequencemove"), 1, "the clear-weather turn stores Solar Beam charge")
+  local charged = session:capture()
+  session:dispose()
+  charged.combatants[35].mon.heldItem = "POWER_HERB"
+  charged.effects[#charged.effects + 1] = effectRecord(
+    "sunnyday",
+    903,
+    { kind = "field" },
+    { kind = "move", key = "SUNNY_DAY", combatant = 36 },
+    { version = 1, turns = 5 }
+  )
+  session = executorOwner().restore(charged, content)
+  Assert.equal(
+    combatantOf(session:capture(), 35).mon.heldItem,
+    "POWER_HERB",
+    "the prepared-charge fixture restores its newly acquired Herb"
+  )
+
+  local _, releaseEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(releaseEvents, "SOLAR_BEAM"), "the newly sunny release connects immediately")
+  Assert.equal(#recordsWithKey(session:capture(), "sequencemove"), 0, "sunlight release clears the forced move")
+  local heldAfterRelease = combatantOf(session:capture(), 35).mon.heldItem
+  Assert.equal(heldAfterRelease, "POWER_HERB", "an already prepared charge retains a later Herb, got " .. tostring(heldAfterRelease))
+
+  local _, freeEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(freeEvents, "TACKLE"), "the battler can choose Tackle after the sunny release")
+  session:dispose()
+end
+
+function T.shadow_force_breaks_protect_on_its_release()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(33, 341, { moveSlot("SHADOW_FORCE", 5), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(34, 351, { moveSlot("PROTECT", 10), moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+  playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 1, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local _, events = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(events, "SHADOW_FORCE"), "Shadow Force strikes through Protect on release")
+  Assert.equal(#recordsWithKey(session:capture(), "protect"), 0, "release clears the active guard")
+  session:dispose()
+end
+
 function T.recharge_moves_block_the_users_following_action()
   local contracts = SessionFixture.sessionContracts()
   local user = movesetCombatant(17, 181, { moveSlot("HYPER_BEAM", 5), moveSlot("TACKLE", 35) })
+  user.mon.ability = "NO_GUARD"
   local target = movesetCombatant(18, 191, { moveSlot("SPLASH", 40) })
   local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
   local _, firstEvents = playTurn(
@@ -1386,9 +1514,34 @@ function T.recharge_moves_block_the_users_following_action()
   session:dispose()
 end
 
+function T.hyper_beam_recharges_after_a_substitute_hit()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(35, 361, { moveSlot("HYPER_BEAM", 5), moveSlot("SPLASH", 40) })
+  local target = movesetCombatant(36, 371, { moveSlot("SUBSTITUTE", 10), moveSlot("SPLASH", 40) })
+  local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
+  playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  local _, events = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 1, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(events, "HYPER_BEAM"), "Hyper Beam connects with the substitute")
+  Assert.equal(#recordsWithKey(session:capture(), "recharge"), 1, "the connected doll hit triggers recharge")
+  session:dispose()
+end
+
 function T.rollout_forces_its_move_and_doubles_damage_on_the_next_turn()
   local contracts = SessionFixture.sessionContracts()
   local user = movesetCombatant(19, 201, { moveSlot("ROLLOUT", 20), moveSlot("TACKLE", 35) })
+  user.mon.ability = "NO_GUARD"
   local target = movesetCombatant(20, 211, { moveSlot("SPLASH", 40) })
   local session = contracts.Battle.newSession(duelScenario({ user, target }, {}, {}), nativeContent())
   local _, firstEvents = playTurn(
@@ -1411,6 +1564,33 @@ function T.rollout_forces_its_move_and_doubles_damage_on_the_next_turn()
   Assert.notNil(secondDamage, "Rollout forces the same move despite Tackle selection")
   Assert.isTrue(secondDamage > firstDamage, "Rollout doubles its second rung")
   Assert.equal(combatantOf(session:capture(), 19).mon.moves[1].pp, 19, "forced Rollout actions do not spend another PP")
+  session:dispose()
+end
+
+function T.rollout_miss_does_not_start_a_forced_sequence()
+  local contracts = SessionFixture.sessionContracts()
+  local user = movesetCombatant(29, 301, { moveSlot("ROLLOUT", 20), moveSlot("TACKLE", 35) })
+  local target = movesetCombatant(30, 311, { moveSlot("SPLASH", 40) })
+  local scenario = duelScenario({ user, target }, {}, {})
+  scenario.moveFacts.ROLLOUT.accuracy = 1
+  local session = contracts.Battle.newSession(scenario, nativeContent())
+  local _, firstEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.isNil(strikeDamage(firstEvents, "ROLLOUT"), "the one-percent first strike misses")
+  Assert.equal(#recordsWithKey(session:capture(), "sequencemove"), 0, "a miss leaves no forced Rollout state")
+  local _, secondEvents = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
+  Assert.notNil(strikeDamage(secondEvents, "TACKLE"), "the next action remains freely selectable")
   session:dispose()
 end
 

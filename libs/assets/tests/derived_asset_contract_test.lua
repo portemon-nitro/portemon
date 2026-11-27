@@ -120,7 +120,7 @@ function T.summary_family_carries_the_v4_manifest_schema()
   )
   Assert.equal(
     DerivedAssetContract.mons.catalogSchema,
-    "g4-mon-catalog-v5",
+    "g4-mon-catalog-v6",
     "the mon sibling identity survives the summary schema change"
   )
   Assert.equal(

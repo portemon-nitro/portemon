@@ -137,6 +137,37 @@ local function runCondition(moveKey, facts, seed, extra, setup)
   return { outcome = finished, ctx = ctx, state = state }
 end
 
+function T.gravity_boosts_status_move_accuracy()
+  local seed = 2
+  local stream = BattleRng.new(seed)
+  Assert.equal(stream:nextU16("accuracy_check", { kind = "probe" }), 33676, "the pinned LCRNG vector is stable")
+  Assert.equal(33676 % 100 + 1, 77, "the native accuracy roll exceeds Hypnosis's 60 percent")
+  local facts = moveFacts("HYPNOSIS", { accuracy = 60, moveType = "psychic" })
+  local ordinary = runCondition("HYPNOSIS", facts, seed)
+  local gravity = runCondition("HYPNOSIS", facts, seed, { gravity = true })
+  Assert.equal(ordinary.outcome.result, "missed", "the same ordinary roll misses without Gravity")
+  Assert.equal(gravity.outcome.result, "hit", "Gravity raises Hypnosis to certain accuracy on this roll")
+end
+
+function T.gravity_cancels_airborne_charge_but_preserves_burrowing_charge()
+  local SequenceMoveState = require("libs.battle.src.gen4.SequenceMoveState")
+  local facts = moveFacts("GRAVITY", { accuracy = 0 })
+  local fly = runCondition("GRAVITY", facts, FIXED_SEED, nil, function(_, ctx)
+    SequenceMoveState.update(ctx, 2, { kind = "probe" }, function(current)
+      current.chargeMove = "FLY"
+      return current
+    end)
+  end)
+  local dig = runCondition("GRAVITY", facts, FIXED_SEED, nil, function(_, ctx)
+    SequenceMoveState.update(ctx, 2, { kind = "probe" }, function(current)
+      current.chargeMove = "DIG"
+      return current
+    end)
+  end)
+  Assert.isNil(SequenceMoveState.forcedMove(fly.state, 2), "Gravity releases a battler already using Fly")
+  Assert.equal(SequenceMoveState.forcedMove(dig.state, 2), "DIG", "Gravity leaves Dig's underground turn intact")
+end
+
 ---@param state table live battle state under inspection
 ---@param key string volatile identity under the lookup
 ---@return table<string, unknown>? detached first matching instance
@@ -179,15 +210,10 @@ end
 
 function T.condition_accuracy_uses_the_selected_target_ability()
   conditionOwner("condition accuracy reads each recipient's live ability")
-  local probe = runCondition(
-    "TAUNT",
-    moveFacts("TAUNT", { accuracy = 1, moveType = "dark" }),
-    1,
-    {
-      abilities = { user = "NONE", foe = "NONE" },
-      targetFacts = { [2] = { abilities = { user = "NONE", foe = "NO_GUARD" } } },
-    }
-  )
+  local probe = runCondition("TAUNT", moveFacts("TAUNT", { accuracy = 1, moveType = "dark" }), 1, {
+    abilities = { user = "NONE", foe = "NONE" },
+    targetFacts = { [2] = { abilities = { user = "NONE", foe = "NO_GUARD" } } },
+  })
   Assert.equal(probe.outcome.result, "hit", "the recipient's No Guard overrides its failed ordinary roll")
 end
 
@@ -873,6 +899,16 @@ function T.gravity_and_trick_room_shape_the_field()
   local gravityOutcome = gravity.outcome --[[@as table<string, unknown>]]
   Assert.equal(gravityOutcome.result, "hit", "gravity connects")
   Assert.notNil(gravity.ctx:fieldEffect("gravity"), "gravity grounds the field")
+  local roost = runCondition(
+    "ROOST",
+    moveFacts("ROOST", { accuracy = 0, moveType = "flying" }),
+    FIXED_SEED,
+    nil,
+    function(_, ctx)
+      ctx:damage(1, 1, { kind = "probe" })
+    end
+  )
+  Assert.isTrue(roost.ctx:hasBattleEffect(1, "roost"), "Roost marks the user's temporary matchup state")
   local faller =
     runCondition("MAGNET_RISE", moveFacts("MAGNET_RISE", { accuracy = 0, moveType = "electric" }), FIXED_SEED)
   Assert.isTrue(faller.ctx:hasBattleEffect(1, "magnetrise"), "the entry rises first")

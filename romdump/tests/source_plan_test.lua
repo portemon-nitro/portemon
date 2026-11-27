@@ -1009,7 +1009,7 @@ local function minimalCatalog()
     return curve
   end
   return {
-    schema = "g4-mon-catalog-v5",
+    schema = "g4-mon-catalog-v6",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},

@@ -2134,7 +2134,12 @@ function T.a_stale_staged_destination_is_never_committed()
     coverage:updatePrefetch(2)
   end
   coverage:setPrefetchFocus(2 * 32 + 30, 2 * 32 + 16)
-  coverage:updatePrefetch(1)
+  for _ = 1, 400 do
+    if coverage._stagedAggregate ~= nil then
+      break
+    end
+    coverage:updatePrefetch(1)
+  end
   local staged = assert(coverage._stagedAggregate, "the imminent destination is staged")
   -- Replace one halo cell the staged window references with a different runtime.
   local replacedKey

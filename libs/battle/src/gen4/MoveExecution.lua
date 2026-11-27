@@ -260,6 +260,9 @@ function MoveExecution.start(inputs)
       executing = decision.executingMove
     end
   end
+  if failed == nil and plan.gravity == true and CalledMoves.GRAVITY_ILLEGAL[executing] == true then
+    failed = "gravity"
+  end
   if failed == nil then
     local imprisonedMoves = inputs.imprisonedMoves
     if
@@ -456,7 +459,11 @@ function MoveExecution.step(ctx, node)
   if not ok then
     error(result, 0)
   end
-  return result --[[@as table<string, unknown>]]
+  local completed = result --[[@as table<string, unknown>]]
+  if completed.kind == "complete" and completed.frame == nil then
+    require("libs.battle.src.gen4.behaviors.moves.DamageMoves").completeAction(ctx, frame)
+  end
+  return completed
 end
 
 return MoveExecution

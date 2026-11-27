@@ -142,10 +142,8 @@ function T.mystery_typeless_and_lost_types_stay_neutral()
   )
 end
 
--- Ordered defending-type factors follow declared order exactly once per
--- distinct type: water into fire/water resolves doubling then halving,
--- the reversed declaration resolves halving then doubling, and a repeated
--- same type resolves a single halving factor instead of squaring it.
+-- Ordered defending-type factors follow the composed chart row exactly
+-- once per distinct type, regardless of defender declaration order.
 function T.ordered_factors_follow_declared_defender_order_once_each()
   local Effectiveness = effectivenessOwner()
   local CombatFixture = require("libs.battle.tests.combat_fixture")
@@ -162,14 +160,14 @@ function T.ordered_factors_follow_declared_defender_order_once_each()
   Assert.deepEqual(
     forward.factors,
     { { numerator = 2, denominator = 1 }, { numerator = 1, denominator = 2 } },
-    "factors follow declared defender order"
+    "factors follow the composed water row"
   )
 
   local reversed = Effectiveness.resolve(vanilla, "water", { "water", "fire" }, {})
   Assert.deepEqual(
     reversed.factors,
-    { { numerator = 1, denominator = 2 }, { numerator = 2, denominator = 1 } },
-    "reversed declarations reverse the factors"
+    { { numerator = 2, denominator = 1 }, { numerator = 1, denominator = 2 } },
+    "reversed declarations keep the composed row order"
   )
 
   local repeated = Effectiveness.resolve(vanilla, "fire", { "water", "water" }, {})

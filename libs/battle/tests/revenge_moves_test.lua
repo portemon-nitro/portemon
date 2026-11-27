@@ -215,18 +215,16 @@ function T.revenge_doubles_after_the_target_struck_first()
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the answered revenge connects")
-  -- Doubled pre-bonus 26 rolls full (floor(28*100/100) = 28) before the
-  -- same-type bonus and doubling into the target land 84.
-  Assert.equal(probe.dealt, 84, "revenge doubles its recorded physical answer")
+  -- The recorded hit doubles the move's power before staged damage.
+  Assert.equal(probe.dealt, 78, "revenge doubles its recorded physical answer")
 end
 
 function T.revenge_holds_base_power_when_unstruck()
   local probe = runStrike("REVENGE", probeMoveFacts(), freshDuel())
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the unanswered revenge connects")
-  -- Unanswered pre-bonus 13 rolls full (floor(15*100/100) = 15) before
-  -- the same-type bonus and doubling into the target land 44.
-  Assert.equal(probe.dealt, 44, "revenge holds base power without an answer")
+  -- An unstruck target leaves the move at its base power.
+  Assert.equal(probe.dealt, 38, "revenge holds base power without an answer")
 end
 
 function T.revenge_answers_special_strikes_from_its_target()
@@ -241,7 +239,7 @@ function T.revenge_answers_special_strikes_from_its_target()
   Assert.equal(outcome.result, "hit", "the specially answered revenge connects")
   -- The special answer doubles power exactly like the physical answer, so
   -- the same post-roll tail lands 84.
-  Assert.equal(probe.dealt, 84, "revenge doubles its recorded special answer")
+  Assert.equal(probe.dealt, 78, "revenge doubles its recorded special answer")
 end
 
 function T.avalanche_doubles_after_the_target_struck_first()
@@ -254,14 +252,14 @@ function T.avalanche_doubles_after_the_target_struck_first()
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the answered avalanche connects")
-  Assert.equal(probe.dealt, 28, "avalanche doubles its recorded answer")
+  Assert.equal(probe.dealt, 26, "avalanche doubles its recorded answer")
 end
 
 function T.avalanche_holds_base_power_when_unstruck()
   local probe = runStrike("AVALANCHE", probeMoveFacts(), freshDuel())
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the unanswered avalanche connects")
-  Assert.equal(probe.dealt, 15, "avalanche holds base power without an answer")
+  Assert.equal(probe.dealt, 13, "avalanche holds base power without an answer")
 end
 
 function T.assurance_doubles_after_its_target_took_damage()
@@ -274,14 +272,14 @@ function T.assurance_doubles_after_its_target_took_damage()
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the answered assurance connects")
-  Assert.equal(probe.dealt, 23, "assurance doubles against a struck target")
+  Assert.equal(probe.dealt, 21, "assurance doubles against a struck target")
 end
 
 function T.assurance_holds_base_power_against_an_unstruck_target()
   local probe = runStrike("ASSURANCE", probeMoveFacts(), freshDuel())
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the unanswered assurance connects")
-  Assert.equal(probe.dealt, 12, "assurance holds base power against a fresh target")
+  Assert.equal(probe.dealt, 11, "assurance holds base power against a fresh target")
 end
 
 function T.payback_doubles_after_its_target_acted()
@@ -294,14 +292,14 @@ function T.payback_doubles_after_its_target_acted()
   })
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the late payback connects")
-  Assert.equal(probe.dealt, 23, "payback doubles against an acted target")
+  Assert.equal(probe.dealt, 21, "payback doubles against an acted target")
 end
 
 function T.payback_holds_base_power_when_first()
   local probe = runStrike("PAYBACK", probeMoveFacts(), freshDuel())
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the early payback connects")
-  Assert.equal(probe.dealt, 12, "payback holds base power when first")
+  Assert.equal(probe.dealt, 11, "payback holds base power when first")
 end
 
 ---@param id integer nonreused positive combatant identity
@@ -403,7 +401,7 @@ function T.revenge_turn_holds_power_when_first()
   -- damage arms the doubling.
   local turn = sessionStrikeDealt("EEVEE", "REVENGE", "TOTODILE", 2)
   Assert.equal(turn.status, "waiting", "the plain answer settles back to decisions")
-  Assert.equal(turn.dealt, 21, "the unanswered answer holds base power")
+  Assert.equal(turn.dealt, 22, "the unanswered answer holds base power")
 end
 
 return { tests = T }

@@ -81,7 +81,7 @@ function T.previous_asset_revision_release_identity_never_matches()
     romSha1 = romSha1,
     mode = "release",
     producerId = producerId,
-    assetRevision = 18,
+    assetRevision = 19,
     scriptApi = Schema.API_VERSION,
   })
   local current = DerivedCacheState.currentForSelection({
@@ -89,11 +89,11 @@ function T.previous_asset_revision_release_identity_never_matches()
     romSha1 = romSha1,
     producerId = producerId,
   })
-  Assert.equal(DerivedAssetContract.revision, 19, "the current shared asset revision is 19")
-  Assert.equal(current.assetRevision, 19)
-  Assert.equal(previous.assetRevision, 18)
+  Assert.equal(DerivedAssetContract.revision, 20, "the current shared asset revision is 20")
+  Assert.equal(current.assetRevision, 20)
+  Assert.equal(previous.assetRevision, 19)
   Assert.isTrue(previous.generationId ~= current.generationId, "the revision alone changes the generation")
-  Assert.isFalse(DerivedCacheState.matches(previous, current), "a revision-18 identity must read as stale")
+  Assert.isFalse(DerivedCacheState.matches(previous, current), "a revision-19 identity must read as stale")
   Assert.isTrue(DerivedCacheState.matches(current, current), "the current identity still matches itself")
 end
 

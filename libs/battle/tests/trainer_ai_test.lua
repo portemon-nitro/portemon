@@ -284,6 +284,9 @@ local function scenarioMoveFacts(keys)
       facts[key] = catalog:move(key)
     end
   end
+  if facts.TACKLE ~= nil then
+    facts.TACKLE.accuracy = 100
+  end
   facts.STRUGGLE = { power = 50, accuracy = 100, category = "physical", moveType = "normal", priority = 0 }
   return facts
 end
@@ -1648,7 +1651,6 @@ function T.unknown_hit_history_fails_the_next_answer_closed()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
   holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
-  (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
   local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
   local foe = leveledCombatant(13, 41, "EEVEE", 10)
   foe.mon.moves = { { move = "RAZOR_LEAF", pp = 25, ppUps = 0 } }
@@ -1724,7 +1726,6 @@ function T.recorded_last_hits_answer_instead_of_faulting()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
   holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
-  (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
   local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
   local foe = leveledCombatant(13, 41, "EEVEE", 10)
   foe.mon.moves = { { move = "RAZOR_LEAF", pp = 25, ppUps = 0 } }
@@ -2223,7 +2224,6 @@ function T.executed_strikes_record_their_received_hit_per_struck_combatant()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
   holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
-  (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
   local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
   local foe = leveledCombatant(13, 41, "EEVEE", 10)
   foe.mon.moves = { { move = "RAZOR_LEAF", pp = 25, ppUps = 0 } }
@@ -2276,7 +2276,6 @@ function T.received_hit_clears_when_its_holder_acts_unstruck()
   local contracts = SessionFixture.sessionContracts()
   local holder = leveledCombatant(11, 23, "TOTODILE", 10)
   holder.mon.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
-  (holder.mon --[[@as table<string, unknown>]]).condition.currentHp = 22
   local reserve = leveledCombatant(12, 24, "CHIKORITA", 10)
   local foe = leveledCombatant(13, 41, "EEVEE", 10)
   foe.mon.moves = { { move = "RAZOR_LEAF", pp = 25, ppUps = 0 } }

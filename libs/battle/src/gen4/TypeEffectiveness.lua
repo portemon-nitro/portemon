@@ -76,15 +76,15 @@ function TypeEffectiveness.resolve(chart, attack, defendList, context)
     return { numerator = 1, denominator = 1, immune = false, reason = "neutral_special", factors = neutralFactors }
   end
 
-  -- Ordered per-type factors in declared defender order: a repeated type
-  -- resolves once, matching the native two-slot equality handling, so
-  -- damage truncates after each distinct defending type instead of
-  -- collapsing into one aggregate rounding.
+  -- Resolve per-type factors in the composed chart's source row order,
+  -- independent of how the defender declared its two types.
   local numerator = 1
   local denominator = 1
   local factors = {} ---@type EffectivenessFactor[]
   local resolved = {} ---@type table<string, boolean>
-  for _, defend in ipairs(defendList) do
+  assert(type(chart.orderedDefenders) == "function", "effectiveness charts provide their source matchup order")
+  local orderedDefenders = chart:orderedDefenders(attack, defendList)
+  for _, defend in ipairs(orderedDefenders) do
     if resolved[defend] ~= true then
       resolved[defend] = true
       -- Composed charts carry validated exact rationals; chart immunity

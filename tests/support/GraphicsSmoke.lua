@@ -35,6 +35,7 @@ local function capture(lg)
   return {
     canvas = lg.getCanvas(),
     shader = lg.getShader(),
+    font = lg.getFont(),
     color = { red, green, blue, alpha },
     blend = { blendMode, alphaMode },
     depth = { depthMode, depthWrite },
@@ -50,6 +51,8 @@ end
 local function restore(lg, state)
   lg.setCanvas(state.canvas)
   lg.setShader(state.shader)
+  lg.origin()
+  lg.setFont(state.font)
   lg.setColor(state.color[1], state.color[2], state.color[3], state.color[4])
   lg.setBlendMode(state.blend[1], state.blend[2])
   lg.setDepthMode(state.depth[1], state.depth[2])

@@ -148,7 +148,7 @@ function T.move_facts_keep_identity_numbers_and_carry_typed_execution_metadata()
   )
 end
 
-function T.reflect_snatch_and_mirror_flags_come_from_the_native_move_flags_byte()
+function T.move_execution_flags_come_from_the_native_move_flags_byte()
   local BattleDataCompiler = require("romdump.src.digest.battle.BattleDataCompiler")
   local BattleSources = require("romdump.src.config.BattleSources")
   local entry = moveEntry({
@@ -158,7 +158,7 @@ function T.reflect_snatch_and_mirror_flags_come_from_the_native_move_flags_byte(
     moveType = 0,
     accuracy = 95,
     pp = 35,
-    flags = 0x1D,
+    flags = 0x3F,
   })
   local compiled = assert(BattleDataCompiler.compile(nativeInput({ [33] = entry }), { inventory = BattleSources }))
   local tackle = assert(compiled.moves.TACKLE, "the fixture resolves to TACKLE")
@@ -166,6 +166,8 @@ function T.reflect_snatch_and_mirror_flags_come_from_the_native_move_flags_byte(
   Assert.isTrue(tackle.flags.snatchable, "native bit 3 marks Snatch eligibility")
   Assert.isTrue(tackle.flags.mirrorable, "native bit 4 marks Mirror Move eligibility")
   Assert.isTrue(tackle.flags.contact, "native bit 0 marks contact moves")
+  Assert.isTrue(tackle.flags.protectable, "native bit 1 marks protection eligibility")
+  Assert.isTrue(tackle.flags.flinchEligible, "native bit 5 marks held-item flinch eligibility")
 end
 
 function T.truncated_entries_and_unknown_references_fail_before_publication()

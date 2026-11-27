@@ -1032,13 +1032,11 @@ function T.native_steady_frames_reuse_resolved_images(scope, context)
   end
 end
 
--- A launch whose staged scene image is missing fails closed with
--- context: entry stays unacknowledged, the screen reports failed with
--- the missing member named, drawing never raises on either graphics
--- boundary, and the envelope drops the launch after notifying the host
--- exactly once. Nothing here reads as ready, and nothing paints a blank
--- success.
-function T.missing_scene_image_fails_closed_with_context(scope, context)
+-- A launch whose staged scene image is missing fails before screen
+-- construction: entry stays unacknowledged, the host receives the missing
+-- member, drawing never paints a blank success, and repeated updates do not
+-- duplicate the failure notification.
+function T.missing_scene_image_fails_closed_with_context(_, context)
   local versions = readyVersions()
   if #versions == 0 then
     context:skip("the production battle coverage needs a ready user-owned ROM with a derived cache")
@@ -1054,9 +1052,24 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
       text = recordingText(),
       audio = recordingAudio(),
       measureDisplay = compactMeasurement,
+      derivedAssets = {
+        requestBattleScene = function(sceneKey)
+          local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+          if cacheFs:read(imagePath) == nil then
+            return false, "missing staged battle scene image " .. imagePath
+          end
+          return true
+        end,
+        requestBattlePresentation = function()
+          return true
+        end,
+      },
     })
     local launchId = "battle-missing-scene"
     local host = stubHost()
+    function host.notify(event, reason)
+      host.notifies[#host.notifies + 1] = { event = event, reason = reason }
+    end
     local port = buildPort(envelope, {
       launchId = launchId,
       kind = "wild",
@@ -1067,47 +1080,29 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
       port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
       versionId .. " leaves its unstaged launch unacknowledged"
     )
-    local screen = assert(envelope:liveScreen(), versionId .. " keeps its screen for inspection")
     for _ = 1, 5 do
-      screen:updateFixed(TICK)
+      envelope:updateFixed(TICK)
     end
+    Assert.isNil(envelope:liveScreen(), versionId .. " builds no screen for a missing scene image")
     Assert.isFalse(
       port.enter({ launchId = launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
       versionId .. " never acknowledges its unstaged launch"
     )
-    local status = screen:status()
-    Assert.equal(status.mode, "failed", versionId .. " reports its deterministic failed state")
-    local failure = assert(status.error, versionId .. " carries its failure context")
-    -- Both the scene record and image paths carry the launch scene
-    -- stem, so either missing member names the scene in context.
+    local failure = assert(host.notifies[1], versionId .. " reports its missing scene image through the host")
+    Assert.equal(failure.event, "screen-failed", versionId .. " classifies the launch failure")
     Assert.isTrue(
-      tostring(failure):find("city-sand-night", 1, true) ~= nil,
-      versionId .. " names its missing scene member: " .. tostring(failure)
+      tostring(failure.reason):find("city-sand-night", 1, true) ~= nil,
+      versionId .. " names the missing scene image: " .. tostring(failure.reason)
     )
     Assert.isFalse(port.ready(), versionId .. " never reads ready for its failed launch")
-    local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
-    love.graphics.setCanvas(canvas)
-    love.graphics.clear(0, 0, 0, 0)
-    screen:draw({ graphics = love.graphics })
-    -- The shared recording fake carries the full no-op GPU surface
-    -- behind the composed draw, so both boundaries keep the same
-    -- failure context instead of failing on different missing methods.
-    local recording = FakeGraphics.new({})
-    screen:draw({ graphics = recording })
-    love.graphics.setCanvas()
-    local settled = screen:status()
-    Assert.equal(settled.mode, "failed", versionId .. " stays failed across both draw boundaries")
-    Assert.equal(settled.error, status.error, versionId .. " keeps its failure context across draws")
+    Assert.isFalse(
+      envelope:drawBattle({ graphics = love.graphics, text = recordingText(), windows = recordingWindows() }),
+      versionId .. " draws no blank battle without a screen"
+    )
     for _ = 1, 60 do
       envelope:updateFixed(TICK)
     end
-    local failed = 0
-    for _, event in ipairs(host.notifies) do
-      if event == "screen-failed" then
-        failed = failed + 1
-      end
-    end
-    Assert.equal(failed, 1, versionId .. " notifies its deterministic failure exactly once")
+    Assert.equal(#host.notifies, 1, versionId .. " reports its deterministic failure exactly once")
     Assert.isNil(envelope:liveScreen(), versionId .. " drops its failed launch")
     Assert.isFalse(envelope:ownsInput(), versionId .. " releases input with its failed launch")
     envelope:dispose()
@@ -1323,6 +1318,7 @@ suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {
   "battle-presentation:global",
   "battle-scene:general/grass/day",
+  "battle-scene:city/sand/night",
   "battle-trainer-picture:back-PKMN_TRAINER_ETHAN",
   "battle-ball:POKE_BALL",
   "field-font:global",

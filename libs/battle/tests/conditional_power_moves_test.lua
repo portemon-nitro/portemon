@@ -12,7 +12,9 @@ local BattleRng = require("libs.battle.src.gen4.BattleRng")
 
 local T = {}
 
-local HANDLER_SEED = 0xC04D1710
+-- This vector prepares a non-critical strike and a 98% damage roll before
+-- accuracy under the native controller order.
+local HANDLER_SEED = 14
 
 ---@param id integer nonreused positive combatant identity
 ---@param seed integer fixed generator state for the underlying mon

@@ -35,8 +35,8 @@ local TYPES = {
 -- Non-neutral directed pairs as { attack, defend, numerator, denominator }.
 local RELATIONS = {
   { "normal", "rock", 1, 2 },
-  { "normal", "ghost", 0, 1 },
   { "normal", "steel", 1, 2 },
+  { "normal", "ghost", 0, 1 },
   { "fire", "fire", 1, 2 },
   { "fire", "water", 1, 2 },
   { "fire", "grass", 2, 1 },
@@ -67,7 +67,6 @@ local RELATIONS = {
   { "grass", "rock", 2, 1 },
   { "grass", "dragon", 1, 2 },
   { "grass", "steel", 1, 2 },
-  { "ice", "fire", 1, 2 },
   { "ice", "water", 1, 2 },
   { "ice", "grass", 2, 1 },
   { "ice", "ice", 1, 2 },
@@ -75,6 +74,7 @@ local RELATIONS = {
   { "ice", "flying", 2, 1 },
   { "ice", "dragon", 2, 1 },
   { "ice", "steel", 1, 2 },
+  { "ice", "fire", 1, 2 },
   { "fighting", "normal", 2, 1 },
   { "fighting", "ice", 2, 1 },
   { "fighting", "poison", 1, 2 },
@@ -82,9 +82,9 @@ local RELATIONS = {
   { "fighting", "psychic", 1, 2 },
   { "fighting", "bug", 1, 2 },
   { "fighting", "rock", 2, 1 },
-  { "fighting", "ghost", 0, 1 },
   { "fighting", "dark", 2, 1 },
   { "fighting", "steel", 2, 1 },
+  { "fighting", "ghost", 0, 1 },
   { "poison", "grass", 2, 1 },
   { "poison", "poison", 1, 2 },
   { "poison", "ground", 1, 2 },
@@ -128,9 +128,9 @@ local RELATIONS = {
   { "rock", "steel", 1, 2 },
   { "ghost", "normal", 0, 1 },
   { "ghost", "psychic", 2, 1 },
-  { "ghost", "ghost", 2, 1 },
   { "ghost", "dark", 1, 2 },
   { "ghost", "steel", 1, 2 },
+  { "ghost", "ghost", 2, 1 },
   { "dragon", "dragon", 2, 1 },
   { "dragon", "steel", 1, 2 },
   { "dark", "fighting", 1, 2 },
@@ -156,28 +156,30 @@ function NativeTypeChart.install(builder, owner)
   assert(type(owner) == "string" and owner ~= "", "the native chart names its owner")
   local define = builder --[[@as table<string, unknown>]].define
   assert(type(define) == "function", "the native chart installs through content definitions")
-  local overrides = {} ---@type table<string, table<integer, unknown>>
-  for _, entry in ipairs(RELATIONS) do
-    local pair = entry --[[@as table<integer, unknown>]]
-    overrides[
-      pair[1] --[[@as string]] .. "\0" .. pair[2] --[[@as string]]
-    ] = pair
-  end
   for _, attack in ipairs(TYPES) do
     local attacking = attack --[[@as table<string, string>]]
     local relations = {} ---@type table<integer, table<string, unknown>>
-    for _, defend in ipairs(TYPES) do
-      local defending = defend --[[@as table<string, string>]]
-      local hit = overrides[attacking.key .. "\0" .. defending.key]
-      if hit ~= nil then
-        local pair = hit --[[@as table<integer, unknown>]]
+    local included = {} ---@type table<string, boolean>
+    -- Preserve the native matchup table's row order. Neutral pairs are
+    -- appended in semantic type order because they do not occur in the
+    -- source table and have no truncating damage checkpoint.
+    for _, entry in ipairs(RELATIONS) do
+      local pair = entry --[[@as table<integer, unknown>]]
+      if pair[1] == attacking.key then
         relations[#relations + 1] = {
           attack = attacking.key,
-          defend = defending.key,
+          defend = pair[2],
           numerator = pair[3],
           denominator = pair[4],
         }
-      else
+        included[
+          pair[2] --[[@as string]]
+        ] = true
+      end
+    end
+    for _, defend in ipairs(TYPES) do
+      local defending = defend --[[@as table<string, string>]]
+      if not included[defending.key] then
         relations[#relations + 1] = { attack = attacking.key, defend = defending.key, numerator = 1, denominator = 1 }
       end
     end

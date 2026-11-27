@@ -1,14 +1,13 @@
 -- Source-backed town stage graphics: the compiled scene-3 edge table
 -- reaches the shared field renderer packed, and every town hold keeps its
--- source materials on the active frame. HeartGold legs stay blocked: no
--- HeartGold dump is available here, so those scenarios skip instead of
--- running against faked art.
+-- source materials on the active frame. An edition without a prepared test
+-- snapshot skips instead of running against faked art.
 
 local Assert = require("tests.support.Assert")
 local GeneratedCacheFixture = require("tests.support.GeneratedCacheFixture")
+local CacheArchive = require("romdump.src.build.CacheArchive")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local RomImporter = require("romdump.src.source.RomImporter")
 local StartupAssetCache = require("libs.assets.src.StartupAssetCache")
 
 local MOVIE_MODULE = "libs.hgss.src.presentation.HgssOpeningMovie"
@@ -137,19 +136,6 @@ local function sourceBytes(scope, canvas)
   return imageData:getString()
 end
 
----@param context table runner context owning skip
----@return string selected edition identity
-local function selectedVersionId(context)
-  if RomImporter.isReady("soulsilver") then
-    return "soulsilver"
-  end
-  if RomImporter.isReady("heartgold") then
-    return "heartgold"
-  end
-  context:skip("no user-owned HeartGold or SoulSilver dump is ready")
-  error("unreachable selected edition", 0)
-end
-
 -- The town stage forwards the compiled edge-marking table to the shared
 -- field renderer: slot zero stays black while every other slot carries
 -- the dark gray mark color, packed to RGB555 at the zero-based index.
@@ -187,15 +173,16 @@ local function town_edge_profile_follows_the_compiled_source_table_for_edition(s
 end
 
 local function soulsilver_town_edge_profile_follows_the_compiled_source_table(scope, context)
-  town_edge_profile_follows_the_compiled_source_table_for_edition(scope, selectedVersionId(context))
+  if CacheArchive.recoverableFileName("soulsilver") == nil then
+    context:skip("no runner-prepared SoulSilver snapshot is available")
+  end
+  town_edge_profile_follows_the_compiled_source_table_for_edition(scope, "soulsilver")
 end
 
 local function heartgold_town_edge_profile_is_blocked_without_a_dump(scope, context)
-  if not RomImporter.isReady("heartgold") then
+  if CacheArchive.recoverableFileName("heartgold") == nil then
     context:skip(
-      "BLOCKED: HeartGold town edges need a user-owned HeartGold dump; "
-        .. "only SoulSilver is ready here, so the edge profile leg "
-        .. "cannot run for HeartGold and is never faked"
+      "no runner-prepared HeartGold snapshot is available for the edge profile leg"
     )
   end
   town_edge_profile_follows_the_compiled_source_table_for_edition(scope, "heartgold")
@@ -257,15 +244,16 @@ local function town_hold_frames_keep_their_source_materials_for_edition(scope, v
 end
 
 local function soulsilver_town_hold_frames_keep_their_source_materials(scope, context)
-  town_hold_frames_keep_their_source_materials_for_edition(scope, selectedVersionId(context))
+  if CacheArchive.recoverableFileName("soulsilver") == nil then
+    context:skip("no runner-prepared SoulSilver snapshot is available")
+  end
+  town_hold_frames_keep_their_source_materials_for_edition(scope, "soulsilver")
 end
 
 local function heartgold_town_hold_frames_are_blocked_without_a_dump(scope, context)
-  if not RomImporter.isReady("heartgold") then
+  if CacheArchive.recoverableFileName("heartgold") == nil then
     context:skip(
-      "BLOCKED: HeartGold town frames need a user-owned HeartGold dump; "
-        .. "only SoulSilver is ready here, so the material frame leg "
-        .. "cannot run for HeartGold and is never faked"
+      "no runner-prepared HeartGold snapshot is available for the town frame leg"
     )
   end
   town_hold_frames_keep_their_source_materials_for_edition(scope, "heartgold")

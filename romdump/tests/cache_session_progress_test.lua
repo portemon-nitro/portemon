@@ -619,7 +619,7 @@ local function zeroCurve()
 end
 local function minimalCatalog()
   return {
-    schema = "g4-mon-catalog-v5",
+    schema = "g4-mon-catalog-v6",
     version = { id = "heartgold", language = "english" },
     species = {},
     moves = {},

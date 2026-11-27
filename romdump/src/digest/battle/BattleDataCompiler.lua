@@ -120,8 +120,10 @@ function BattleDataCompiler.projectFacts(moveId, moveKey, decoded, binding)
       dealsDamage = power > 0,
       checksAccuracy = accuracy > 0,
       contact = decoded.flags % 2 == 1,
+      protectable = decoded.flags % 4 >= 2,
       reflectable = decoded.flags % 8 >= 4,
       snatchable = decoded.flags % 16 >= 8,
+      flinchEligible = decoded.flags % 64 >= 32,
       -- Native move flag 0x10 gates moveNoCopied in
       -- BattleControllerPlayer_UpdateTargetMoveHistory.
       mirrorable = decoded.flags % 32 >= 16,
