@@ -522,6 +522,34 @@ local function prepareScene(services)
   })
 end
 
+-- Drives cooperative preparation until the demand settles: a waiting
+-- drive polls again without failing, so the helper repeats while the pool
+-- decodes and answers the terminal outcome. The settled assertions below
+-- stay identical; only the synchronous wait is gone.
+local function drivePrepare(services, demand)
+  local ready, failure = nil, nil
+  for _ = 1, 1000 do
+    ready, failure = services.prepare(demand)
+    if ready ~= false then
+      return ready, failure
+    end
+    Assert.isNil(failure, "a waiting drive reports no terminal failure")
+  end
+  return ready, failure
+end
+
+local function sceneDemand(launchId)
+  return {
+    launchId = launchId,
+    scenes = { SCENE_KEY },
+    pages = {},
+    trainerPictures = {},
+    battleBalls = {},
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  }
+end
+
 local function leasePaths(leases)
   local paths = {}
   for index, lease in ipairs(leases) do
@@ -551,7 +579,7 @@ function T.preparation_retains_intro_and_terrain_drawables_with_source_metadata(
   end
   local envelope = newEnvelope(countingCache, pool)
   local services = envelope:_preparationServices()
-  local ready, failure = prepareScene(services)
+  local ready, failure = drivePrepare(services, sceneDemand("scene-assets"))
   Assert.isTrue(ready, "the staged scene and its intro assets prepare: " .. tostring(failure))
   local layer = assert(services.sceneLayer(), "the prepared scene layer is retained")
   local sourceMapFor = assert(layer.sourceMapFor, "the prepared scene carries its exact source-map reader")
@@ -894,7 +922,7 @@ function T.trainer_map_uses_context_selected_physical_palette_layout()
   end
   envelope._manifest = manifest
   local services = envelope:_preparationServices()
-  local ready, failure = services.prepare({
+  local ready, failure = drivePrepare(services, {
     launchId = "castle-trainer-palette-layout",
     scenes = { SCENE_KEY },
     pages = {},
@@ -2964,6 +2992,273 @@ function T.worker_ready_portrait_page_needs_no_page_recheck()
   Assert.equal(reads[markerPath] or 0, 0, "admission never reopens the attested page marker")
   Assert.equal(reads[imagePath] or 0, 0, "admission never rereads the attested page image")
   envelope:dispose()
+end
+
+-- A scene with one still-decoding image waits instead of failing: the
+-- ready predecessor stays published with its pins intact, repeat polls
+-- keep waiting without partial work, the last image completes the
+-- successor with its own art, and abandoning the wait releases its
+-- tickets without touching the predecessor.
+function T.pending_scene_keeps_predecessor_and_resumes_to_complete_group()
+  local recordA = sceneRecord(SCENE_KEY)
+  local recordB = sceneRecord(SCENE_B_KEY)
+  local cacheFs = dualSceneCacheFs(recordA, recordB)
+  local pool = scriptedPool(1000000, {})
+  for _, path in ipairs(sceneArtPaths(recordA)) do
+    pool.readyPaths[path] = true
+  end
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local services = envelope:_preparationServices()
+  local function demand(sceneKey, launchId)
+    return {
+      launchId = launchId,
+      scenes = { sceneKey },
+      pages = {},
+      trainerPictures = {},
+      battleBalls = {},
+      iconKeys = {},
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+  end
+  local readyA, failureA = services.prepare(demand(SCENE_KEY, "pending-resume-predecessor"))
+  Assert.isTrue(readyA, "the predecessor scene prepares: " .. tostring(failureA))
+  local predecessor = assert(services.sceneLayer(), "the predecessor scene is published")
+  for _, path in ipairs(sceneArtPaths(recordB)) do
+    if path ~= recordB.terrainSprites.foe.image then
+      pool.readyPaths[path] = true
+    end
+  end
+  local pending, pendingFailure = services.prepare(demand(SCENE_B_KEY, "pending-resume-successor"))
+  Assert.equal(pending, false, "a scene with one decoding image waits instead of failing")
+  Assert.isNil(pendingFailure, "waiting reports no failure")
+  Assert.equal(services.sceneLayer(), predecessor, "waiting publishes no partial scene")
+  Assert.notNil(
+    services.drawable("scene:" .. SCENE_KEY),
+    "the ready predecessor stays usable while the successor waits"
+  )
+  local again, againFailure = services.prepare(demand(SCENE_B_KEY, "pending-resume-successor"))
+  Assert.equal(again, false, "repeat polling still waits")
+  Assert.isNil(againFailure, "repeat polling reports no failure")
+  Assert.equal(services.sceneLayer(), predecessor, "repeat polling still publishes no partial scene")
+  pool.readyPaths[recordB.terrainSprites.foe.image] = true
+  local readyB, failureB = services.prepare(demand(SCENE_B_KEY, "pending-resume-successor"))
+  Assert.isTrue(readyB, "the successor completes once its last image decodes: " .. tostring(failureB))
+  local layer = assert(services.sceneLayer(), "the completed scene is published")
+  Assert.isTrue(layer ~= predecessor, "completion replaces the predecessor layer")
+  local introLease = assert(layer.introLayer.drawable, "the completed scene carries its intro drawable")
+  local introPath = introLease.image ~= nil and introLease.image.path or nil
+  Assert.equal(introPath, recordB.introLayer.image, "the completed scene uses its own intro art")
+  local abortCache = dualSceneCacheFs(recordA, recordB)
+  local abortPool = scriptedPool(1000000, {})
+  for _, path in ipairs(sceneArtPaths(recordB)) do
+    if path ~= recordB.terrainSprites.foe.image then
+      abortPool.readyPaths[path] = true
+    end
+  end
+  local abortEnvelope = warmEnvelope(abortCache, abortPool, nearHost({}, true))
+  local abortServices = abortEnvelope:_preparationServices()
+  local abortPending, abortFailure = abortServices.prepare(demand(SCENE_B_KEY, "pending-resume-abort"))
+  Assert.equal(abortPending, false, "the abandoned attempt waits while its image decodes")
+  Assert.isNil(abortFailure, "the abandoned attempt reports no failure while waiting")
+  Assert.isNil(abortServices.sceneLayer(), "the abandoned attempt publishes nothing")
+  abortEnvelope:dispose()
+  Assert.equal(next(abortPool.live), nil, "abandoning a waiting scene releases its tickets")
+  envelope:dispose()
+end
+
+-- One shared texture image behind two sampler demands keeps one ticket
+-- per sampler: the clamped and repeating borrows never share a ticket,
+-- and both resolve once the shared decode completes.
+function T.shared_particle_image_keeps_sampler_specific_tickets()
+  local record = sceneRecord(SCENE_KEY)
+  local first = record.encounterParticles[1]
+  first.emitters[1].texRepeat = { s = 1, t = 0 }
+  first.textures[1].sampler = { wrapX = "repeat", wrapY = "repeat", minFilter = "nearest", magFilter = "nearest" }
+  local sharedPath = first.textures[1].image
+  local second = record.encounterParticles[2]
+  second.textures[1].image = sharedPath
+  local cacheFs = dualSceneCacheFs(record, sceneRecord(SCENE_B_KEY))
+  local pool = scriptedPool(1000000, {})
+  local admissions = {}
+  local baseRequest = pool.request
+  function pool:request(path, sampler, priority)
+    admissions[#admissions + 1] = { path = path, sampler = sampler, priority = priority }
+    return baseRequest(self, path, sampler, priority)
+  end
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local services = envelope:_preparationServices()
+  local pending, pendingFailure = services.prepare(sceneDemand("sampler-tickets-wait"))
+  Assert.equal(pending, false, "the shared image waits while its decode pends")
+  Assert.isNil(pendingFailure, "waiting reports no failure")
+  local samplers = {}
+  for _, admission in ipairs(admissions) do
+    if admission.path == sharedPath then
+      local wrapX = type(admission.sampler) == "table" and admission.sampler.wrapX or "clamp"
+      local wrapY = type(admission.sampler) == "table" and admission.sampler.wrapY or "clamp"
+      samplers[#samplers + 1] = wrapX .. "/" .. wrapY
+    end
+  end
+  table.sort(samplers)
+  Assert.deepEqual(samplers, { "clamp/clamp", "repeat/clamp" }, "the shared image enrolls one ticket per sampler")
+  for _, path in ipairs(sceneArtPaths(record)) do
+    pool.readyPaths[path] = true
+  end
+  local ready, failure = drivePrepare(services, sceneDemand("sampler-tickets-complete"))
+  Assert.isTrue(ready, "the shared image completes once its decode lands: " .. tostring(failure))
+  local sharedAcquired = 0
+  for _, acquired in ipairs(pool.acquired) do
+    if acquired.path == sharedPath then
+      sharedAcquired = sharedAcquired + 1
+    end
+  end
+  Assert.equal(sharedAcquired, 2, "both sampler borrows take their own ticket")
+  envelope:dispose()
+  Assert.equal(next(pool.live), nil, "disposal releases every ticket")
+end
+
+-- A pending scene abandoned for another launch releases exactly its
+-- attempt-owned refs: the successor publishes while no partial debris
+-- lingers, and teardown clears the abandoned wait.
+function T.superseding_scene_releases_the_abandoned_candidates_attempt_refs()
+  local recordA = sceneRecord(SCENE_KEY)
+  local recordB = sceneRecord(SCENE_B_KEY)
+  local cacheFs = dualSceneCacheFs(recordA, recordB)
+  local pool = scriptedPool(1000000, {})
+  for _, path in ipairs(sceneArtPaths(recordA)) do
+    if path ~= recordA.terrainSprites.foe.image then
+      pool.readyPaths[path] = true
+    end
+  end
+  for _, path in ipairs(sceneArtPaths(recordB)) do
+    pool.readyPaths[path] = true
+  end
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local services = envelope:_preparationServices()
+  local function demand(sceneKey, launchId)
+    return {
+      launchId = launchId,
+      scenes = { sceneKey },
+      pages = {},
+      trainerPictures = {},
+      battleBalls = {},
+      iconKeys = {},
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+  end
+  local pending, pendingFailure = services.prepare(demand(SCENE_KEY, "supersede-abandoned"))
+  Assert.equal(pending, false, "the first scene waits while its foe terrain decodes")
+  Assert.isNil(pendingFailure, "waiting reports no failure")
+  Assert.isNil(services.sceneLayer(), "waiting publishes no scene")
+  local abandoned = {}
+  for _, acquired in ipairs(pool.acquired) do
+    abandoned[#abandoned + 1] = acquired.lease
+  end
+  Assert.isTrue(#abandoned > 0, "the abandoned attempt holds its ready pieces")
+  local ready, failure = drivePrepare(services, demand(SCENE_B_KEY, "supersede-successor"))
+  Assert.isTrue(ready, "the successor completes: " .. tostring(failure))
+  local layer = assert(services.sceneLayer(), "the successor scene is published")
+  local introLease = assert(layer.introLayer.drawable, "the published scene carries its intro drawable")
+  local introPath = introLease.image ~= nil and introLease.image.path or nil
+  Assert.equal(introPath, recordB.introLayer.image, "the published scene is the successor")
+  local function releasedCount(lease)
+    local count = 0
+    for _, released in ipairs(pool.released) do
+      if released == lease then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  for _, lease in ipairs(abandoned) do
+    Assert.equal(releasedCount(lease), 1, "the abandoned attempt returns each ready lease once")
+  end
+  envelope:dispose()
+  Assert.equal(next(pool.live), nil, "teardown clears the abandoned wait")
+end
+
+-- A scene that waits and then fails terminally rolls back only its
+-- attempt-owned refs: the ready predecessor stays published with its
+-- leases, and the failure names its cause instead of hanging.
+function T.pending_scene_then_terminal_failure_keeps_the_predecessor()
+  local recordA = sceneRecord(SCENE_KEY)
+  local recordB = sceneRecord(SCENE_B_KEY)
+  local cacheFs = dualSceneCacheFs(recordA, recordB)
+  local pool = scriptedPool(1000000, {})
+  for _, path in ipairs(sceneArtPaths(recordA)) do
+    pool.readyPaths[path] = true
+  end
+  for _, path in ipairs(sceneArtPaths(recordB)) do
+    if path ~= recordB.terrainSprites.foe.image then
+      pool.readyPaths[path] = true
+    end
+  end
+  local envelope = warmEnvelope(cacheFs, pool, nearHost({}, true))
+  local services = envelope:_preparationServices()
+  local function demand(sceneKey, launchId)
+    return {
+      launchId = launchId,
+      scenes = { sceneKey },
+      pages = {},
+      trainerPictures = {},
+      battleBalls = {},
+      iconKeys = {},
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+  end
+  local function releasedCount(lease)
+    local count = 0
+    for _, released in ipairs(pool.released) do
+      if released == lease then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  local readyA, failureA = drivePrepare(services, demand(SCENE_KEY, "pending-failure-predecessor"))
+  Assert.isTrue(readyA, "the predecessor scene prepares: " .. tostring(failureA))
+  local predecessor = assert(services.sceneLayer(), "the predecessor scene is published")
+  local predecessorLeases = {}
+  for _, acquired in ipairs(pool.acquired) do
+    predecessorLeases[#predecessorLeases + 1] = acquired.lease
+  end
+  Assert.isTrue(#predecessorLeases > 0, "the predecessor owns its scene image leases")
+  local acquiredBeforeReplacement = #pool.acquired
+  local pending, pendingFailure = services.prepare(demand(SCENE_B_KEY, "pending-failure-successor"))
+  Assert.equal(pending, false, "the successor waits while its foe terrain decodes")
+  Assert.isNil(pendingFailure, "waiting reports no failure")
+  pool.failures[recordB.terrainSprites.foe.image] = "probe-foe-decode-failed"
+  local failed, failure = services.prepare(demand(SCENE_B_KEY, "pending-failure-successor"))
+  Assert.isNil(failed, "the failed successor never prepares")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe-foe-decode-failed", 1, true) ~= nil,
+    "the failed successor preserves its pool cause: " .. tostring(failure)
+  )
+  Assert.equal(services.sceneLayer(), predecessor, "the failed replacement preserves the ready predecessor")
+  for _, lease in ipairs(predecessorLeases) do
+    Assert.equal(releasedCount(lease), 0, "the ready predecessor retains its image leases")
+  end
+  for index = acquiredBeforeReplacement + 1, #pool.acquired do
+    Assert.equal(
+      releasedCount(pool.acquired[index].lease),
+      1,
+      "the failed replacement returns each acquired image lease once"
+    )
+  end
+  local successorPaths = {}
+  for _, path in ipairs(sceneArtPaths(recordB)) do
+    successorPaths[path] = true
+  end
+  for _, path in pairs(pool.live) do
+    Assert.isNil(
+      successorPaths[path] and true or nil,
+      "the failed replacement holds no live ticket: " .. tostring(path)
+    )
+  end
+  envelope:dispose()
+  for _, acquired in ipairs(pool.acquired) do
+    Assert.equal(releasedCount(acquired.lease), 1, "disposal and rollback return every lease exactly once")
+  end
+  Assert.equal(next(pool.live), nil, "teardown clears the launch-scoped enrollment")
 end
 
 return { tests = T }

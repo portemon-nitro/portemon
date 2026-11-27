@@ -1945,6 +1945,106 @@ function T.retired_encounter_stays_ready_without_fade_uploads()
   rig.screen:dispose()
 end
 
+-- The first command waits for its immediately openable root art: while a
+-- root bag page and its party page stay decoding, the holder stays
+-- waiting and the command stays unusable even after the opening packets
+-- arrive in order; settling both roots readies the holder, keeps every
+-- required drawable, and replays the waiting packets without loss.
+function T.first_command_waits_for_root_child_art_before_packet_replay()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "entry admits the staged scene"
+  )
+  local stub = rig.screen._assets._assets
+  local origDrawable = stub.drawable
+  local bagRoot = "bag:screen:1"
+  local partyRoot = "party:page/mon-menu"
+  function stub.drawable(key)
+    if key == bagRoot or key == partyRoot then
+      return nil
+    end
+    return origDrawable(key)
+  end
+  local entries = rig.screen._manifest.battleBalls.entries
+  local savedBall = entries["ball:POKE_BALL"]
+  entries["ball:POKE_BALL"] = nil
+  local function openingWithName(name)
+    local view = encounterOpening()
+    view.own[1].name = name
+    return view
+  end
+  rig.port.present({
+    launchId = rig.launchId,
+    packetId = 1,
+    before = openingWithName("FIRST"),
+    after = openingWithName("FIRST"),
+    events = {},
+  })
+  rig.port.present({
+    launchId = rig.launchId,
+    packetId = 2,
+    before = openingWithName("SECOND"),
+    after = openingWithName("SECOND"),
+    events = {},
+  })
+  Assert.equal(#rig.screen._deferredPackets, 2, "both opening packets wait while leaves decode")
+  Assert.equal(rig.screen._deferredPackets[1].packetId, 1, "waiting packets keep arrival order")
+  Assert.equal(rig.screen._deferredPackets[2].packetId, 2, "waiting packets keep arrival order")
+  entries["ball:POKE_BALL"] = savedBall
+  rig.pump(3)
+  Assert.equal(rig.screen._assets:state(), "pending", "the command waits while root child art decodes")
+  Assert.isFalse(rig.screen:status().ready, "the first command is unusable without its root art")
+  function stub.drawable(key)
+    return origDrawable(key)
+  end
+  rig.pump(5)
+  Assert.equal(rig.screen._assets:state(), "ready", "settled root art readies the holder")
+  for _, key in ipairs({ "menu:command", "menu:moves", "menu:target", bagRoot, partyRoot }) do
+    local handle, failure = rig.screen._assets:drawable(key)
+    Assert.isNil(failure, "settled root reports no failure: " .. key)
+    Assert.notNil(handle, "settled root hands out its drawable: " .. key)
+  end
+  Assert.equal(#rig.screen._deferredPackets, 0, "settled leaves replay every waiting packet")
+  rig.pump(1)
+  Assert.notNil(rig.screen:view().openingPresentation, "the replayed opening publishes its presentation")
+  rig.screen:dispose()
+end
+
+-- A terminal root failure fails the holder closed instead of holding the
+-- first command forever: the failure carries its root cause and the
+-- command stays unusable.
+function T.first_command_root_failure_fails_closed()
+  local rig = openEncounterRig()
+  rig.stage(stagedEncounterLayer(60, 43))
+  rig.pump(5)
+  Assert.isTrue(
+    rig.port.enter({ launchId = rig.launchId, kind = "wild", encounterPaletteRestoreType = "wild" }),
+    "entry admits the staged scene"
+  )
+  local stub = rig.screen._assets._assets
+  local origDrawable = stub.drawable
+  local bagRoot = "bag:screen:1"
+  function stub.drawable(key)
+    if key == bagRoot then
+      return nil, "probe-bag-boom"
+    end
+    return origDrawable(key)
+  end
+  presentOpening(rig)
+  rig.pump(3, true)
+  Assert.equal(rig.screen._assets:state(), "failed", "a terminal root failure fails the holder")
+  local failure = rig.screen._assets:error()
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe-bag-boom", 1, true) ~= nil,
+    "the holder failure carries its root cause: " .. tostring(failure)
+  )
+  Assert.isFalse(rig.screen:status().ready, "the first command never becomes usable on failed root art")
+  rig.screen:dispose()
+end
+
 return {
   tests = T,
 }

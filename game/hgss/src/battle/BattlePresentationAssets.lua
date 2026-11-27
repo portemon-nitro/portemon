@@ -360,6 +360,17 @@ local REQUIRED_DRAWABLES = {
   "shadow",
 }
 
+-- First-action roots behind the immediately openable child surfaces:
+-- the Bag browser opens on its first page and the party menu opens on
+-- its mon-menu wrapper, so the first command waits for exactly these
+-- two drawables instead of any deep optional page. Enrollment of every
+-- party page and icon stays eager through the preparation demand; only
+-- the readiness gate narrows to the two roots the first input can show.
+local FIRST_ACTION_ROOTS = {
+  "bag:screen:1",
+  "party:page/mon-menu",
+}
+
 -- Runs preparation once per demand: an invalid frame selection or a
 -- service failure becomes failed with context; a missing required image
 -- stays pending until its drawable resolves instead of failing. A
@@ -429,11 +440,25 @@ function BattlePresentationAssets:update()
     end
     self._owned[key] = true
   end
-  -- Party pages stay out of the launch readiness gate on purpose: the
-  -- demand names them so staged pages resolve, but launches whose
-  -- pages never open (or whose worker has not staged them yet) still
-  -- reach ready. The page painter gates on each drawable instead and
-  -- draws nothing new while its background is missing.
+  -- Party pages stay out of the launch readiness gate on purpose, apart
+  -- from the mon-menu root above: the demand still names every staged
+  -- page so they resolve, but launches whose deeper pages never open (or
+  -- whose worker has not staged them yet) still reach ready once the
+  -- first-action roots do. The page painter gates on each drawable
+  -- instead and draws nothing new while its background is missing.
+  for _, key in ipairs(FIRST_ACTION_ROOTS) do
+    local handle, failure = self._assets.drawable(key)
+    if failure ~= nil then
+      self._state = "failed"
+      self._error = "battle image failed for launch " .. self._launchId .. ": " .. tostring(failure)
+      self._imageErrors[key] = self._error --[[@as string]]
+      return
+    end
+    if handle == nil then
+      return
+    end
+    self._owned[key] = true
+  end
   self._state = "ready"
 end
 

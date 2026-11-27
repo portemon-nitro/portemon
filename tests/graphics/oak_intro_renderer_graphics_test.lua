@@ -1446,15 +1446,52 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
         audio = { roles = {}, banks = {}, cries = {} },
       }
     end
-    local prepared, prepareErr = services.prepare(demand())
+    -- Cooperative preparation settles across drives: the staged demand
+    -- may stay pending while pooled tickets resolve, so pump until ready
+    -- or terminal failure. End-state assertions below stay identical.
+    local function pumpPrepare()
+      local timer = love ~= nil and love.timer or nil
+      local ready, failure = nil, nil
+      for _ = 1, 1000 do
+        ready, failure = services.prepare(demand())
+        if ready ~= false then
+          return ready, failure
+        end
+        Assert.isNil(failure, "a waiting drive reports no terminal failure")
+        if timer ~= nil and timer.sleep ~= nil then
+          timer.sleep(0.001)
+        end
+      end
+      return ready, failure
+    end
+    -- Cooperative drawables resolve across drives while pooled tickets
+    -- settle: pump until the handle arrives or a terminal failure names
+    -- the key. End-state assertions below stay identical.
+    local function pumpDrawable(key)
+      local timer = love ~= nil and love.timer or nil
+      local handle, failure = nil, nil
+      for _ = 1, 1000 do
+        handle, failure = services.drawable(key)
+        if handle ~= nil or failure ~= nil then
+          return handle, failure
+        end
+        if timer ~= nil and timer.sleep ~= nil then
+          timer.sleep(0.001)
+        end
+      end
+      return handle, failure
+    end
+    local prepared, prepareErr = pumpPrepare()
     Assert.isTrue(prepared, "the staged synthetic demand enters: " .. tostring(prepareErr))
     local stagedKeys = { "scene:" .. sceneKey, "menu:command", "hud:enemy", "hud:player" }
     for _, key in ipairs(stagedKeys) do
-      Assert.notNil(services.drawable(key), "the staged demand resolves " .. key)
+      local handle, failure = pumpDrawable(key)
+      Assert.notNil(handle, "the staged demand resolves " .. key .. ": " .. tostring(failure))
     end
     local settledImages = #graphics.images
     for _, key in ipairs(stagedKeys) do
-      Assert.notNil(services.drawable(key), "re resolving " .. key .. " reuses its staged image")
+      local handle, failure = pumpDrawable(key)
+      Assert.notNil(handle, "re resolving " .. key .. " reuses its staged image: " .. tostring(failure))
     end
     Assert.equal(#graphics.images, settledImages, "stable stages upload no duplicate images")
     local oakGraphics = FakeGraphics.new()
@@ -1513,16 +1550,19 @@ function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_
     Assert.equal(failureAgain, failure, "the failed key replays its latched failure")
     Assert.equal(#graphics.images, replayImages, "the latched failure never re-enters the driver")
     for _, key in ipairs(stagedKeys) do
-      Assert.notNil(services.drawable(key), "staged siblings survive the failed upload of " .. key)
+      local sibling, siblingFailure = pumpDrawable(key)
+      Assert.notNil(sibling, "staged siblings survive the failed upload of " .. key .. ": " .. tostring(siblingFailure))
     end
     Assert.equal(#graphics.images, replayImages, "only the new stage fails; siblings upload nothing new")
     Assert.equal(#audioPlays, 0, "a failed stage holds its cues instead of playing success")
-    Assert.isTrue(services.prepare(demand()), "the envelope recovers and prepares again after the failure")
+    local recovered, recoverErr = pumpPrepare()
+    Assert.isTrue(recovered, "the envelope recovers and prepares again after the failure: " .. tostring(recoverErr))
     for _, key in ipairs(stagedKeys) do
       services.release(key)
     end
     for _, key in ipairs(stagedKeys) do
-      Assert.notNil(services.drawable(key), "cancelled stages resolve again on demand: " .. key)
+      local renewed, renewFailure = pumpDrawable(key)
+      Assert.notNil(renewed, "cancelled stages resolve again on demand: " .. key .. ": " .. tostring(renewFailure))
     end
     local secondFrame = drawSignature()
     Assert.deepEqual(secondFrame, firstFrame, "intro frames stay identical across the battle failure")

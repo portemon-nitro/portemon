@@ -39,7 +39,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _summary table<string, unknown>? field-owned Summary application dependencies
 ---@field _imageFailures table<string, string> terminal upload failures by key, latched for the envelope lifetime
 ---@field _pendingSceneImage { path: string, token: integer }? pre-enrolled scene image ticket behind the pending build
----@field _pendingUploads table<string, integer> pre-enrolled pool tickets by staged image path behind the pending build
+---@field _pendingUploads table<string, { token: integer, sampler: table<string, string> }[]> live pool tickets by staged image path, each carrying its effective sampler
 ---@field _enrolledUploads table<string, boolean> staged image paths already enrolled this launch
 ---@field _warmPinned table<string, FieldBattlePresentation.PooledHandle> scene-independent borrows kept across launches
 ---@field _warmPaths table<string, string> staged image path behind each warm pin, for exact reuse matching
@@ -276,6 +276,26 @@ local function stagedDoc(envelope, path)
   envelope._manifestDocs[path] = doc
   return doc
 end
+
+---@class FieldBattlePresentation.SceneCandidate
+---@field sceneKey string validated scene key under staging
+---@field introKey string drawable key behind the staged intro borrow
+---@field playerKey string drawable key behind the staged player terrain borrow
+---@field foeKey string drawable key behind the staged foe terrain borrow
+---@field intro { image: string, width: integer, height: integer } staged intro layer behind the borrow
+---@field sprites table<string, { image: string, width: integer, height: integer, origin: { x: integer, y: integer }, sourceIndices: BattlePresentationCache.SourceIndices }> staged terrain sprites behind the borrows
+---@field characters string staged BG3 character bytes
+---@field baseCharacters string staged intro character bytes
+---@field map table<string, unknown> staged BG3 tilemap
+---@field palette table<string, unknown> staged BG3 palette
+---@field paletteSource table<string, unknown>? staged native palette source, nil until its staged load completes
+---@field particles FieldBattlePresentation.ParticleEntry[] encounter particle texture entries in set, then texture order
+---@field sourceMeta table<string, unknown> indexed staged source-map metadata behind the exact reader
+---@field sourceIndices table<string, table<string, unknown>> terrain source descriptors by side
+---@field sourceMapFor fun(descriptor: table<string, unknown>?): table<string, unknown> exact-demand source-map reader
+---@field warmBefore table<string, boolean> warm pins predating the attempt behind rollback
+---@field acquired table<string, boolean> drawable keys the attempt resolved, by key
+---@field acquiredKeys string[] drawable keys the attempt resolved, in acquisition order
 
 ---@class FieldBattlePresentation.ParticleEntry
 ---@field key string drawable key of one encounter particle texture
@@ -662,6 +682,50 @@ local function retireIncompleteWarmGroups(envelope)
   end
 end
 
+-- Remembers one live pool ticket behind its staged image path: the
+-- effective sampler rides along so a later demand never consumes a
+-- ticket behind a different sampler. Storing is idempotent for a
+-- repeated poll of the same ticket.
+---@param envelope FieldBattlePresentation
+---@param path string cache-relative staged image path
+---@param token integer live pool ticket behind the path
+---@param sampler table<string, string>? effective pool sampler behind the ticket, clamped by default
+local function stashPendingUpload(envelope, path, token, sampler)
+  local wanted = sampler or POOLED_SAMPLER
+  local entries = envelope._pendingUploads[path]
+  if entries == nil then
+    entries = {}
+    envelope._pendingUploads[path] = entries
+  end
+  for _, entry in ipairs(entries) do
+    if entry.token == token then
+      return
+    end
+  end
+  entries[#entries + 1] = { token = token, sampler = wanted }
+end
+
+-- Whether a live pool ticket behind the staged path already waits under
+-- the effective sampler: preparation never stacks a second enrollment
+-- behind the shared decode.
+---@param envelope FieldBattlePresentation
+---@param path string cache-relative staged image path
+---@param sampler table<string, string>? effective pool sampler under comparison, clamped by default
+---@return boolean waiting
+local function uploadTicketPending(envelope, path, sampler)
+  local wanted = sampler or POOLED_SAMPLER
+  local entries = envelope._pendingUploads[path]
+  if entries == nil then
+    return false
+  end
+  for _, entry in ipairs(entries) do
+    if sameSampler(entry.sampler, wanted) then
+      return true
+    end
+  end
+  return false
+end
+
 -- Enrolls one staged image decode on the shared owner without waiting:
 -- preparation overlaps worker work for art the pending build will draw,
 -- and the drawable takes over the ticket instead of enrolling again.
@@ -674,25 +738,38 @@ local function enrollUpload(envelope, path)
   if pool == nil then
     return
   end
-  if envelope._enrolledUploads[path] == true or envelope._pendingUploads[path] ~= nil then
+  if envelope._enrolledUploads[path] == true or uploadTicketPending(envelope, path, POOLED_SAMPLER) then
     return
   end
   envelope._enrolledUploads[path] = true
-  envelope._pendingUploads[path] = pool:request(path, POOLED_SAMPLER, "demand")
+  stashPendingUpload(envelope, path, pool:request(path, POOLED_SAMPLER, "demand"), POOLED_SAMPLER)
 end
 
--- Takes over one pre-enrolled upload ticket for the staged path, if the
--- pending build enrolled it: the drawable awaits the shared decode
--- instead of stacking a second enrollment behind it.
+-- Takes over one pre-enrolled upload ticket for the staged path under
+-- the effective sampler, if the pending build enrolled one: the drawable
+-- awaits the shared decode instead of stacking a second enrollment
+-- behind it. A ticket behind a different sampler stays untouched so a
+-- repeating demand never shares a clamped handle.
 ---@param envelope FieldBattlePresentation
 ---@param path string cache-relative staged image path
----@return integer? pre-enrolled pool ticket, nil when preparation enrolled nothing
-local function takePendingUpload(envelope, path)
-  local token = envelope._pendingUploads[path]
-  if token ~= nil then
-    envelope._pendingUploads[path] = nil
+---@param sampler table<string, string>? effective pool sampler behind the takeover, clamped by default
+---@return integer? pre-enrolled pool ticket, nil when preparation enrolled nothing under the sampler
+local function takePendingUpload(envelope, path, sampler)
+  local wanted = sampler or POOLED_SAMPLER
+  local entries = envelope._pendingUploads[path]
+  if entries == nil then
+    return nil
   end
-  return token
+  for index, entry in ipairs(entries) do
+    if sameSampler(entry.sampler, wanted) then
+      table.remove(entries, index)
+      if #entries == 0 then
+        envelope._pendingUploads[path] = nil
+      end
+      return entry.token
+    end
+  end
+  return nil
 end
 
 ---@param manifest table<string, unknown> staged or planning presentation manifest
@@ -1089,39 +1166,36 @@ end
 ---@param path string cache-relative staged page path behind diagnostics
 ---@param token integer? already-enrolled pool ticket to await instead of requesting again
 ---@param sampler table<string, string>? pool sampler behind a fresh request, clamped by default
----@return table<string, unknown>? resolved page lease, nil on terminal failure
----@return string? terminal failure naming the key and path, nil on success
+---@return table<string, unknown>? resolved page lease, nil while pending or on terminal failure
+---@return string? terminal failure naming the key and path, nil while pending or on success
 local function borrowPage(envelope, key, path, token, sampler)
   local pool = assert(envelope._pool, "pooled battle uploads borrow the shared image owner")
+  local wanted = sampler or POOLED_SAMPLER
   if token == nil then
-    token = pool:request(path, sampler or POOLED_SAMPLER, "demand")
+    token = pool:request(path, wanted, "demand")
   end
-  local stalled = 0
-  while true do
-    local status, failure = pool:poll(token)
-    if status == "ready" then
-      local ok, leaseOrCause = pcall(function()
-        return pool:acquire(token)
-      end)
-      if ok then
-        return leaseOrCause
-      end
-      return nil,
-        "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. tostring(leaseOrCause)
+  -- One cooperative poll per drive: a ready ticket is taken exactly
+  -- once, a failed ticket is relinquished through the pool contract,
+  -- and a pending ticket is retained under its effective sampler so the
+  -- next drive resumes without blocking or re-enrolling.
+  local status, failure = pool:poll(token)
+  if status == "ready" then
+    local ok, leaseOrCause = pcall(function()
+      return pool:acquire(token)
+    end)
+    if ok then
+      return leaseOrCause
     end
-    if status == "failed" then
-      return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. tostring(failure)
-    end
-    assert(status == "pending", "battle preparation reports pending or ready")
-    stalled = stalled + 1
-    if stalled > 10000 then
-      return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": stalled"
-    end
-    local timer = love and love.timer
-    if timer ~= nil and timer.sleep ~= nil then
-      timer.sleep(0.001)
-    end
+    return nil,
+      "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. tostring(leaseOrCause)
   end
+  if status == "failed" then
+    pcall(pool.cancel, pool, token)
+    return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. tostring(failure)
+  end
+  assert(status == "pending", "battle preparation reports pending or ready")
+  stashPendingUpload(envelope, path, token, wanted)
+  return nil, nil
 end
 
 -- Borrows one staged whole battle visual through the shared owner,
@@ -1134,8 +1208,8 @@ end
 ---@param path string cache-relative staged image path behind diagnostics
 ---@param token integer? already-enrolled pool ticket to await instead of requesting again
 ---@param sampler table<string, string>? pool sampler behind a fresh request, clamped by default
----@return table<string, unknown>? resolved drawable lease, nil on terminal failure
----@return string? terminal failure naming the key and path, nil on success
+---@return table<string, unknown>? resolved drawable lease, nil while pending or on terminal failure
+---@return string? terminal failure naming the key and path, nil while pending or on success
 local function acquirePooled(envelope, key, path, token, sampler)
   -- A matching warm pin answers with no new borrow: the envelope owns
   -- the borrow across launches, and the scene staging closure calls
@@ -1166,11 +1240,11 @@ local function acquirePooled(envelope, key, path, token, sampler)
       envelope._leases[key] = nil
     end
   end
-  -- A pre-enrolled ticket from preparation rides instead of a fresh
-  -- request so the drawable awaits the shared decode instead of
+  -- A pre-enrolled ticket under the same sampler rides instead of a
+  -- fresh request so the drawable awaits the shared decode instead of
   -- stacking a second enrollment behind it.
   if token == nil then
-    token = takePendingUpload(envelope, path)
+    token = takePendingUpload(envelope, path, wanted)
   end
   local lease, failure = borrowPage(envelope, key, path, token, wanted)
   if lease == nil then
@@ -1216,12 +1290,16 @@ end
 
 -- Resolves one staged image through the shared pool or a direct upload.
 -- Pool misses and upload failures latch their reason and answer nil plus
--- the reason; a missing direct read is a legitimate wait and answers nil
--- alone. Answers the image on success.
+-- the reason; a pending pool borrow answers nil alone so the caller polls
+-- again instead of failing closed, while a missing direct read is a
+-- legitimate wait and answers nil alone. Answers the image on success.
 local function resolveStagedImage(envelope, graphics, images, failures, cacheFs, key, path, stagedToken)
   if envelope._pool ~= nil then
     local image, failure = acquirePooled(envelope, key, path, stagedToken)
     if image == nil then
+      if failure == nil then
+        return nil
+      end
       assert(type(failure) == "string", "staged upload failures carry their reason")
       failures[key] = failure --[[@as string]]
       return nil, failure
@@ -1493,11 +1571,11 @@ local function borrowPortraitCell(envelope, graphics, key, selector)
   assert(type(entry) == "table", "the staged manifest plans no such portrait: " .. tostring(selector))
   assert(type(entry.frames) == "table" and #entry.frames == 2, "the staged battle portrait names both Pokepic frames")
   assert(type(pagePath) == "string", "the staged portrait names its page: " .. tostring(selector))
-  -- A pre-enrolled ticket rides when preparation staged one; a second
-  -- battler on the same page enrolls its own borrow instead of
-  -- starving behind the consumed ticket, exactly like whole-image
-  -- borrows fall back to a fresh request.
-  local token = takePendingUpload(envelope, pagePath)
+  -- A pre-enrolled ticket under the shared clamp sampler rides when
+  -- preparation staged one; a second battler on the same page enrolls
+  -- its own borrow instead of starving behind the consumed ticket,
+  -- exactly like whole-image borrows fall back to a fresh request.
+  local token = takePendingUpload(envelope, pagePath, POOLED_SAMPLER)
   if token == nil then
     token = pool:request(pagePath, POOLED_SAMPLER, "demand")
   end
@@ -1508,7 +1586,7 @@ local function borrowPortraitCell(envelope, graphics, key, selector)
   end
   if status ~= "ready" then
     assert(status == "pending", "portrait preparation reports pending or ready")
-    envelope._pendingUploads[pagePath] = token
+    stashPendingUpload(envelope, pagePath, token, POOLED_SAMPLER)
     return nil, nil
   end
   local ok, leaseOrCause = pcall(pool.acquire, pool, token)
@@ -2196,6 +2274,200 @@ function FieldBattlePresentation:_preparationServices()
   end
   local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
   local services = { headless = graphics == nil }
+  -- One private pending scene candidate per selected scene: preparation
+  -- retains its partially acquired handles, parsed metadata, and
+  -- acquisition provenance across pending polls and publishes the scene
+  -- layer only once every required piece is complete. A superseding
+  -- scene or a terminal failure releases exactly the attempt-owned refs;
+  -- pre-existing warm ownership survives either.
+  local pendingCandidate = nil ---@type FieldBattlePresentation.SceneCandidate?
+  -- Returns every handle and pin the candidate installed itself to the
+  -- shared owner, preserving pre-existing warm ownership. Pins the
+  -- attempt only reused stay warm.
+  ---@param candidate FieldBattlePresentation.SceneCandidate abandoned scene candidate under rollback
+  local function rollbackCandidate(candidate)
+    for _, key in ipairs(candidate.acquiredKeys) do
+      services.release(key)
+      local attemptPin = envelope._warmPinned[key]
+      if attemptPin ~= nil and candidate.warmBefore[key] == nil then
+        envelope._warmPinned[key] = nil
+        if envelope._warmPaths ~= nil then
+          envelope._warmPaths[key] = nil
+        end
+        if envelope._warmSamplers ~= nil then
+          envelope._warmSamplers[key] = nil
+        end
+        local attemptPool = envelope._pool
+        if attemptPool ~= nil then
+          pcall(attemptPool.release, attemptPool, attemptPin.lease)
+        end
+      end
+    end
+  end
+  -- Cancels the candidate's still-queued tickets under their exact
+  -- path and sampler identity: taken-over tickets already left the
+  -- ledger, so only attempt-owned waits are retired.
+  ---@param candidate FieldBattlePresentation.SceneCandidate candidate whose queued tickets retire
+  local function dropCandidateTickets(candidate)
+    local pool = envelope._pool
+    if pool == nil then
+      return
+    end
+    local function drop(path, sampler)
+      local entries = envelope._pendingUploads[path]
+      if entries == nil then
+        return
+      end
+      local wanted = sampler or POOLED_SAMPLER
+      for index = #entries, 1, -1 do
+        if sameSampler(entries[index].sampler, wanted) then
+          local entry = table.remove(entries, index)
+          pcall(pool.cancel, pool, entry.token)
+        end
+      end
+      if #entries == 0 then
+        envelope._pendingUploads[path] = nil
+      end
+    end
+    drop(candidate.intro.image, nil)
+    drop(candidate.sprites.player.image, nil)
+    drop(candidate.sprites.foe.image, nil)
+    for _, entry in ipairs(candidate.particles) do
+      drop(entry.path, entry.sampler)
+    end
+  end
+  -- Stages the launch-independent scene inputs behind a new candidate:
+  -- BG3 bytes, intro characters, indexed source metadata with its exact
+  -- reader, registered particle entries, and the pre-existing pin
+  -- snapshot the rollback distinguishes from attempt-owned work.
+  -- Answers nil plus a terminal reason when staged bytes are missing.
+  ---@param sceneKey string validated scene key under staging
+  ---@param record BattlePresentationCache.SceneRecord validated staged scene record
+  ---@param core table<string, unknown> verified presentation core behind source metadata
+  ---@return FieldBattlePresentation.SceneCandidate? candidate retained across pending polls
+  ---@return string? failure terminal reason naming the scene and path, nil on success
+  local function beginSceneCandidate(sceneKey, record, core)
+    local layer = record.layers[1]
+    -- An idle-warmed exact scene reuses its staged BG3 source values
+    -- instead of rereading them; anything else takes the original read
+    -- path with its validation intact. The key match is never trusted
+    -- alone: the staged values revalidate below.
+    local warmStage = envelope._warmBg3
+    local characters, map, palette ---@type string?, table?, table?
+    if
+      warmStage ~= nil
+      and envelope._warmBg3Key == sceneKey
+      and warmStage.sceneKey == sceneKey
+      and type(warmStage.characters) == "string"
+      and type(warmStage.map) == "table"
+      and type(warmStage.palette) == "table"
+    then
+      characters = warmStage.characters --[[@as string]]
+      map = warmStage.map --[[@as table]]
+      palette = warmStage.palette --[[@as table]]
+    else
+      characters = cacheFs:read(layer.characters.path)
+      map = cacheFs:loadLua(layer.map.path)
+      palette = cacheFs:loadLua(layer.palette.path)
+    end
+    if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
+      return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
+    end
+    -- Only the BG3 inputs the rasterizer actually consumes are read
+    -- here; staged texture PNGs prove themselves through the shared
+    -- image owner below, never through an existence census.
+    local baseCharacters = cacheFs:read(layer.baseCharacters.path)
+    if type(baseCharacters) ~= "string" then
+      return nil, "battle scene intro characters are not staged: " .. tostring(sceneKey)
+    end
+    -- Exact-demand source bytes: descriptors index their staged paths
+    -- and geometry with no file reads, while the reader below loads
+    -- only the maps a visible palette request names, once each.
+    -- Physical variants stage under distinct sidecars, so one path
+    -- entry covers its variant.
+    local sourceMeta = {}
+    indexManifestSourceMaps(sourceMeta, core)
+    local sprites = record.terrainSprites
+    local sourceIndices = {}
+    for _, side in ipairs({ "player", "foe" }) do
+      local descriptor = sprites[side].sourceIndices
+      indexSourceDescriptor(sourceMeta, descriptor)
+      sourceIndices[side] = descriptor
+    end
+    local sourceMemo = {}
+    local function sourceMapFor(descriptor)
+      if type(descriptor) == "table" and type(descriptor.pixels) == "string" then
+        return descriptor
+      end
+      local path = type(descriptor) == "table" and descriptor.path or nil
+      assert(type(path) == "string" and path ~= "", "source-index descriptor names its map")
+      local mapPath = path --[[@as string]]
+      local memoized = sourceMemo[mapPath]
+      if memoized ~= nil then
+        return memoized
+      end
+      local meta = sourceMeta[mapPath]
+      local plane = type(descriptor) == "table" and descriptor.plane or nil
+      local width = type(descriptor) == "table" and descriptor.width or nil
+      local height = type(descriptor) == "table" and descriptor.height or nil
+      local sourcePalette = type(descriptor) == "table" and descriptor.paletteSource or nil
+      if meta ~= nil then
+        plane = plane or meta.plane
+        width = width or meta.width
+        height = height or meta.height
+        sourcePalette = sourcePalette or meta.paletteSource
+      end
+      assert(type(plane) == "string" and plane ~= "", "staged source-index map names its plane: " .. mapPath)
+      assert(
+        type(width) == "number" and type(height) == "number",
+        "staged source-index map names its geometry: " .. mapPath
+      )
+      local bytes = cacheFs:read(mapPath)
+      assert(
+        type(bytes) == "string" and #bytes > 0,
+        "battle source-index map is not staged for " .. tostring(sceneKey) .. ": " .. mapPath
+      )
+      local staged = {
+        plane = plane,
+        width = width,
+        height = height,
+        pixels = bytes,
+        paletteSource = sourcePalette,
+      }
+      sourceMemo[mapPath] = staged
+      return staged
+    end
+    local particles = registerParticleEntries(envelope, sceneKey, record)
+    -- The warm pins this attempt did not create: a failed attempt
+    -- drops only pins it installed itself, so a pre-existing complete
+    -- group survives while partial debris from the failure returns to
+    -- the shared owner exactly once. A failed launch is never a valid
+    -- successor, so its partial group must not linger as warm state.
+    local warmBefore = {} ---@type table<string, boolean>
+    for pinnedKey in pairs(envelope._warmPinned) do
+      warmBefore[pinnedKey] = true
+    end
+    return {
+      sceneKey = sceneKey,
+      introKey = "scene-intro:" .. sceneKey,
+      playerKey = "scene-terrain:" .. sceneKey .. ":player",
+      foeKey = "scene-terrain:" .. sceneKey .. ":foe",
+      intro = record.introLayer,
+      sprites = sprites,
+      characters = characters,
+      baseCharacters = baseCharacters,
+      map = map,
+      palette = palette,
+      paletteSource = nil,
+      particles = particles,
+      sourceMeta = sourceMeta,
+      sourceIndices = sourceIndices,
+      sourceMapFor = sourceMapFor,
+      warmBefore = warmBefore,
+      acquired = {},
+      acquiredKeys = {},
+    }
+  end
   -- Whether every encounter particle texture of the staged scene still
   -- answers through its live warm pin, matching the staged drawables.
   ---@param layer table<string, unknown>?
@@ -2294,196 +2566,137 @@ function FieldBattlePresentation:_preparationServices()
           end
         end
         if stagedSceneKey ~= sceneKey then
-          local previousSceneKey = stagedSceneKey
-          local previousParticleKeys = stagedSceneParticleKeys
-          local layer = record.layers[1]
-          -- An idle-warmed exact scene reuses its staged BG3 source
-          -- values instead of rereading them; anything else takes the
-          -- original read path with its validation intact. The key match
-          -- is never trusted alone: the staged values revalidate below.
-          local warmStage = envelope._warmBg3
-          local characters, map, palette ---@type string?, table?, table?
-          if
-            warmStage ~= nil
-            and envelope._warmBg3Key == sceneKey
-            and warmStage.sceneKey == sceneKey
-            and type(warmStage.characters) == "string"
-            and type(warmStage.map) == "table"
-            and type(warmStage.palette) == "table"
-          then
-            characters = warmStage.characters --[[@as string]]
-            map = warmStage.map --[[@as table]]
-            palette = warmStage.palette --[[@as table]]
-          else
-            characters = cacheFs:read(layer.characters.path)
-            map = cacheFs:loadLua(layer.map.path)
-            palette = cacheFs:loadLua(layer.palette.path)
+          -- A superseding scene abandons the pending candidate: only its
+          -- attempt-owned refs return, pre-existing warm ownership stays.
+          if pendingCandidate ~= nil and pendingCandidate.sceneKey ~= sceneKey then
+            rollbackCandidate(pendingCandidate)
+            dropCandidateTickets(pendingCandidate)
+            pendingCandidate = nil
           end
-          if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
-            return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
+          if pendingCandidate == nil then
+            local candidate, candidateFailure = beginSceneCandidate(sceneKey, record, core)
+            if candidate == nil then
+              return nil, candidateFailure
+            end
+            pendingCandidate = candidate
           end
-          -- Only the BG3 inputs the rasterizer actually consumes are
-          -- read here; staged texture PNGs prove themselves through the
-          -- shared image owner below, never through an existence census.
-          local baseCharacters = cacheFs:read(layer.baseCharacters.path)
-          if type(baseCharacters) ~= "string" then
-            return nil, "battle scene intro characters are not staged: " .. tostring(sceneKey)
+          local candidate = pendingCandidate --[[@as FieldBattlePresentation.SceneCandidate]]
+          local sprites = candidate.sprites
+          local function noteAcquired(key)
+            if not candidate.acquired[key] then
+              candidate.acquired[key] = true
+              candidate.acquiredKeys[#candidate.acquiredKeys + 1] = key
+            end
           end
-          local intro = record.introLayer
-          local sprites = record.terrainSprites
-          local introKey = "scene-intro:" .. sceneKey
-          -- The warm pins this attempt did not create: a failed attempt
-          -- below drops only pins it installed itself, so a pre-existing
-          -- complete group survives while partial debris from the failure
-          -- returns to the shared owner exactly once. A failed launch is
-          -- never a valid successor, so its partial group must not linger
-          -- as warm state.
-          local warmBefore = {} ---@type table<string, boolean>
-          for pinnedKey in pairs(envelope._warmPinned) do
-            warmBefore[pinnedKey] = true
-          end
-          local particles = registerParticleEntries(envelope, sceneKey, record)
-          local acquiredKeys = {} ---@type string[]
-          -- A failed attempt returns its own partial pins to the shared
-          -- owner: services.release forgets the launch lease but retains
-          -- the pin by design, so an attempt-installed pin is dropped
-          -- here before its borrow is returned. Pins the attempt only
-          -- reused (already present above) stay warm.
-          local function failAttempt(failure)
-            for _, key in ipairs(acquiredKeys) do
-              services.release(key)
-              local attemptPin = envelope._warmPinned[key]
-              if attemptPin ~= nil and warmBefore[key] == nil then
-                envelope._warmPinned[key] = nil
-                if envelope._warmPaths ~= nil then
-                  envelope._warmPaths[key] = nil
-                end
-                if envelope._warmSamplers ~= nil then
-                  envelope._warmSamplers[key] = nil
-                end
-                local attemptPool = envelope._pool
-                if attemptPool ~= nil then
-                  pcall(attemptPool.release, attemptPool, attemptPin.lease)
-                end
-              end
+          -- A terminal failure releases the attempt-owned refs and drops
+          -- the candidate; pre-existing warm ownership survives.
+          ---@param failure string terminal reason naming the scene and path
+          ---@return nil no scene publishes on terminal failure
+          ---@return string terminal reason naming the scene and path
+          local function failCandidate(failure)
+            rollbackCandidate(candidate)
+            dropCandidateTickets(candidate)
+            if pendingCandidate == candidate then
+              pendingCandidate = nil
             end
             return nil, failure
           end
-          local introDrawable, introFailure = acquirePooled(envelope, introKey, intro.image)
+          -- Every required piece polls once per drive: ready pieces are
+          -- taken exactly once while pending pieces hold the launch
+          -- without publishing partial work. Partial handles, metadata,
+          -- and provenance stay retained in the candidate.
+          local waiting = false
+          local introDrawable, introFailure = acquirePooled(envelope, candidate.introKey, candidate.intro.image)
           if introDrawable == nil then
-            return nil, assert(introFailure, "scene intro lease failures carry a reason")
+            if introFailure ~= nil then
+              return failCandidate(introFailure)
+            end
+            waiting = true
+          else
+            noteAcquired(candidate.introKey)
           end
-          acquiredKeys[#acquiredKeys + 1] = introKey
-          local playerKey = "scene-terrain:" .. sceneKey .. ":player"
-          local playerDrawable, playerFailure = acquirePooled(envelope, playerKey, sprites.player.image)
+          local playerDrawable, playerFailure = acquirePooled(envelope, candidate.playerKey, sprites.player.image)
           if playerDrawable == nil then
-            return failAttempt(assert(playerFailure, "player terrain lease failures carry a reason"))
+            if playerFailure ~= nil then
+              return failCandidate(playerFailure)
+            end
+            waiting = true
+          else
+            noteAcquired(candidate.playerKey)
           end
-          acquiredKeys[#acquiredKeys + 1] = playerKey
-          local foeKey = "scene-terrain:" .. sceneKey .. ":foe"
-          local foeDrawable, foeFailure = acquirePooled(envelope, foeKey, sprites.foe.image)
+          local foeDrawable, foeFailure = acquirePooled(envelope, candidate.foeKey, sprites.foe.image)
           if foeDrawable == nil then
-            return failAttempt(assert(foeFailure, "foe terrain lease failures carry a reason"))
+            if foeFailure ~= nil then
+              return failCandidate(foeFailure)
+            end
+            waiting = true
+          else
+            noteAcquired(candidate.foeKey)
           end
-          acquiredKeys[#acquiredKeys + 1] = foeKey
           -- The requested native palette source stages with the scene;
           -- its slots are consumed by the palette evaluator, never
-          -- audited here.
-          local paletteSource = cacheFs:loadLua(record.paletteSource.path)
-          if type(paletteSource) ~= "table" then
-            return failAttempt(
-              "battle scene " .. tostring(sceneKey) .. " palette source is not staged: " .. record.paletteSource.path
-            )
-          end
-          -- Exact-demand source bytes: descriptors index their staged
-          -- paths and geometry with no file reads, while the reader
-          -- below loads only the maps a visible palette request names,
-          -- once each. Physical variants stage under distinct sidecars,
-          -- so one path entry covers its variant.
-          local sourceMeta = {}
-          local sourceMemo = {}
-          indexManifestSourceMaps(sourceMeta, core)
-          local sourceIndices = {}
-          for _, side in ipairs({ "player", "foe" }) do
-            local descriptor = sprites[side].sourceIndices
-            indexSourceDescriptor(sourceMeta, descriptor)
-            sourceIndices[side] = descriptor
-          end
-          local function sourceMapFor(descriptor)
-            if type(descriptor) == "table" and type(descriptor.pixels) == "string" then
-              return descriptor
+          -- audited here. Images stage before this read so an unstaged
+          -- palette source still rolls back the acquired image leases.
+          if candidate.paletteSource == nil and not waiting then
+            local stagedPalette = cacheFs:loadLua(record.paletteSource.path)
+            if type(stagedPalette) ~= "table" then
+              return failCandidate(
+                "battle scene " .. tostring(sceneKey) .. " palette source is not staged: " .. record.paletteSource.path
+              )
             end
-            local path = type(descriptor) == "table" and descriptor.path or nil
-            assert(type(path) == "string" and path ~= "", "source-index descriptor names its map")
-            local mapPath = path --[[@as string]]
-            local memoized = sourceMemo[mapPath]
-            if memoized ~= nil then
-              return memoized
-            end
-            local meta = sourceMeta[mapPath]
-            local plane = type(descriptor) == "table" and descriptor.plane or nil
-            local width = type(descriptor) == "table" and descriptor.width or nil
-            local height = type(descriptor) == "table" and descriptor.height or nil
-            local sourcePalette = type(descriptor) == "table" and descriptor.paletteSource or nil
-            if meta ~= nil then
-              plane = plane or meta.plane
-              width = width or meta.width
-              height = height or meta.height
-              sourcePalette = sourcePalette or meta.paletteSource
-            end
-            assert(type(plane) == "string" and plane ~= "", "staged source-index map names its plane: " .. mapPath)
-            assert(
-              type(width) == "number" and type(height) == "number",
-              "staged source-index map names its geometry: " .. mapPath
-            )
-            local bytes = cacheFs:read(mapPath)
-            assert(
-              type(bytes) == "string" and #bytes > 0,
-              "battle source-index map is not staged for " .. tostring(sceneKey) .. ": " .. mapPath
-            )
-            local staged = {
-              plane = plane,
-              width = width,
-              height = height,
-              pixels = bytes,
-              paletteSource = sourcePalette,
-            }
-            sourceMemo[mapPath] = staged
-            return staged
+            candidate.paletteSource = stagedPalette
           end
+          local paletteSource = candidate.paletteSource --[[@as table<string, unknown>]]
+          local sourceMeta = candidate.sourceMeta
+          local sourceIndices = candidate.sourceIndices
+          local sourceMapFor = candidate.sourceMapFor
           local particleSets = {}
           for setIndex, set in ipairs(record.encounterParticles) do
             particleSets[setIndex] = { startTick = set.startTick, emitters = set.emitters, textures = {} }
           end
-          for _, entry in ipairs(particles) do
+          for _, entry in ipairs(candidate.particles) do
             local drawable, failure = acquirePooled(envelope, entry.key, entry.path, nil, entry.sampler)
             if drawable == nil then
-              return failAttempt(assert(failure, "encounter particle lease failures carry a reason"))
+              if failure ~= nil then
+                return failCandidate(failure)
+              end
+              waiting = true
+            else
+              noteAcquired(entry.key)
+              local textures = particleSets[entry.set].textures
+              textures[#textures + 1] = {
+                id = entry.texture.id,
+                width = entry.texture.width,
+                height = entry.texture.height,
+                drawable = drawable,
+                -- The staged descriptor's exact coverage flags ride into
+                -- the scene layer: the particle owners preserve them for
+                -- the shared depth/blend classification.
+                alphaUsage = entry.texture.alphaUsage,
+              }
             end
-            acquiredKeys[#acquiredKeys + 1] = entry.key
-            local textures = particleSets[entry.set].textures
-            textures[#textures + 1] = {
-              id = entry.texture.id,
-              width = entry.texture.width,
-              height = entry.texture.height,
-              drawable = drawable,
-              -- The staged descriptor's exact coverage flags ride into
-              -- the scene layer: the particle owners preserve them for
-              -- the shared depth/blend classification.
-              alphaUsage = entry.texture.alphaUsage,
-            }
           end
+          if waiting then
+            return false, nil
+          end
+          -- Publish only the complete candidate: the predecessor layer
+          -- stays live until every required piece resolves, and the
+          -- completed successor retires its predecessor then. Pending
+          -- drives leave every staged memo untouched.
+          local previousSceneKey = stagedSceneKey
+          local previousParticleKeys = stagedSceneParticleKeys
           stagedSceneKey = sceneKey
           stagedSourceMeta = sourceMeta
           stagedSceneParticleKeys = {}
-          for _, entry in ipairs(particles) do
+          for _, entry in ipairs(candidate.particles) do
             stagedSceneParticleKeys[#stagedSceneParticleKeys + 1] = entry.key
           end
+          local intro = candidate.intro
           stagedSceneLayer = {
-            characters = characters,
-            baseCharacters = baseCharacters,
-            map = map,
-            palette = palette,
+            characters = candidate.characters,
+            baseCharacters = candidate.baseCharacters,
+            map = candidate.map,
+            palette = candidate.palette,
             paletteSource = paletteSource,
             mainObjBallPaletteSources = {},
             mainObjTrainerPaletteSources = {},
@@ -2524,6 +2737,7 @@ function FieldBattlePresentation:_preparationServices()
               services.release(key)
             end
           end
+          pendingCandidate = nil
         end
       end
     end
@@ -5460,9 +5674,11 @@ function FieldBattlePresentation:_dropLaunch()
   -- interest behind an undrawn ticket is discarded instead of retained
   -- unclaimed, and the next launch enrolls its own paths.
   if self._pool ~= nil then
-    for path, token in pairs(self._pendingUploads) do
+    for path, entries in pairs(self._pendingUploads) do
       self._pendingUploads[path] = nil
-      pcall(self._pool.cancel, self._pool, token)
+      for _, entry in ipairs(entries) do
+        pcall(self._pool.cancel, self._pool, entry.token)
+      end
     end
   else
     self._pendingUploads = {}

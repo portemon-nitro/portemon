@@ -186,6 +186,44 @@ local function demandFor(launchId, sceneKey)
   }
 end
 
+-- Cooperative preparation settles across drives: a scene may stay pending
+-- while pooled tickets resolve, so pump until ready or terminal failure.
+-- End-state assertions below stay identical; only the removed synchronous
+-- wait is gone.
+local function pumpPrepare(services, demand)
+  local timer = love ~= nil and love.timer or nil
+  local ready, failure = nil, nil
+  for _ = 1, 1000 do
+    ready, failure = services.prepare(demand)
+    if ready ~= false then
+      return ready, failure
+    end
+    Assert.isNil(failure, "a waiting drive reports no terminal failure")
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+  return ready, failure
+end
+
+-- Cooperative drawables resolve across drives while pooled tickets
+-- settle: pump until the handle arrives or a terminal failure names
+-- the key. End-state assertions below stay identical.
+local function pumpDrawable(services, key)
+  local timer = love ~= nil and love.timer or nil
+  local handle, failure = nil, nil
+  for _ = 1, 1000 do
+    handle, failure = services.drawable(key)
+    if handle ~= nil or failure ~= nil then
+      return handle, failure
+    end
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+  return handle, failure
+end
+
 function T.retired_scene_layer_reacquires_before_its_next_launch()
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs = GeneratedCacheFixture.reader(versionId)
@@ -214,8 +252,10 @@ function T.retired_scene_layer_reacquires_before_its_next_launch()
     })
     local ok, failure = xpcall(function()
       local services = envelope._services
-      Assert.isTrue(services.prepare(demandFor("first", SCENE_A)), "the first scene prepares")
-      local sceneImage = assert(services.drawable("scene:" .. SCENE_A), "the first scene image resolves")
+      local firstReady, firstFailure = pumpPrepare(services, demandFor("first", SCENE_A))
+      Assert.isTrue(firstReady, "the first scene prepares: " .. tostring(firstFailure))
+      local sceneImage, sceneFailure = pumpDrawable(services, "scene:" .. SCENE_A)
+      Assert.isTrue(sceneImage ~= nil, "the first scene image resolves: " .. tostring(sceneFailure))
       local firstLayer = assert(services.sceneLayer(), "the first launch stages its layer")
       -- Battle teardown releases the holder-owned scene image while the
       -- envelope pins keep the group; the layer drawables stay staged.
@@ -230,7 +270,8 @@ function T.retired_scene_layer_reacquires_before_its_next_launch()
       Assert.notNil(envelope._warmPinned["scene-intro:" .. SCENE_B], "warmup completes the successor group")
       -- The next launch at the retired scene re-acquires instead of
       -- drawing released leases through the stale memo.
-      Assert.isTrue(services.prepare(demandFor("second", SCENE_A)), "the retired scene prepares again")
+      local secondReady, secondFailure = pumpPrepare(services, demandFor("second", SCENE_A))
+      Assert.isTrue(secondReady, "the retired scene prepares again: " .. tostring(secondFailure))
       local secondLayer = assert(services.sceneLayer(), "the second launch stages its layer")
       local introOk, introErr =
         pcall(secondLayer.introLayer.drawable.draw, secondLayer.introLayer.drawable, graphics, 0, 0)
