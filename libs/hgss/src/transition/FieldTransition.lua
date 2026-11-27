@@ -125,6 +125,9 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field trigger table<string, unknown>? -- the trigger record that started the transition; retained across the metadata wait
 ---@field coveredSwap boolean -- true while a covered scripted swap owns the lifecycle: destination resolution/commit run, but no FieldTransitionFade is created or advanced because an external screen cover already owns visibility
 ---@field dynamicWarp table<string, unknown>|nil -- the saved dynamic-warp destination, resolved once when the transition starts and handed to destination demand and resolution
+---@field clock fun(): number? -- measured-time source bounding one staging slice; defaults to the monotonic presentation clock
+---@field _clock fun(): number -- measured-time source bounding one staging slice
+---@field _destinationSliceDeadline number? -- shared slice bound reused across the fixed ticks of one host update
 ---@field selectPreview fun(sourceMap: RuntimeFieldMap, destinationMap: RuntimeFieldMap, profileId: integer|nil): { imageKey: string, timeSlot: integer, profileId: integer|nil }? -- post-commit source-selected area-preview selector
 ---@field follower { isPresent: fun(): boolean, recall: fun(), rejoin: fun(reason: string) }? -- optional presence-gated follower collaborator: panel departure recall, panel/preview arrival rejoin
 ---@field preview FieldAreaPreview? the active time-aware area preview, nil outside the preview substate
@@ -140,10 +143,46 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local FieldTransition = {}
 FieldTransition.__index = FieldTransition
 
--- Indivisible destination staging steps the covered preparation may take per
--- fixed tick. The cover hides the work, and the budget keeps input handling and
--- the source session responsive while it runs.
-local DESTINATION_STAGE_UNITS_PER_TICK = 4
+-- Nominal real seconds one covered staging drive may spend advancing the
+-- staged destination. The cover hides the work, and the slice keeps input
+-- handling and the source session responsive while it runs. A private policy,
+-- not a contract: readiness, ordering, and publication are unchanged, and
+-- source tick and fade timing stay on the source clock.
+local DESTINATION_STAGE_SLICE_SECONDS = 0.008
+
+-- Advance the staged destination under the held cover in single integral
+-- units until it is ready, the task reports no progress while pending, or
+-- the shared slice expires. Zero work while not ready yields instead of
+-- spinning; a task that turns ready on zero work still completes. The
+-- deadline is shared across the fixed ticks of one host update and renewed
+-- once it expires, so catch-up ticks do not multiply the slice by gameplay
+-- speed. Staging failures propagate to the caller's abort path.
+---@param self FieldTransition
+---@param stage table<string, unknown> staged destination window
+---@return boolean ready
+local function advanceDestinationSlice(self, stage)
+  local clock = self._clock
+  local now = clock()
+  local deadline = self._destinationSliceDeadline
+  if deadline == nil or now >= deadline then
+    deadline = now + DESTINATION_STAGE_SLICE_SECONDS
+    self._destinationSliceDeadline = deadline
+  end
+  while not stage:isReady() do
+    local advanced, consumed = pcall(stage.advance, stage, 1)
+    if not advanced then
+      error(consumed, 0)
+    end
+    assert(type(consumed) == "number" and consumed >= 0, "destination staging consumed an invalid step count")
+    if consumed == 0 then
+      break
+    end
+    if clock() >= deadline then
+      break
+    end
+  end
+  return stage:isReady()
+end
 
 FieldTransition.PHASES = {
   idle = "idle",
@@ -213,6 +252,8 @@ function FieldTransition.new(options)
     _outdoorEnterDestination = nil,
     destinationStage = nil,
     destinationStageStarted = false,
+    _clock = options.clock or love.timer.getTime,
+    _destinationSliceDeadline = nil,
   }, FieldTransition)
 end
 
@@ -608,6 +649,7 @@ local function resetTransient(self)
   end
   self.destinationStage = nil
   self.destinationStageStarted = false
+  self._destinationSliceDeadline = nil
 end
 
 -- Keep the destination warp resolution as the logical anchor and retain the
@@ -1430,14 +1472,16 @@ function FieldTransition:updateFixed(inputSnapshot)
     local stage = self.destinationStage
     local destinationPlan = nil
     if stage ~= nil then
-      local advanced, consumed = pcall(stage.advance, stage, DESTINATION_STAGE_UNITS_PER_TICK)
-      if not advanced then
-        return self:_abort(consumed)
+      local sliced, slicedReady = pcall(advanceDestinationSlice, self, stage)
+      if not sliced then
+        return self:_abort(slicedReady)
       end
-      assert(type(consumed) == "number" and consumed >= 0, "destination staging consumed an invalid step count")
-      if not stage:isReady() then
+      if not slicedReady then
         return false
       end
+      -- The finished window transfers through the resolution below; the
+      -- slice bound served this destination and does not carry over.
+      self._destinationSliceDeadline = nil
       -- The transition keeps the finished stage owned through resolution: the
       -- swap takes it when it adopts this destination, and a resolution or
       -- preparation failure still releases it through the abort path. Its plan

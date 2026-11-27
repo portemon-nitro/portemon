@@ -735,11 +735,128 @@ end
 ---@field _ensured table<integer, boolean> per-descriptor derived-readiness record
 ---@field _pending table<string, unknown>? current cell pending state owned by the task
 ---@field _candidate table<string, table<string, unknown>> acquired cells awaiting publication
+---@field _aggregate FieldCoverage.AggregateStage? resumable aggregate assembly over the staged cells, private until publication
 ---@field _ready boolean
 ---@field _result FieldCoverage?
 ---@field _failed unknown?
 ---@field _released boolean
 ---@field _transferred boolean
+---@field advance fun(self: FieldCoverage.InitialTask, maxWorkUnits: integer): integer cooperative cell staging within the caller budget
+---@field isReady fun(self: FieldCoverage.InitialTask): boolean true once the coverage is published
+---@field takeResult fun(self: FieldCoverage.InitialTask): FieldCoverage the fully published coverage; ownership transfers once
+---@field release fun(self: FieldCoverage.InitialTask) pending initial-coverage task cleanup, exactly once
+---@field finish fun(self: FieldCoverage.InitialTask): FieldCoverage the fully published coverage
+
+-- Shared resumable aggregate construction, also driven by the recenter
+-- candidate path below: the initial task assembles the same stages
+-- incrementally instead of building a second synchronous aggregate.
+-- Whether one prediction window has finished every resumable unit.
+---@param stage FieldCoverage.AggregateStage
+---@return boolean
+local function aggregateStageReady(stage)
+  return stage.region:isReady() and stage.nextCellIndex > #stage.keys
+end
+
+-- The units one frame may spend assembling the predicted window. The assembly
+-- runs under a measured allowance rather than the caller's indivisible step
+-- budget: a window is one logical step, but its region copy and draw-list
+-- translation can take longer than a frame, so the slice -- not a step count --
+-- is what bounds the frame.
+local AGGREGATE_ASSEMBLY_SECONDS = 0.002
+local AGGREGATE_ASSEMBLY_MAX_UNITS = 4096
+-- Work taken between two measured-time checks: small enough that the slice
+-- boundary is tight, large enough that the clock is not read per plate.
+local AGGREGATE_ASSEMBLY_CHUNK = 16
+
+-- One prediction window's assembly in progress: the cells it will compose, the
+-- resumable region composition, and the translated draw parts accumulated so
+-- far. Every piece is completed before the window is published, so a partial
+-- stage is never observable as a candidate.
+---@class FieldCoverage.AggregateStage
+---@field anchorX integer
+---@field anchorZ integer
+---@field cells table<string, table<string, unknown>>
+---@field origin { x: number, y: number, z: number }
+---@field region FieldRegion.Task
+---@field keys string[]
+---@field nextCellIndex integer
+---@field worldParts table[]
+---@field cellPresentation table[]
+---@field prefetchDescriptors table[]
+
+---@param self FieldCoverage
+---@param anchorX integer
+---@param anchorZ integer
+---@param cells table<string, table<string, unknown>>
+---@return FieldCoverage.AggregateStage
+local function beginAggregateStage(self, anchorX, anchorZ, cells)
+  local anchorCell = assert(cells[key(anchorX, anchorZ)], "aggregate stage needs its anchor cell")
+  return {
+    anchorX = anchorX,
+    anchorZ = anchorZ,
+    cells = cells,
+    origin = assert(anchorCell.origin),
+    region = beginRegion(cells, { x = anchorX, z = anchorZ }),
+    keys = sortedCellKeys(cells),
+    nextCellIndex = 1,
+    worldParts = {},
+    cellPresentation = {},
+    prefetchDescriptors = descriptorsAtAnchor(self, anchorX, anchorZ),
+  }
+end
+
+-- Advance one assembly stage by at most `maxUnits` indivisible steps: a copied
+-- terrain plate, or one cell's translated draw parts. `deadline`/`clock` bound
+-- the measured time the call may spend, checked between small chunks.
+---@param stage FieldCoverage.AggregateStage
+---@param maxUnits number
+---@param clock fun(): number
+---@param deadline number?
+---@return integer consumed
+local function advanceAggregateStage(stage, maxUnits, clock, deadline)
+  local consumed = 0
+  while consumed < maxUnits and not aggregateStageReady(stage) do
+    if not stage.region:isReady() then
+      local chunk = math.min(maxUnits - consumed, AGGREGATE_ASSEMBLY_CHUNK)
+      consumed = consumed + stage.region:advance(chunk)
+    else
+      local used, complete = appendCellWorldParts(
+        stage,
+        stage.keys[stage.nextCellIndex],
+        math.min(maxUnits - consumed, AGGREGATE_ASSEMBLY_CHUNK)
+      )
+      consumed = consumed + used
+      if complete then
+        stage.nextCellIndex = stage.nextCellIndex + 1
+      end
+    end
+    if deadline ~= nil and clock() >= deadline then
+      break
+    end
+  end
+  return consumed
+end
+
+-- Publish a completed stage as the candidate window the crossing frame adopts.
+---@param self FieldCoverage
+---@param stage FieldCoverage.AggregateStage
+---@return table<string, unknown>
+local function finishAggregateStage(self, stage)
+  advanceAggregateStage(stage, math.huge, self._clock)
+  return {
+    anchorX = stage.anchorX,
+    anchorZ = stage.anchorZ,
+    cells = stage.cells,
+    region = stage.region:finish(),
+    origin = stage.origin,
+    terrainDependencyHash = dependencyIdentity(stage.cells, self.matrixMemberId, stage.anchorX, stage.anchorZ),
+    cellKeys = stage.keys,
+    worldParts = stage.worldParts,
+    cellPresentation = stage.cellPresentation,
+    prefetchDescriptors = stage.prefetchDescriptors,
+  }
+end
+
 local InitialCoverageTask = {}
 InitialCoverageTask.__index = InitialCoverageTask
 
@@ -761,37 +878,35 @@ local function failInitial(task, err)
     end
   end
   task._candidate = {}
+  task._aggregate = nil
   task._failed = err
 end
 
--- Publishes the staged candidate into the task-owned coverage once every
--- committed cell is complete: region, origin, dependency identity, world
--- parts, and halo prefetch are built from the same helpers synchronous
--- replacement uses, then assigned atomically before the task goes ready.
+-- Publishes a completed aggregate into the task-owned coverage: region,
+-- origin, dependency identity, world parts, and halo prefetch take the same
+-- shape the synchronous recenter candidate publishes, assigned atomically
+-- before the task goes ready. The aggregate arrives through the same
+-- resumable construction the recenter path uses, so no second builder exists.
 ---@param task FieldCoverage.InitialTask
-local function publishInitial(task)
+---@param finished table<string, unknown> completed aggregate window
+local function publishInitial(task, finished)
   assert(task._pending == nil, "publication requires no outstanding pending cell")
   local coverage = task._coverage
   local anchorX, anchorZ = task._anchorX, task._anchorZ
-  local staged = task._candidate
-  assert(staged[key(anchorX, anchorZ)], "coverage anchor is not a generated cell")
-  local region = buildRegion(staged, { x = anchorX, z = anchorZ })
-  local origin = assert(staged[key(anchorX, anchorZ)].origin)
-  local terrainDependencyHash = dependencyIdentity(staged, coverage.matrixMemberId, anchorX, anchorZ)
-  local cellKeys, worldParts, cellPresentation = buildWorldParts(staged, origin)
-  local prefetchDescriptors = descriptorsAtAnchor(coverage, anchorX, anchorZ)
-  coverage.cells = staged
+  assert(finished.cells[key(anchorX, anchorZ)], "coverage anchor is not a generated cell")
+  coverage.cells = finished.cells
   coverage.prefetched = {}
   coverage.anchorX, coverage.anchorZ = anchorX, anchorZ
-  coverage.region = region
-  coverage.origin = origin
-  coverage.terrainDependencyHash = terrainDependencyHash
-  coverage._cellKeys = cellKeys
-  coverage._worldParts = worldParts
-  coverage._cellPresentation = cellPresentation
-  coverage._prefetchDescriptors = prefetchDescriptors
+  coverage.region = finished.region
+  coverage.origin = finished.origin
+  coverage.terrainDependencyHash = finished.terrainDependencyHash
+  coverage._cellKeys = finished.cellKeys
+  coverage._worldParts = finished.worldParts
+  coverage._cellPresentation = finished.cellPresentation
+  coverage._prefetchDescriptors = finished.prefetchDescriptors
   coverage:queuePrefetch(anchorX, anchorZ)
   task._candidate = {}
+  task._aggregate = nil
   task._result = coverage
   task._ready = true
 end
@@ -817,13 +932,23 @@ function InitialCoverageTask:advance(maxWorkUnits)
   local ok, driveErr = pcall(function()
     while consumed < maxWorkUnits and not self._ready do
       if self._nextIndex > #self._descriptors then
-        -- Publication is task-owned work: with no budget left the task
-        -- stays pending until a later positive-budget advance funds it.
-        if consumed >= maxWorkUnits then
+        -- The committed cells are staged; the aggregate assembles from them
+        -- through the same resumable construction the recenter candidate
+        -- uses, funded by the caller's remaining units. Publication waits
+        -- until every plate and draw part is complete, and zero progress
+        -- while pending yields instead of spinning.
+        local aggregate = self._aggregate
+        if aggregate == nil then
+          aggregate = beginAggregateStage(self._coverage, self._anchorX, self._anchorZ, self._candidate)
+          self._aggregate = aggregate
+        end
+        local worked = advanceAggregateStage(aggregate, maxWorkUnits - consumed, self._coverage._clock, nil)
+        consumed = consumed + worked
+        if aggregateStageReady(aggregate) then
+          publishInitial(self, finishAggregateStage(self._coverage, aggregate))
+        elseif worked == 0 then
           break
         end
-        publishInitial(self)
-        consumed = consumed + 1
       else
         local descriptor = self._descriptors[self._nextIndex]
         if not self._ensured[self._nextIndex] then
@@ -890,7 +1015,12 @@ function InitialCoverageTask:finish()
     local ok, finishErr = pcall(function()
       while not self._ready do
         if self._nextIndex > #self._descriptors then
-          publishInitial(self)
+          local aggregate = self._aggregate
+          if aggregate == nil then
+            aggregate = beginAggregateStage(self._coverage, self._anchorX, self._anchorZ, self._candidate)
+            self._aggregate = aggregate
+          end
+          publishInitial(self, finishAggregateStage(self._coverage, aggregate))
         else
           local descriptor = self._descriptors[self._nextIndex]
           if not self._ensured[self._nextIndex] then
@@ -945,6 +1075,9 @@ function InitialCoverageTask:release()
     end
   end
   self._candidate = {}
+  -- The aggregate borrows the candidate cells and owns no release of its
+  -- own; dropping it publishes nothing.
+  self._aggregate = nil
 end
 
 -- Begins staged initial committed-cell acquisition around an already
@@ -977,6 +1110,7 @@ function FieldCoverage.begin(options)
     _failed = nil,
     _released = false,
     _transferred = false,
+    _aggregate = nil,
   }, InitialCoverageTask)
 end
 
@@ -1199,13 +1333,6 @@ function FieldCoverage:_imminentAggregateTarget()
   return anchorX, anchorZ
 end
 
--- Whether one prediction window has finished every resumable unit.
----@param stage FieldCoverage.AggregateStage
----@return boolean
-local function aggregateStageReady(stage)
-  return stage.region:isReady() and stage.nextCellIndex > #stage.keys
-end
-
 -- Whether one prediction-derived window is still owed under the same staging
 -- budget as the halo cells: the imminent target is resolvable and no live
 -- candidate already describes exactly that target. A stale candidate for a
@@ -1229,106 +1356,6 @@ function FieldCoverage:predictedWindowPending()
     return not aggregateStageReady(stage)
   end
   return true
-end
-
--- The units one frame may spend assembling the predicted window. The assembly
--- runs under a measured allowance rather than the caller's indivisible step
--- budget: a window is one logical step, but its region copy and draw-list
--- translation can take longer than a frame, so the slice -- not a step count --
--- is what bounds the frame.
-local AGGREGATE_ASSEMBLY_SECONDS = 0.002
-local AGGREGATE_ASSEMBLY_MAX_UNITS = 4096
--- Work taken between two measured-time checks: small enough that the slice
--- boundary is tight, large enough that the clock is not read per plate.
-local AGGREGATE_ASSEMBLY_CHUNK = 16
-
--- One prediction window's assembly in progress: the cells it will compose, the
--- resumable region composition, and the translated draw parts accumulated so
--- far. Every piece is completed before the window is published, so a partial
--- stage is never observable as a candidate.
----@class FieldCoverage.AggregateStage
----@field anchorX integer
----@field anchorZ integer
----@field cells table<string, table<string, unknown>>
----@field origin { x: number, y: number, z: number }
----@field region FieldRegion.Task
----@field keys string[]
----@field nextCellIndex integer
----@field worldParts table[]
----@field cellPresentation table[]
----@field prefetchDescriptors table[]
-
----@param self FieldCoverage
----@param anchorX integer
----@param anchorZ integer
----@param cells table<string, table<string, unknown>>
----@return FieldCoverage.AggregateStage
-local function beginAggregateStage(self, anchorX, anchorZ, cells)
-  local anchorCell = assert(cells[key(anchorX, anchorZ)], "aggregate stage needs its anchor cell")
-  return {
-    anchorX = anchorX,
-    anchorZ = anchorZ,
-    cells = cells,
-    origin = assert(anchorCell.origin),
-    region = beginRegion(cells, { x = anchorX, z = anchorZ }),
-    keys = sortedCellKeys(cells),
-    nextCellIndex = 1,
-    worldParts = {},
-    cellPresentation = {},
-    prefetchDescriptors = descriptorsAtAnchor(self, anchorX, anchorZ),
-  }
-end
-
--- Advance one assembly stage by at most `maxUnits` indivisible steps: a copied
--- terrain plate, or one cell's translated draw parts. `deadline`/`clock` bound
--- the measured time the call may spend, checked between small chunks.
----@param stage FieldCoverage.AggregateStage
----@param maxUnits number
----@param clock fun(): number
----@param deadline number?
----@return integer consumed
-local function advanceAggregateStage(stage, maxUnits, clock, deadline)
-  local consumed = 0
-  while consumed < maxUnits and not aggregateStageReady(stage) do
-    if not stage.region:isReady() then
-      local chunk = math.min(maxUnits - consumed, AGGREGATE_ASSEMBLY_CHUNK)
-      consumed = consumed + stage.region:advance(chunk)
-    else
-      local used, complete = appendCellWorldParts(
-        stage,
-        stage.keys[stage.nextCellIndex],
-        math.min(maxUnits - consumed, AGGREGATE_ASSEMBLY_CHUNK)
-      )
-      consumed = consumed + used
-      if complete then
-        stage.nextCellIndex = stage.nextCellIndex + 1
-      end
-    end
-    if deadline ~= nil and clock() >= deadline then
-      break
-    end
-  end
-  return consumed
-end
-
--- Publish a completed stage as the candidate window the crossing frame adopts.
----@param self FieldCoverage
----@param stage FieldCoverage.AggregateStage
----@return table<string, unknown>
-local function finishAggregateStage(self, stage)
-  advanceAggregateStage(stage, math.huge, self._clock)
-  return {
-    anchorX = stage.anchorX,
-    anchorZ = stage.anchorZ,
-    cells = stage.cells,
-    region = stage.region:finish(),
-    origin = stage.origin,
-    terrainDependencyHash = dependencyIdentity(stage.cells, self.matrixMemberId, stage.anchorX, stage.anchorZ),
-    cellKeys = stage.keys,
-    worldParts = stage.worldParts,
-    cellPresentation = stage.cellPresentation,
-    prefetchDescriptors = stage.prefetchDescriptors,
-  }
 end
 
 -- Build, and keep, the destination window for the imminent anchor when every

@@ -1465,10 +1465,10 @@ function T.blocking_coverage_construction_returns_a_usable_committed_window()
   end
 end
 
--- Final publication is caller-budgeted work: when the last committed
--- cell consumes the final supplied unit, the task stays pending until a
--- later advance supplies the publication unit.
-function T.initial_coverage_publication_consumes_one_work_unit()
+-- Final publication is caller-budgeted cooperative work: once the committed
+-- cells are staged, further advances assemble the private aggregate in small
+-- units before anything is published.
+function T.initial_coverage_publication_assembles_cooperatively()
   local releases = {}
   local task = FieldCoverage.begin({
     matrixMemberId = 1,
@@ -1481,10 +1481,14 @@ function T.initial_coverage_publication_consumes_one_work_unit()
   })
   local first = task:advance(9)
   Assert.equal(first, 9, "nine committed cells consume nine units")
-  Assert.isFalse(task:isReady(), "publication waits for its own work unit")
-  local second = task:advance(1)
-  Assert.equal(second, 1, "publication consumes exactly one unit")
-  Assert.isTrue(task:isReady(), "the funded publication completes the task")
+  Assert.isFalse(task:isReady(), "the unpublished aggregate is not transferable yet")
+  local guard = 0
+  while not task:isReady() do
+    local step = task:advance(1)
+    Assert.isTrue(step >= 0 and step <= 1, "every assembly advance stays within its budget")
+    guard = guard + 1
+    Assert.isTrue(guard <= 512, "incremental assembly completes with bounded work")
+  end
   local coverage = task:takeResult()
   Assert.equal(coverage:status().residentCount, 9, "the published coverage commits the radius-1 window")
   coverage:release()
@@ -2153,6 +2157,104 @@ function T.a_stale_staged_destination_is_never_committed()
   Assert.notNil(coverage.region, "the ordinary build still commits the crossing")
   Assert.isTrue(coverage.region ~= staged.region, "the stale window is rebuilt instead of committed")
   coverage:release()
+end
+
+-- Initial coverage assembles its aggregate incrementally: after the committed
+-- cells are staged, further cooperative advances complete a private aggregate
+-- before anything is published, and cancelling the pending task releases every
+-- acquired cell exactly once.
+function T.initial_coverage_assembles_its_aggregate_incrementally_before_publication()
+  local releases = {}
+  local task = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory(releases, 2)(descriptor)
+    end,
+  })
+  Assert.isFalse(task:isReady(), "staged initial coverage starts pending")
+  Assert.isFalse(pcall(task.takeResult, task), "no coverage is transferable before completion")
+  local cells = task:advance(9)
+  Assert.equal(cells, 9, "nine committed cells consume nine units")
+  Assert.isFalse(task:isReady(), "the unpublished aggregate is not transferable yet")
+  Assert.isFalse(pcall(task.takeResult, task), "no partial coverage escapes during assembly")
+  local assembly = task:advance(1)
+  Assert.isTrue(assembly >= 0 and assembly <= 1, "assembly advances stay within budget")
+  Assert.isFalse(
+    task:isReady(),
+    "the initial aggregate assembles incrementally instead of publishing synchronously"
+  )
+  Assert.isFalse(pcall(task.takeResult, task), "no partial coverage escapes during assembly")
+  local guard = 0
+  while not task:isReady() do
+    local progressed = task:advance(1)
+    Assert.isTrue(progressed >= 0 and progressed <= 1, "every assembly advance stays within its budget")
+    guard = guard + 1
+    Assert.isTrue(guard <= 512, "incremental assembly completes with bounded work")
+  end
+  local coverage = task:takeResult()
+  Assert.equal(coverage:status().residentCount, 9, "the assembled coverage commits the radius-1 window")
+  Assert.notNil(coverage.region, "the assembled coverage owns its region")
+  Assert.notNil(coverage.origin, "the assembled coverage owns its anchor origin")
+  local synchronous = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory({}, 2)(descriptor)
+    end,
+  })
+  Assert.equal(
+    coverage:status().terrainDependencyHash,
+    synchronous:status().terrainDependencyHash,
+    "incremental and synchronous construction share the dependency identity"
+  )
+  Assert.deepEqual(
+    { x = coverage.origin.x, z = coverage.origin.z },
+    { x = synchronous.origin.x, z = synchronous.origin.z },
+    "incremental and synchronous construction share the anchor origin"
+  )
+  Assert.equal(
+    #coverage:committedDescriptors(),
+    #synchronous:committedDescriptors(),
+    "incremental and synchronous construction commit the same window"
+  )
+  Assert.isTrue(
+    coverage.cells["0:0"].altitude ~= coverage.cells["1:0"].altitude,
+    "the fixture distinguishes cell heights across the assembled window"
+  )
+  coverage:release()
+  synchronous:release()
+
+  -- Cancel variant: releasing after every committed cell is staged but before
+  -- the aggregate publishes cleans every acquired runtime exactly once.
+  local cancelReleases = {}
+  local cancelled = FieldCoverage.begin({
+    matrixMemberId = 1,
+    index = makeIndex(),
+    anchorX = 1,
+    anchorZ = 1,
+    loadCell = function(descriptor)
+      return runtimeFactory(cancelReleases, 2)(descriptor)
+    end,
+  })
+  Assert.equal(cancelled:advance(9), 9, "cancellation covers fully staged committed cells")
+  Assert.isFalse(cancelled:isReady(), "the unpublished aggregate is cancellable")
+  cancelled:release()
+  local releasedCells = 0
+  for cellKey, count in pairs(cancelReleases) do
+    Assert.equal(count, 1, "cancelled cell " .. cellKey .. " releases exactly once")
+    releasedCells = releasedCells + 1
+  end
+  Assert.equal(releasedCells, 9, "cancellation cleans every staged cell")
+  cancelled:release()
+  for cellKey, count in pairs(cancelReleases) do
+    Assert.equal(count, 1, "a second release keeps cancelled cell " .. cellKey .. " at one release")
+  end
+  Assert.isFalse(pcall(cancelled.takeResult, cancelled), "no result is transferable after cancellation")
 end
 
 return { metadata = { capabilities = {} }, tests = T }

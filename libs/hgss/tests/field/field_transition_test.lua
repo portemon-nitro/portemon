@@ -2901,7 +2901,7 @@ function T.covered_swap_advances_the_destination_stage_across_cover_ticks()
   end
   Assert.equal(#advances, 3, "the destination window was staged over three cover ticks")
   for _, units in ipairs(advances) do
-    Assert.equal(units, 4, "each tick spends its bounded staging budget")
+    Assert.equal(units, 1, "covered staging advances one integral unit at a time under its measured slice")
   end
   Assert.equal(prepared, 1, "preparation runs once, after the staged window is ready")
   Assert.equal(#fixture.swaps, 1, "the swap commits once")
@@ -3058,6 +3058,145 @@ function T.a_staged_destination_is_released_through_its_owner_until_adopted()
   teardownFixture.transition:releaseDestinationStage()
   teardownFixture.transition:releaseDestinationStage()
   Assert.equal(midStageReleased, 1, "field teardown releases the mid-stage destination exactly once")
+end
+
+-- A pending destination keeps the covered swap under the cover: the source map
+-- and the input lock stay until the staged window is ready, the destination
+-- plan is applied exactly once, and an aborted stage releases exactly once.
+-- Covered ticks drive the stage one integral unit at a time under the measured
+-- slice instead of spending a fixed multi-unit batch per tick.
+function T.pending_destination_with_resumable_aggregate_state_stays_covered_until_ready()
+  local advances = {}
+  local pendingCalls = 2
+  local progressed = 0
+  local needed = 3
+  local ready = false
+  local stageReleased = 0
+  local plan = { anchorX = 2, anchorZ = 2 }
+  local requests = 0
+  local resolveCalls = 0
+  local observedPlan = nil
+  local prepared = 0
+  local fixture
+  fixture = outdoorFixture({
+    produceDestination = nil,
+    loader = {
+      requestWarp = function()
+        requests = requests + 1
+        return true
+      end,
+    },
+    resolveDestination = function(_, _, _, _, destinationPlan)
+      resolveCalls = resolveCalls + 1
+      observedPlan = destinationPlan
+      -- The swap adopts the staged window exactly as production does; the
+      -- transition's ownership ends with that transfer.
+      Assert.notNil(fixture.transition:takeDestinationStage(), "the resolution adopts the staged destination")
+      return {
+        destinationMap = { mapId = 60 },
+        destinationWarp = { x = 4, z = 14 },
+        fieldX = 684,
+        fieldZ = 393,
+        surfaceId = 0,
+        worldY = 0,
+        suppression = { mapId = 60, fieldX = 684, fieldZ = 393 },
+      }
+    end,
+  })
+  local source = fixture.source
+  fixture.transition.prepare = function()
+    prepared = prepared + 1
+    return {}
+  end
+  fixture.transition.produceDestination = function()
+    return {
+      plan = plan,
+      advance = function(_, units)
+        advances[#advances + 1] = units
+        if pendingCalls > 0 then
+          -- The worker data is not available yet: no progress, still pending.
+          pendingCalls = pendingCalls - 1
+          return 0
+        end
+        progressed = progressed + 1
+        if progressed >= needed then
+          ready = true
+        end
+        return 1
+      end,
+      isReady = function()
+        return ready
+      end,
+      release = function()
+        stageReleased = stageReleased + 1
+      end,
+    }
+  end
+  fixture.transition:startCoveredSwap(
+    source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  -- The pending ticks hold the cover: no swap, no preparation, source kept.
+  step(fixture.transition)
+  Assert.equal(fixture.transition.phase, "load_destination", "a pending destination keeps the cover")
+  Assert.isTrue(fixture.transition.locked, "the input lock holds while the destination pends")
+  Assert.equal(#fixture.swaps, 0, "no swap commits while the destination pends")
+  Assert.equal(prepared, 0, "no preparation runs while the destination pends")
+  Assert.isTrue(fixture.transition.sourceMap == source, "the source map stays until the staged window is ready")
+  for _ = 1, 16 do
+    if fixture.transition.phase == "idle" then
+      break
+    end
+    step(fixture.transition)
+  end
+  Assert.equal(fixture.transition.phase, "idle", "the staged destination completes the covered swap")
+  Assert.equal(#fixture.swaps, 1, "the destination commits exactly once")
+  Assert.equal(prepared, 1, "preparation runs once, after the staged window is ready")
+  Assert.equal(resolveCalls, 1, "the destination plan is applied exactly once")
+  Assert.isTrue(observedPlan == plan, "resolution sees the staged destination plan")
+  Assert.equal(requests, 1, "destination readiness is demanded exactly once")
+  Assert.equal(stageReleased, 0, "a committed stage is not released")
+  for _, units in ipairs(advances) do
+    Assert.equal(units, 1, "covered staging advances one integral unit at a time under its measured slice")
+  end
+
+  -- Abort variant: a stage that fails mid-cover releases what it built once
+  -- and never commits.
+  local abortReleased = 0
+  local abortFixture = outdoorFixture()
+  local abortCalls = 0
+  abortFixture.transition.produceDestination = function()
+    return {
+      advance = function()
+        abortCalls = abortCalls + 1
+        if abortCalls > 1 then
+          error("synthetic resumable staging failure", 0)
+        end
+        return 0
+      end,
+      isReady = function()
+        return false
+      end,
+      release = function()
+        abortReleased = abortReleased + 1
+      end,
+    }
+  end
+  abortFixture.transition:startCoveredSwap(
+    abortFixture.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  for _ = 1, 4 do
+    if abortFixture.transition.phase == "idle" then
+      break
+    end
+    step(abortFixture.transition)
+  end
+  Assert.equal(abortFixture.transition.phase, "idle", "the staging failure aborts to idle")
+  Assert.equal(abortReleased, 1, "the partial resumable stage is released exactly once")
+  Assert.equal(#abortFixture.swaps, 0, "a failed stage never commits")
 end
 
 return { tests = T }
