@@ -13,11 +13,13 @@
 -- ShowMon_LeftSide/ShowMon_RightSide subproc stages, WholeMonsSceneSubproc,
 -- sPicPosScaleAnimParams, the per-side reset positions, and the flash/fade
 -- frame counts. Background scrolls replicate the scheduled BG offsets,
--- including the source's own end-of-stage snaps. The follower sprite uses
--- the port's follower atlas frame (a documented adaptation: the source
--- flattens the species 3D-model texture over a generic sprite, which the
--- port cannot rasterize); whole-party shadows render dark throughout (the
--- source tints them with the mon palette after the flash).
+-- including the source's own end-of-stage snaps. The follower sprite draws
+-- the admitted species front portrait scaled as its 2D stand-in (a
+-- documented adaptation: the source flattens the species 3D-model texture
+-- over a generic sprite, which the port cannot rasterize, so the port
+-- samples the correct mon's own portrait instead of a generic overworld
+-- frame); whole-party shadows render dark throughout (the source tints
+-- them with the mon palette after the flash).
 --
 -- Pure state machine: no love, no I/O. Sprite placements are computed here
 -- so drawing consumes one snapshot; cry and sound cues are collected for
@@ -31,7 +33,6 @@ local PokepicAnim = require("game.hgss.src.ending.PokepicAnim")
 ---@field form integer
 ---@field gender string
 ---@field owLarge boolean
----@field owSeq integer
 ---@field cryDelayBack integer
 ---@field cryDelayFront integer
 ---@field height integer
@@ -92,7 +93,6 @@ local PokepicAnim = require("game.hgss.src.ending.PokepicAnim")
 ---@field private _twinkle { x: number, y: number }? sparkle placement
 ---@field private _twinkleClock integer?
 ---@field private _twinkleSeed integer
----@field private _owClock integer?
 ---@field private _wholeClock integer?
 ---@field private _outTimer integer?
 ---@field private _bg { x: number, y: number }[] background layer scrolls
@@ -283,16 +283,12 @@ function RegistrationScene:_resolveMember(mon)
   local species = assert(mon.species, "a recorded member names its species")
   local form = math.floor(tonumber(mon.form) or 0)
   local gender = mon.gender == "female" and "female" or "male"
-  -- The source runs overworld animation sequence 3 for Krabby and Kingler
-  -- and sequence 1 otherwise (species 98 and 99).
-  local owSeq = (species == "KRABBY" or species == "KINGLER") and 3 or 1
   return {
     species = species,
     crySpecies = mon.crySpecies,
     form = form,
     gender = gender,
     owLarge = mon.owLarge == true,
-    owSeq = owSeq,
     cryDelayBack = trackCryDelay(tracks, species, "back"),
     cryDelayFront = trackCryDelay(tracks, species, "front"),
     height = trackHeight(tracks, species, form, gender),
@@ -470,11 +466,11 @@ function RegistrationScene:_resetIndivPositions()
   end
   self._frontScale = 1.0
   self._shadowScale = 1.5
-  self._owClock = nil
 end
 
 -- Enters one individual stage: resets its timer and runs the stage's entry
--- effects (cry scheduling, picture animation starts, overworld anim clock).
+-- effects (cry scheduling and picture animation starts; the follower is a
+-- static portrait stand-in with no animation clock).
 ---@param self RegistrationScene
 ---@param stageIdx integer
 function RegistrationScene:_enterIndivStage(stageIdx)
@@ -491,8 +487,6 @@ function RegistrationScene:_enterIndivStage(stageIdx)
   elseif name == "print_species" then
     self:_scheduleCry(mon, mon.cryDelayFront)
     self._anims.front = PokepicAnim.new(mon.frontSteps)
-  elseif name == "anim_ow" then
-    self._owClock = 0
   end
 end
 
@@ -761,9 +755,6 @@ function RegistrationScene:step(input)
   self:_flashStep()
   self:_cryStep()
   self:_animStep()
-  if self._owClock ~= nil then
-    self._owClock = self._owClock + 1
-  end
   if self._twinkleClock ~= nil then
     self._twinkleClock = self._twinkleClock + 1
   end
@@ -1028,8 +1019,6 @@ function RegistrationScene:status()
     photoWait = self._phase == "whole" and stageName == "wait_button",
     backFrame = backFrame,
     frontFrame = frontFrame,
-    owClock = self._owClock,
-    owSeq = mon ~= nil and mon.owSeq or 1,
     owLarge = mon ~= nil and mon.owLarge == true,
     wholeClock = self._wholeClock,
     outTimer = math.min(self._outTimer or 0, 60),

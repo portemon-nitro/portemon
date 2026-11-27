@@ -500,6 +500,14 @@ function GameClearCoordinator:updateFixed(input)
   return "running"
 end
 
+-- Marks the saving surface as genuinely presented so the state cannot
+-- publish on a fixed tick that no draw ever displayed.
+function GameClearCoordinator:noteSavingPresented()
+  if self._state ~= nil and type(self._state.noteSavingPresented) == "function" then
+    self._state:noteSavingPresented()
+  end
+end
+
 -- Release the ending. The published save (if any) stays durable; an ending the
 -- application closes before its publication leaves the previous save untouched.
 ---@param _ string?

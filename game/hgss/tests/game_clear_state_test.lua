@@ -214,6 +214,8 @@ function T.tests.congratulations_waits_while_the_bundle_is_pending()
   end
   Assert.equal(state:phase(), "saving", "the played-out photo moves to saving")
   Assert.equal(state:step(nil), "wait", "the first saving tick arms the write while the message draws")
+  Assert.equal(state:step(nil), "wait", "catch-up ticks never publish over an undrawn surface")
+  state:noteSavingPresented()
   Assert.equal(state:step(nil), "publish", "the saving surface publishes after its admitted frame")
 end
 
@@ -247,7 +249,9 @@ local function choreographyBundle()
     },
   }
   staged.credits.cutsceneSprites = {
-    [0] = { sequences = { [2] = { frames = { { durationTicks = 2, path = "cut", blank = false } }, playMode = "forward" } } },
+    [0] = {
+      sequences = { [2] = { frames = { { durationTicks = 2, path = "cut", blank = false } }, playMode = "forward" } },
+    },
   }
   return staged
 end
@@ -258,6 +262,8 @@ function T.tests.credits_steps_its_choreography_once_ready()
   presentation:prepare(choreographyBundle())
   admitSave(presentation)
   Assert.equal(state:step(nil), "wait", "the first admitted saving tick arms the write")
+  Assert.equal(state:step(nil), "wait", "catch-up ticks never publish over an undrawn surface")
+  state:noteSavingPresented()
   Assert.equal(state:step(nil), "publish", "the Red ending publishes once its save receipt admits")
   state:saveSucceeded()
   admitCredits(presentation)
@@ -301,6 +307,8 @@ function T.tests.credits_wait_while_the_bundle_is_pending()
   Assert.equal(state:step(nil), "wait", "sections without admission never publish")
   admitSave(presentation)
   Assert.equal(state:step(nil), "wait", "the first admitted saving tick arms the write")
+  Assert.equal(state:step(nil), "wait", "catch-up ticks never publish over an undrawn surface")
+  state:noteSavingPresented()
   Assert.equal(state:step(nil), "publish", "the Red ending publishes once its save receipt admits")
   state:saveSucceeded()
   for _ = 1, 100 do
@@ -366,6 +374,74 @@ function T.tests.without_a_presentation_owner_the_headless_timeline_is_unchanged
   Assert.equal(state:phase(), "saving", "headless moves to saving")
   Assert.equal(state:step(nil), "wait", "headless arms the write on its first saving tick")
   Assert.equal(state:step(nil), "publish", "headless saving publishes")
+end
+
+function T.tests.fade_is_a_phase_owned_envelope_never_a_stale_timer()
+  -- F01: the fade clock must not survive its phase. Steady credits publish
+  -- zero alpha even long after the save fade elapsed; fade-out publishes
+  -- 0->1, fade-in publishes 1->0.
+  local presentation = HallOfFamePresentation.new(nil)
+  presentation:prepare(choreographyBundle())
+  local state = GameClearState.new({
+    vsRed = 1,
+    previouslyCleared = false,
+    presentation = presentation,
+    headless = true,
+  })
+  Assert.equal(state:step(nil), "wait", "headless arms the write")
+  Assert.equal(state:step(nil), "publish", "headless publishes")
+  state:saveSucceeded()
+  for _ = 1, 100 do
+    state:step(nil)
+    if state:phase() == "credits" then
+      break
+    end
+  end
+  Assert.equal(state:phase(), "credits", "the roll starts")
+  -- Advance past the old 8-frame save fade: steady credits stay clear.
+  -- The fixture roll is 24 frames, so hold well inside it.
+  for _ = 1, 10 do
+    state:step(nil)
+    local status = state:status()
+    Assert.equal(status.phase, "credits", "steady credits hold")
+    Assert.equal(status.fadeAlpha, 0, "steady credits never carry a stale fade")
+  end
+  -- Run to the roll end: credits_fade climbs 0->1 monotonically.
+  local last = -1
+  for _ = 1, 100 do
+    if state:phase() == "credits_fade" then
+      break
+    end
+    state:step(nil)
+  end
+  Assert.equal(state:phase(), "credits_fade", "the roll fades")
+  for _ = 1, 40 do
+    local status = state:status()
+    if status.phase ~= "credits_fade" then
+      break
+    end
+    Assert.isTrue(status.fadeAlpha >= last, "fade-out climbs monotonically")
+    last = status.fadeAlpha
+    state:step(nil)
+  end
+  Assert.isTrue(last >= 0.99 or state:phase() == "the_end_fade_in", "fade-out reaches black")
+  -- The End fade-in descends 1->0, then steady The End holds zero.
+  if state:phase() == "the_end_fade_in" then
+    local first = state:status().fadeAlpha
+    Assert.isTrue(first > 0.5, "fade-in starts near black")
+    local prev = first
+    for _ = 1, 80 do
+      local status = state:status()
+      if status.phase ~= "the_end_fade_in" then
+        break
+      end
+      Assert.isTrue(status.fadeAlpha <= prev + 1e-9, "fade-in descends monotonically")
+      prev = status.fadeAlpha
+      state:step(nil)
+    end
+    Assert.equal(state:phase(), "the_end", "fade-in lands on The End")
+    Assert.equal(state:status().fadeAlpha, 0, "steady The End publishes no fade")
+  end
 end
 
 return T

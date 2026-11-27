@@ -311,14 +311,20 @@ function T.pc_showcase_paints_record_pages(scope)
   local grid = render(scope, state)
   Assert.isTrue(paintedPixels(grid) > 0, "the showcase grid paints")
   local painted = paintedText(recorded)
-  Assert.isTrue(painted:find("TYPHLOSION", 1, true) ~= nil, "the showcase paints the recorded party species")
-  Assert.isTrue(painted:find("PIDGEOT", 1, true) ~= nil, "the showcase paints every recorded member")
+  -- Retail shows icons for every member but text detail only for the
+  -- cursor-selected member: no full species text roster is painted.
+  Assert.isTrue(painted:find("TYPHLOSION", 1, true) ~= nil, "the showcase paints the selected member species")
+  Assert.isNil(painted:find("PIDGEOT", 1, true), "the showcase paints no full species text roster")
   Assert.isTrue(painted:find("GOLD", 1, true) ~= nil, "the grid paints the selected detail OT name without confirming")
   -- Moving the cursor refreshes the detail without a page transition.
-  host:step(handle, { { type = "navigate", direction = "down" } })
+  host:step(handle, { { type = "navigate", direction = "right" } })
   recorded.text = {}
   local moved = render(scope, state)
   Assert.isTrue(paintedPixels(moved) > 0, "the moved cursor still paints")
+  Assert.isTrue(
+    paintedText(recorded):find("PIDGEOT", 1, true) ~= nil,
+    "the moved cursor paints the newly selected detail"
+  )
   -- The source cancel input closes the showcase from any cursor: there is
   -- no team/member page mode to walk back through. The script task takes
   -- the close result and closes the host; the test follows that same

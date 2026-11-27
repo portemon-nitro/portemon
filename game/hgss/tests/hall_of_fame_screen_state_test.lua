@@ -170,32 +170,32 @@ function T.tests.raw_pointer_press_selects_through_the_shared_geometry()
   -- and release never activate, so paging fires exactly once per press.
   local party = { partyMon("A"), partyMon("B") }
   local state = screenWithParties({ party, party })
-  -- Slot 1's own anchor (0x80, 0x48): a press selects it; motion and
+  -- Slot 1's own anchor (0x80,32): a press selects it; motion and
   -- release on the same cell change nothing.
-  state:updateFixed({ { type = "pointer_down", x = 0x80, y = 0x48 } })
+  state:updateFixed({ { type = "pointer_down", x = 0x80, y = 32 } })
   Assert.equal(state:status().cursor, 1, "a press on slot 1 selects slot 1")
-  state:updateFixed({ { type = "pointer_move", x = 0x80, y = 0x48 } })
+  state:updateFixed({ { type = "pointer_move", x = 0x80, y = 32 } })
   Assert.equal(state:status().cursor, 1, "motion never reselects")
-  state:updateFixed({ { type = "pointer_up", x = 0x80, y = 0x48 } })
+  state:updateFixed({ { type = "pointer_up", x = 0x80, y = 32 } })
   Assert.equal(state:status().cursor, 1, "release never activates")
   -- A press far outside every target holds the cursor.
   state:updateFixed({ { type = "pointer_down", x = 500, y = 500 } })
   Assert.equal(state:status().cursor, 1, "an outside press holds the cursor")
-  -- The next paging box (232..255, 104..127) pages to the older record
+  -- The next paging box (232..255,52..83) pages to the older record
   -- exactly once per press; motion and release between presses do nothing.
   local before = state:status().recordNumber
-  state:updateFixed({ { type = "pointer_down", x = 240, y = 110 } })
+  state:updateFixed({ { type = "pointer_down", x = 240, y = 60 } })
   Assert.isTrue(state:status().recordNumber ~= before, "a press on next pages to the older record")
   local paged = state:status().recordNumber
-  state:updateFixed({ { type = "pointer_move", x = 240, y = 110 } })
+  state:updateFixed({ { type = "pointer_move", x = 240, y = 60 } })
   Assert.equal(state:status().recordNumber, paged, "motion never pages")
-  state:updateFixed({ { type = "pointer_up", x = 240, y = 110 } })
+  state:updateFixed({ { type = "pointer_up", x = 240, y = 60 } })
   Assert.equal(state:status().recordNumber, paged, "release never pages")
   -- The prev paging box pages back to the newer record.
-  state:updateFixed({ { type = "pointer_down", x = 20, y = 110 } })
+  state:updateFixed({ { type = "pointer_down", x = 12, y = 60 } })
   Assert.equal(state:status().recordNumber, before, "a press on prev pages back")
   -- The exit anchor closes the application from any cursor.
-  state:updateFixed({ { type = "pointer_down", x = 0xE0, y = 0xB0 } })
+  state:updateFixed({ { type = "pointer_down", x = 224, y = 176 } })
   Assert.isTrue(state:status().exitSelected, "a press on exit selects exit")
   Assert.isTrue(state:status().phase == "closed", "exit closes the application")
 end

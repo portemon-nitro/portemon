@@ -324,8 +324,6 @@ local function checkRegistration(section)
       checkSequence(sequences[seqNo], what .. " sequence " .. seqNo)
     end
   end
-  checkSequences(registration.owSmall, "registration follower", { 0, 1, 2, 3 })
-  checkSequences(registration.owLarge, "registration large follower", { 0, 1, 2, 3 })
   checkSequences(registration.twinkle, "registration twinkle", { 0 })
   checkSequences(registration.twinkleShadow, "registration twinkle shadow", { 0 })
   checkSequences(registration.playerEthan, "registration male player", { 0 })
@@ -389,8 +387,8 @@ end
 local function checkShowcase(section)
   local showcase = checkRecord(section, "showcase section")
   checkInteger(showcase.messageBank, "showcase message bank", 1)
-  -- Showcase background archives live in provenance until a realized
-  -- surface consumes them.
+  checkImage(showcase.mainBg, "showcase main background")
+  checkImage(showcase.subBg, "showcase sub background")
   return showcase
 end
 

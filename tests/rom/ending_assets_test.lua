@@ -36,6 +36,16 @@ local function testEndingBundle(romFs)
   )
   Assert.equal(bundle.sections.registration.messageBank, 180, "the registration text bank is the source one")
   Assert.equal(bundle.sections.showcase.messageBank, 181, "the showcase text bank is the source one")
+  Assert.isTrue(
+    type(bundle.sections.showcase.mainBg) == "table" and type(bundle.sections.showcase.mainBg.path) == "string",
+    "the showcase carries its realized main background"
+  )
+  Assert.isTrue(
+    type(bundle.sections.showcase.subBg) == "table" and type(bundle.sections.showcase.subBg.path) == "string",
+    "the showcase carries its realized sub background"
+  )
+  -- The save-result dwell is a presentation constant, never generated art:
+  -- the bundle carries no printer duration.
   -- Realized art lives in the consumed sections, not provenance: the
   -- registration and credit choreography above consumes it, so the runtime
   -- draw contract carries backgrounds, sprite frames, animation tracks and
@@ -87,15 +97,10 @@ local function testEndingBundle(romFs)
   for _, layer in ipairs(registration.bgWhole) do
     Assert.isTrue(type(layer.path) == "string", "a whole-party background layer names its image")
   end
-  Assert.isTrue(#registration.owSmall[0].frames >= 1, "the small follower sprite keeps its frames")
-  Assert.isTrue(#registration.owLarge[0].frames >= 1, "the large follower sprite keeps its frames")
   Assert.isTrue(#registration.twinkle[0].frames >= 1, "the twinkle sparkle keeps its frames")
   Assert.isTrue(#registration.playerEthan[0].frames >= 1, "the male player picture keeps its frames")
   Assert.isTrue(#registration.playerLyra[0].frames >= 1, "the female player picture keeps its frames")
-  local typhlosion = assert(
-    registration.monTracks.TYPHLOSION,
-    "the bundle carries per-species animation tracks"
-  )
+  local typhlosion = assert(registration.monTracks.TYPHLOSION, "the bundle carries per-species animation tracks")
   Assert.isTrue(type(typhlosion.front.cryDelay) == "number", "a front track carries its cry delay")
   Assert.isTrue(type(typhlosion.back.cryDelay) == "number", "a back track carries its cry delay")
   Assert.equal(#typhlosion.front.steps, 10, "a front track carries its ten animation steps")

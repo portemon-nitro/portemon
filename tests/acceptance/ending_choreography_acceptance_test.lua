@@ -197,7 +197,10 @@ function T.tests.registration_reveals_each_mon_before_the_whole_party_photo()
     game:pressAction()
     -- Drive on with periodic action edges: the wait answers the first one
     -- it sees, and later edges are ignored while the flashes play out.
-    local reached = false
+    -- Reaching saving alone never establishes publication: the save must
+    -- reach save_status through the presented-frame gate and the
+    -- transaction's own success report.
+    local reachedSaving = false
     for step = 1, 600 do
       if step % 10 == 0 then
         game:pressAction()
@@ -206,11 +209,26 @@ function T.tests.registration_reveals_each_mon_before_the_whole_party_photo()
       end
       local coordinator = assert(game.runtime.gameClear, "the ending owns its coordinator")
       if coordinator:phase() == "saving" or coordinator:phase() == "save_status" then
-        reached = true
+        reachedSaving = true
         break
       end
     end
-    Assert.isTrue(reached, "the acknowledged photo publishes its save")
+    Assert.isTrue(reachedSaving, "the acknowledged photo reaches its saving phase")
+    do
+      local coordinator = assert(game.runtime.gameClear, "the ending owns its coordinator")
+      if type(coordinator.noteSavingPresented) == "function" then
+        coordinator:noteSavingPresented()
+      end
+      local published = false
+      for _ = 1, 60 do
+        game:step()
+        if coordinator:phase() == "save_status" then
+          published = true
+          break
+        end
+      end
+      Assert.isTrue(published, "the acknowledged photo publishes its save")
+    end
   end, debug.traceback)
   game:close()
   if not ok then

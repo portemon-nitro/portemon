@@ -103,6 +103,7 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@field displayContext DisplayContext the shared actual-display measurement owner
 ---@field presentationOverrides table<string, table<string, unknown>>? product-root per-case function overrides by application
 ---@field _starterUiSuspended boolean whether modal UI semantics are suspended while the open starter chooser prepares
+---@field _endingPortraitManifestCache FieldState.EndingPortraitManifest? cached ending portrait-manifest projection, nil until the first demand loads it
 local FieldState = {}
 FieldState.__index = FieldState
 
@@ -336,21 +337,29 @@ function FieldState:update(dt)
   -- of drawing a partial roll. This runs before runtime fixed ticks so
   -- catch-up ticks cannot run ahead of the surface.
   if self.runtime.gameClear ~= nil and self.runtime.gameClear:isActive() then
-    local iconsReady, leagueFailure = self:_prepareLeagueEndingIcons()
-    if leagueFailure ~= nil then
-      error("League ending icon preparation failed: " .. tostring(leagueFailure), 0)
-    end
     local leaguePresentation = self.runtime.endingPresentation
     if leaguePresentation ~= nil and leaguePresentation:isReady() then
-      if iconsReady then
-        leaguePresentation:noteIconsAdmitted()
-      end
       local phase = self.runtime.gameClear:phase()
       -- The single authoritative receipt comes from the feature-owned
       -- mapping; the presentation is a required collaborator, so a
-      -- missing mapping fails loudly instead of falling back.
+      -- missing mapping fails loudly instead of falling back. Only the
+      -- advancing phase's own resources admit here: Red starting at
+      -- saving never touches portrait/detail loaders, and credits never
+      -- warms party art.
       local required =
         assert(leaguePresentation.requiredSectionsForPhase, "the ending presentation owns its phase receipt")(phase)
+      local needsRegistration = false
+      local needsSave = false
+      local needsCredits = false
+      for _, name in ipairs(required) do
+        if name == "registration" then
+          needsRegistration = true
+        elseif name == "save" then
+          needsSave = true
+        elseif name == "credits" then
+          needsCredits = true
+        end
+      end
       local admitResources = {
         cacheFs = self.runtime.cacheFs,
         graphics = love ~= nil and love.graphics or nil,
@@ -361,24 +370,35 @@ function FieldState:update(dt)
       if admitFailure ~= nil then
         error("League ending image preparation failed: " .. tostring(admitFailure), 0)
       end
-      -- Warm the save-result line with the live player name so the
-      -- saving/result surface performs no bank acquisition while drawing.
-      local playerName = nil
-      local playerData = self.runtime.playerData
-      if type(playerData) == "table" and type(playerData.profile) == "table" then
-        playerName = playerData.profile.name
+      if needsRegistration then
+        local iconsReady, leagueFailure = self:_prepareLeagueEndingIcons()
+        if leagueFailure ~= nil then
+          error("League ending icon preparation failed: " .. tostring(leagueFailure), 0)
+        end
+        if iconsReady then
+          leaguePresentation:noteIconsAdmitted()
+        end
       end
-      if type(playerName) == "string" and playerName ~= "" then
-        local _, saveFailure = leaguePresentation:admitSaveResult(playerName, admitResources)
-        if saveFailure ~= nil then
-          error("League ending text preparation failed: " .. tostring(saveFailure), 0)
+      if needsSave then
+        -- Warm the save-result line with the live player name so the
+        -- saving/result surface performs no bank acquisition while drawing.
+        local playerName = nil
+        local playerData = self.runtime.playerData
+        if type(playerData) == "table" and type(playerData.profile) == "table" then
+          playerName = playerData.profile.name
+        end
+        if type(playerName) == "string" and playerName ~= "" then
+          local _, saveFailure = leaguePresentation:admitSaveResult(playerName, admitResources)
+          if saveFailure ~= nil then
+            error("League ending text preparation failed: " .. tostring(saveFailure), 0)
+          end
         end
       end
       -- Warm the live registration party's localized names outside draw so
       -- a steady congratulations phase performs no bank acquisition. The
       -- snapshot is the same normalized record draw paints (derived level,
       -- meeting records, trade kind), so warmed keys always cover drawn lines.
-      if self.runtime.monService ~= nil then
+      if needsRegistration and self.runtime.monService ~= nil then
         local party =
           assert(self.presentationResources, "ending detail snapshot needs its resources"):endingRegistrationParty(
             self.runtime
@@ -418,6 +438,8 @@ function FieldState:update(dt)
         if detailReady then
           leaguePresentation:noteDetailsAdmitted()
         end
+      end
+      if needsCredits then
         -- The credits cutscenes resolve their player/friend sprites by
         -- gender: note the live profile once so the choreography builds
         -- with the same identity the whole-party windows draw.
@@ -752,6 +774,74 @@ function FieldState:_prepareHallOfFameShowcase()
       presentation:noteIconsAdmitted()
     end
   end
+  -- Admit the showcase's front portraits only: the viewer draws the
+  -- selected front and never draws backs or silhouettes, so demanding
+  -- backs would pin unneeded pages across 30 history records. Fronts for
+  -- the whole open party warm together so cursor movement never stalls;
+  -- history mons carry otId (not origin) and may omit form/personality.
+  do
+    local status = child:status()
+    local party = status ~= nil and status.party or nil
+    local portraitParty = {}
+    if type(party) == "table" then
+      for _, mon in ipairs(party) do
+        if type(mon) == "table" and type(mon.species) == "string" then
+          portraitParty[#portraitParty + 1] = {
+            species = mon.species,
+            form = tonumber(mon.form) or 0,
+            personality = tonumber(mon.personality) or 0,
+            origin = { trainerId = tonumber(mon.otId) or 0 },
+          }
+        end
+      end
+    end
+    if #portraitParty > 0 and type(presentation.admitPortraits) == "function" then
+      -- Enroll all front pages through the one shared demand owner before
+      -- waiting: a ready receipt authorizes byte uploads, and a ready
+      -- receipt with missing bytes is terminal, never an endless pending.
+      local HallOfFamePresentationShowcase = require("game.hgss.src.ending.HallOfFamePresentation")
+      local frontSelectors = {}
+      do
+        local seen = {}
+        for _, mon in ipairs(portraitParty) do
+          local pair = HallOfFamePresentationShowcase.portraitSelectorsFor(mon, runtime.monCatalog)
+          if pair ~= nil and not seen[pair.front] then
+            seen[pair.front] = true
+            frontSelectors[#frontSelectors + 1] = pair.front
+          end
+        end
+      end
+      if #frontSelectors > 0 then
+        local allReady, demandFailure = self:_demandPortraitPages(frontSelectors)
+        if demandFailure ~= nil then
+          return false, demandFailure
+        end
+        if not allReady then
+          return false, nil
+        end
+      end
+      local admitted, admitFailure = presentation:admitPortraits({
+        cacheFs = runtime.cacheFs,
+        graphics = love ~= nil and love.graphics or nil,
+        messageProvider = runtime.messageProvider,
+        fontDef = runtime.fontDef,
+        monCatalog = runtime.monCatalog,
+      }, portraitParty)
+      if admitFailure ~= nil then
+        return false, admitFailure
+      end
+      if not admitted then
+        return false, "Showcase portrait page is ready but its bytes are missing"
+      end
+      if type(presentation.notePortraitsAdmitted) == "function" then
+        presentation:notePortraitsAdmitted()
+      end
+    else
+      if type(presentation.notePortraitsAdmitted) == "function" then
+        presentation:notePortraitsAdmitted()
+      end
+    end
+  end
   return true, nil
 end
 
@@ -800,6 +890,86 @@ function FieldState:_prepareLeagueEndingIcons()
   return false, failure
 end
 
+-- Cached portrait manifest behind ending demands: loaded once per field
+-- lifetime instead of on every fixed-tick admission, so the update holds
+-- its receipt without filesystem churn. A missing cache stays pending;
+-- a malformed manifest attributes terminally.
+--
+-- The ending portrait-manifest projection this state reads: the full
+-- generated manifest carries pages and personalizations, but the demand
+-- path resolves only each selector's page identity.
+---@class FieldState.EndingPortraitEntry
+---@field pageId integer zero-based portrait atlas page the selector resolves to
+
+---@class FieldState.EndingPortraitManifest
+---@field entries table<string, FieldState.EndingPortraitEntry> portrait entries by canonical selector
+---@return FieldState.EndingPortraitManifest? manifest, nil while pending
+---@return string? failure terminal failure, nil while pending
+function FieldState:_endingPortraitManifest()
+  if self._endingPortraitManifestCache ~= nil then
+    return self._endingPortraitManifestCache, nil
+  end
+  local runtime = assert(self.runtime, "ending portrait manifest needs its runtime")
+  local ok, manifest =
+    pcall(runtime.cacheFs.loadLua, runtime.cacheFs, require("libs.assets.src.MonCache").portraitManifestPath())
+  if not ok then
+    return nil, nil
+  end
+  if type(manifest) ~= "table" or type(manifest.entries) ~= "table" then
+    return nil, "League ending portrait manifest is malformed"
+  end
+  self._endingPortraitManifestCache = manifest
+  return manifest, nil
+end
+
+-- Enrolls every required portrait page through the shared provisioner
+-- before waiting: one owner for selector resolution, deduplicated page
+-- enrollment and terminal receipt checking. Never returns early on a
+-- single pending page; independent pages enroll together so one cold page
+-- never serializes the rest. Receipt readiness is authoritative: the
+-- caller must not read/upload pending pages.
+---@param selectors string[] portrait selectors to demand
+---@return boolean allReady true once every page receipt is ready
+---@return string? failure terminal demand failure, nil while pending/ready
+function FieldState:_demandPortraitPages(selectors)
+  local runtime = assert(self.runtime, "portrait demand needs its runtime")
+  local derived = runtime.derivedAssets
+  if derived == nil or type(derived.requestMonPortraitPage) ~= "function" then
+    return false, nil
+  end
+  local manifest, manifestFailure = self:_endingPortraitManifest()
+  if manifestFailure ~= nil then
+    return false, manifestFailure
+  end
+  if manifest == nil then
+    return false, nil
+  end
+  local seenPages = {}
+  local allReady = true
+  for _, selector in ipairs(selectors) do
+    local entry = manifest.entries[selector]
+    if type(entry) ~= "table" or type(entry.pageId) ~= "number" then
+      allReady = false
+    else
+      local pageId = entry.pageId
+      if not seenPages[pageId] then
+        seenPages[pageId] = true
+        local okDemand, ready, demandFailure = pcall(derived.requestMonPortraitPage, pageId, "required")
+        if not okDemand then
+          return false, "League ending portrait demand failed: " .. tostring(ready)
+        end
+        if demandFailure ~= nil then
+          return false, tostring(demandFailure)
+        end
+        if ready ~= true then
+          allReady = false
+        end
+      end
+    end
+  end
+  return allReady, nil
+end
+
 -- Admits the recorded party's own front/back portrait pages through the
 -- shared mon portrait provider. Selectors resolve through the same
 -- gender/shiny projection draw uses; a missing provider, catalog, or page
@@ -835,18 +1005,15 @@ function FieldState:_prepareLeagueEndingPortraits(party)
   if #selectors == 0 then
     return true, nil
   end
-  local derived = runtime.derivedAssets
-  if derived ~= nil and type(derived.requestMonPortraitPage) == "function" then
-    local manifestOk, manifest =
-      pcall(runtime.cacheFs.loadLua, runtime.cacheFs, require("libs.assets.src.MonCache").portraitManifestPath())
-    if manifestOk and type(manifest) == "table" and type(manifest.entries) == "table" then
-      for _, selector in ipairs(selectors) do
-        local entry = manifest.entries[selector]
-        if type(entry) == "table" and type(entry.pageId) == "number" then
-          pcall(derived.requestMonPortraitPage, derived, entry.pageId, "required")
-        end
-      end
-    end
+  -- The provisioner owns compilation; admission below only uploads ready
+  -- bytes. Receipt readiness is authoritative: pending pages hold without
+  -- attempting uploads, so readable bytes never substitute for the receipt.
+  local allReady, demandFailure = self:_demandPortraitPages(selectors)
+  if demandFailure ~= nil then
+    return false, demandFailure
+  end
+  if not allReady then
+    return false, nil
   end
   local admitted, failure = leaguePresentation:admitPortraits({
     cacheFs = runtime.cacheFs,
@@ -858,7 +1025,12 @@ function FieldState:_prepareLeagueEndingPortraits(party)
   if failure ~= nil then
     return false, failure
   end
-  return admitted == true, nil
+  if admitted == true then
+    return true, nil
+  end
+  -- The provisioner reported every page ready yet bytes are still missing:
+  -- the page is terminally unavailable, not indefinitely pending.
+  return false, "League ending portrait page is ready but its bytes are missing"
 end
 
 -- Warms the registration reveal's text outside draw: the memo landmark

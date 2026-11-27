@@ -1421,6 +1421,19 @@ function FieldPresentationResources:drawEnding(runtime)
     end
   end
   status.saveMessage = runtime.saveStatus
+  -- Atomic state-to-render boundary: a ready receipt without its
+  -- initialized immutable scene paints nothing. The scene constructs on
+  -- the first fixed tick after admission; an outer update with a
+  -- cold-to-ready receipt but no fixed tick yet (zero ticks from the
+  -- accumulator) must keep the previous complete view instead of
+  -- asserting in drawRegistration/drawCredits. The clock already holds
+  -- on the missing scene; this holds the surface as well.
+  if status.phase == "congratulations" and type(status.registration) ~= "table" then
+    return
+  end
+  if status.phase == "credits" and type(status.credits) ~= "table" then
+    return
+  end
   if status.phase == "congratulations" and type(status.party) ~= "table" then
     status.party = self:endingRegistrationParty(runtime)
   end
@@ -1445,6 +1458,12 @@ function FieldPresentationResources:drawEnding(runtime)
     images = self._imagePool,
     cacheFs = runtime.cacheFs,
   }, status)
+  -- A painted saving frame is the publication gate: catch-up fixed ticks
+  -- in one outer update must not publish over a surface the player never
+  -- saw. Headless compositions advance without a surface.
+  if status.phase == "saving" and type(coordinator.noteSavingPresented) == "function" then
+    coordinator:noteSavingPresented()
+  end
 end
 
 -- The live non-Egg party the congratulations surface registers, snapshotted

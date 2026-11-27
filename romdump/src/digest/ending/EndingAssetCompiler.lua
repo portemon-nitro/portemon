@@ -361,10 +361,6 @@ local REGISTRATION_INDIV_PALETTE = 4
 local REGISTRATION_WHOLE_SCREENS = { 5, 6 }
 local REGISTRATION_WHOLE_CHAR = 7
 local REGISTRATION_WHOLE_PALETTE = 8
--- Overworld-sprite groups: small (follower tiles 4x4) and large (8x8).
-local REGISTRATION_OW_SMALL = { charMember = 9, cellMember = 10, animMember = 11 }
-local REGISTRATION_OW_LARGE = { charMember = 12, cellMember = 13, animMember = 14 }
-local REGISTRATION_OW_PALETTE = 15
 -- Twinkle/player shared group (the player char comes from the trainer
 -- picture source; the twinkle char is member 16).
 local REGISTRATION_TWINKLE = { charMember = 16, cellMember = 17, animMember = 18, paletteMember = 19 }
@@ -1143,6 +1139,31 @@ end
 -- Compile the ending bundle. Every required source member resolves before any
 -- section is produced, so a missing or undecodable record fails the artifact
 -- instead of publishing a partial bundle.
+-- The PC showcase's own backgrounds (src/hall_of_fame_showcase.c
+-- HallOfFameShowcase_InitBgs): NARC_a_0_9_7 members 0/1/2 are the main
+-- screen's tilemap/character set/palette and members 3/4/5 are the sub
+-- screen's tilemap/character set/palette.
+---@param romFs table<string, unknown>
+---@param images table<string, table<string, unknown>>
+---@return table<string, unknown> section
+local function compileShowcase(romFs, images)
+  local archive = openSourceArchive(romFs, SHOWCASE_BACKGROUND_ARCHIVE, "showcase backgrounds")
+  local symbol = SHOWCASE_BACKGROUND_ARCHIVE
+  local mainScreen = decodeSourceMember(archive, symbol, 0, "showcase main screen", G2dDecoder.decodeScreen)
+  local mainChar = decodeSourceMember(archive, symbol, 1, "showcase main characters", G2dDecoder.decodeChar)
+  local mainPalette = decodeSourceMember(archive, symbol, 2, "showcase main palette", G2dDecoder.decodePalette)
+  local subScreen = decodeSourceMember(archive, symbol, 3, "showcase sub screen", G2dDecoder.decodeScreen)
+  local subChar = decodeSourceMember(archive, symbol, 4, "showcase sub characters", G2dDecoder.decodeChar)
+  local subPalette = decodeSourceMember(archive, symbol, 5, "showcase sub palette", G2dDecoder.decodePalette)
+  local mainBg = rasterize(mainChar, mainPalette, mainScreen, "showcase-main-bg", images)
+  local subBg = rasterize(subChar, subPalette, subScreen, "showcase-sub-bg", images)
+  return {
+    messageBank = Compiler.SHOWCASE_MESSAGE_BANK,
+    mainBg = mainBg,
+    subBg = subBg,
+  }
+end
+
 -- The registration section: individual and whole-party background layers,
 -- overworld-sprite and twinkle frame sequences, whole-party player pictures
 -- for both genders, per-species animation tracks, and the spotlight and
@@ -1198,16 +1219,11 @@ local function compileRegistration(romFs, images)
       images
     )
   end
-  -- Overworld-sprite groups (small and large follower variants) with the
-  -- shared overworld palette. The source runs animation sequences 1-3
-  -- (with 0 as the rest pose); all four are realized.
-  local owPalette = decodePaletteColors(archive, REGISTRATION_ARCHIVE.symbol, REGISTRATION_OW_PALETTE, "ow palette")
-  local function realizeOw(group, role)
-    local charData, cellData, animation = decodeSpriteGroup(archive, REGISTRATION_ARCHIVE.symbol, group, role)
-    return realizeSequences(charData, owPalette, cellData, animation, { 0, 1, 2, 3 }, role, images)
-  end
-  local owSmall = realizeOw(REGISTRATION_OW_SMALL, "ow small")
-  local owLarge = realizeOw(REGISTRATION_OW_LARGE, "ow large")
+  -- Follower overworld groups are intentionally not realized: the port
+  -- draws the correct species' own front portrait at half scale as its
+  -- documented 2D follower stand-in (the source flattens the 3D-model
+  -- texture, which the port cannot rasterize), so no owSmall/owLarge
+  -- animation has a draw consumer. Unused art stays out of the bundle.
   -- Twinkle sparkle frames (own char) and the shared cell/anim bank behind
   -- both the twinkle and the whole-party player. Sequence 0 only.
   local twinkleChar, twinkleCell, twinkleAnim =
@@ -1263,8 +1279,6 @@ local function compileRegistration(romFs, images)
     messageBank = Compiler.REGISTRATION_MESSAGE_BANK,
     bgIndiv = bgIndiv,
     bgWhole = bgWhole,
-    owSmall = owSmall,
-    owLarge = owLarge,
     twinkle = twinkle,
     twinkleShadow = twinkleShadow,
     playerEthan = playerEthan,
@@ -1328,12 +1342,11 @@ function Compiler.compile(romFs)
   end
   local theEnd = rasterize(theEndChars, paletteData, theEndScreen, "credit-the-end", images)
   local registration = compileRegistration(romFs, images)
+  local showcase = compileShowcase(romFs, images)
   local danceSequences, cutsceneSprites, cutscenes = compileCreditsChoreography(romFs, images)
   local sections = {
     registration = registration,
-    showcase = {
-      messageBank = Compiler.SHOWCASE_MESSAGE_BANK,
-    },
+    showcase = showcase,
     credits = {
       frames = Compiler.CREDITS_FRAMES,
       musicBoxWaitFrames = Compiler.MUSIC_BOX_WAIT_FRAMES,
@@ -1396,13 +1409,6 @@ function Compiler.compile(romFs)
             unpack(REGISTRATION_WHOLE_SCREENS),
             REGISTRATION_WHOLE_CHAR,
             REGISTRATION_WHOLE_PALETTE,
-            REGISTRATION_OW_SMALL.charMember,
-            REGISTRATION_OW_SMALL.cellMember,
-            REGISTRATION_OW_SMALL.animMember,
-            REGISTRATION_OW_LARGE.charMember,
-            REGISTRATION_OW_LARGE.cellMember,
-            REGISTRATION_OW_LARGE.animMember,
-            REGISTRATION_OW_PALETTE,
             REGISTRATION_TWINKLE.charMember,
             REGISTRATION_TWINKLE.cellMember,
             REGISTRATION_TWINKLE.animMember,
@@ -1424,6 +1430,7 @@ function Compiler.compile(romFs)
         },
         showcaseArt = {
           backgroundArchive = SHOWCASE_BACKGROUND_ARCHIVE,
+          backgroundMembers = { 0, 1, 2, 3, 4, 5 },
         },
         creditSprites = CREDIT_SPRITE_RESOURCES,
         creditCutscenes = CUTSCENE_RESOURCES,

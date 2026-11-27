@@ -79,15 +79,33 @@ function HallOfFamePresentation:prepare(bundle)
   for _, section in ipairs(HallOfFamePresentation.SECTIONS) do
     assert(type(bundle[section]) == "table", "the ending presentation bundle carries its " .. section .. " section")
   end
+  local function releaseImage(image)
+    if image ~= nil and type(image.release) == "function" then
+      pcall(image.release, image)
+    end
+  end
   if self._images ~= nil then
     for _, image in pairs(self._images) do
-      if type(image.release) == "function" then
-        pcall(image.release, image)
-      end
+      releaseImage(image)
     end
     self._images = nil
   end
+  if self._portraitPages ~= nil then
+    for _, record in pairs(self._portraitPages) do
+      if type(record) == "table" then
+        releaseImage(record.image)
+      end
+    end
+  end
+  if self._silhouettes ~= nil then
+    for _, record in pairs(self._silhouettes) do
+      if type(record) == "table" then
+        releaseImage(record.image)
+      end
+    end
+  end
   self._textCache = {}
+  self._quads = nil
   self._admittedSections = {}
   self._textAdmittedSections = {}
   self._admissionFailure = nil
@@ -183,7 +201,10 @@ function HallOfFamePresentation:isDrawReady(required)
       if name == "showcase" and self._headerAdmitted ~= true then
         return false
       end
-      if name == "registration" and self._portraitsAdmitted ~= true then
+      -- Both registration and showcase paint the selected member's own
+      -- front portrait: cold portrait pages hold either surface exactly
+      -- like cold icons.
+      if self._portraitsAdmitted ~= true then
         return false
       end
       if name == "registration" and self._detailAdmitted ~= true then
@@ -700,25 +721,29 @@ local function showcaseIconKeys(resources, party)
   return keys
 end
 
--- The single showcase geometry owner: source icon/sprite anchors
--- (hall_of_fame_showcase_data.s IconPositions plus the exit sprite
--- position), shared by drawing, hit-testing and the cursor. Anchors are
--- upper-left icon origins; hit boxes hang off them with the source cell
--- sizes (32x32 party cells, 24x24 exit/prev/next targets).
+-- The single showcase geometry owner: source icon/sprite columns
+-- (hall_of_fame_showcase_data.s IconPositions columns 56,128,200 plus the
+-- exit sprite column) with port-adapted rows, shared by drawing,
+-- hit-testing and the cursor. Anchors are upper-left icon origins; hit
+-- boxes hang off them with the source cell sizes (32x32 party cells).
+-- Rows are compressed to y=32/68 so the 3x2 grid (32..100) never overlaps
+-- the detail panel (112..192); the source rows (72/136) would collide
+-- with OT/move text on one pane. Columns stay source-exact; only rows
+-- and the exit placement are transformed for the single-pane composite.
 local GRID_ANCHORS = {
-  [0] = { x = 0x38, y = 0x48 },
-  [1] = { x = 0x80, y = 0x48 },
-  [2] = { x = 0xC8, y = 0x48 },
-  [3] = { x = 0x38, y = 0x88 },
-  [4] = { x = 0x80, y = 0x88 },
-  [5] = { x = 0xC8, y = 0x88 },
-  [6] = { x = 0xE0, y = 0xB0 },
+  [0] = { x = 0x38, y = 32 },
+  [1] = { x = 0x80, y = 32 },
+  [2] = { x = 0xC8, y = 32 },
+  [3] = { x = 0x38, y = 68 },
+  [4] = { x = 0x80, y = 68 },
+  [5] = { x = 0xC8, y = 68 },
+  [6] = { x = 192, y = 168 },
 }
 
 -- Shared showcase hit geometry, derived from the one anchor owner above:
--- 3x2 party grid (32x32 cells) plus exit (24x24), prev and next paging
--- targets (24x24). The next arrow sits at x=232 so the box (232..255)
--- stays inside the 256-wide pane per the source hitbox record.
+-- 3x2 party grid (32x32 cells) plus the source-sized exit target
+-- (x=192..255,y=160..191) so the Return label has room. Prev/next paging
+-- targets sit at the grid mid-height on both edges inside the pane.
 local SHOWCASE_HIT_CELLS = {
   [0] = { x = GRID_ANCHORS[0].x, y = GRID_ANCHORS[0].y, w = 32, h = 32 },
   [1] = { x = GRID_ANCHORS[1].x, y = GRID_ANCHORS[1].y, w = 32, h = 32 },
@@ -726,10 +751,14 @@ local SHOWCASE_HIT_CELLS = {
   [3] = { x = GRID_ANCHORS[3].x, y = GRID_ANCHORS[3].y, w = 32, h = 32 },
   [4] = { x = GRID_ANCHORS[4].x, y = GRID_ANCHORS[4].y, w = 32, h = 32 },
   [5] = { x = GRID_ANCHORS[5].x, y = GRID_ANCHORS[5].y, w = 32, h = 32 },
-  [6] = { x = GRID_ANCHORS[6].x, y = GRID_ANCHORS[6].y, w = 24, h = 24 },
+  [6] = { x = 192, y = 160, w = 64, h = 32 },
 }
-local SHOWCASE_PREV_HIT = { x = 0x0C, y = 0x68, w = 24, h = 24 }
-local SHOWCASE_NEXT_HIT = { x = 0xE8, y = 0x68, w = 24, h = 24 }
+-- Source touchscreen paging rects (hall_of_fame_showcase_data.s
+-- gHallOfFameShowcaseHitboxes), transformed to the compressed grid: the
+-- previous arrow occupies x=0..23 at grid mid-height, the next arrow
+-- mirrors it at the right edge so both boxes stay inside the 256-wide pane.
+local SHOWCASE_PREV_HIT = { x = 0, y = 52, w = 24, h = 32 }
+local SHOWCASE_NEXT_HIT = { x = 232, y = 52, w = 24, h = 32 }
 
 ---@param box table<string, integer>
 ---@param x number
@@ -779,17 +808,61 @@ local function drawIcons(resources, keys)
 end
 
 -- The source showcase grid: the expanded record header (bank 181:0 with
--- record number/date), the 3x2 party icon set with the exit target, and the
--- selected detail together on one 256x192 surface. Cursor movement
--- refreshes both the icons and the details; record paging refreshes both as
--- well. B cancels the application from any cursor. Layout is bounded: the
--- six-row list at 12px plus the six-line detail at 12px fits 192px with no
--- overflow, and the exit label uses source 181:6 Return.
+-- record number/date), the 3x2 party icon set with the exit target, the
+-- selected member's front portrait (correct species/shiny/form/gender via
+-- the portrait owner, Nidoran-safe through the shared gender rule) and the
+-- selected detail together on one 256x192 surface. The retail twin-display
+-- layout (main grid + sub portrait/detail over NARC_a_0_9_7 backgrounds) is
+-- adapted explicitly: the main background paints fullscreen, the sub
+-- background backs the detail panel, and the sub portrait is scaled into
+-- the top-right corner panel so icons, portrait, detail, cursor, arrows
+-- and exit never overlap. No species text list is painted: retail shows
+-- icons, not a text roster. Cursor movement refreshes icons, portrait and
+-- detail; record paging refreshes all three as well. B cancels from any
+-- cursor. Arrows paint only while a page exists in that direction (retail
+-- arrow visibility), at the source touchscreen rects.
 ---@param self HallOfFamePresentation
 ---@param resources table<string, unknown>
 ---@param status table<string, unknown>
 local function drawShowcaseGrid(self, resources, status)
-  paintWindow(resources, { x = 0, y = 0, width = 256, height = 192 })
+  local section = self:_require("showcase")
+  -- Main display background fullscreen; the sub display background backs
+  -- only the detail panel so both source surfaces stay visible instead of
+  -- one opaque layer covering the other. Both are required realized
+  -- surfaces (v3 contract): a missing background fails closed, never a
+  -- generic window.
+  do
+    local mainBg = section.mainBg
+    if type(mainBg) ~= "table" or type(mainBg.path) ~= "string" then
+      Errors.raise("FIELD_ENDING_ASSET_MISSING", "the showcase needs its realized main background", {})
+    end
+    paintImage(self, resources, mainBg.path, 0, 0)
+  end
+  do
+    local subBg = section.subBg
+    if type(subBg) ~= "table" or type(subBg.path) ~= "string" then
+      Errors.raise("FIELD_ENDING_ASSET_MISSING", "the showcase needs its realized sub background", {})
+    end
+    local graphics = resources.graphics
+    if type(graphics) == "table" and type(graphics.newQuad) == "function" then
+      local subImage = self:_admittedImage(subBg.path)
+      local width, height = 256, 192
+      if type(subImage.getWidth) == "function" then
+        local okW, w = pcall(subImage.getWidth, subImage)
+        if okW and type(w) == "number" and w > 0 then
+          width = w
+        end
+        local okH, h = pcall(subImage.getHeight, subImage)
+        if okH and type(h) == "number" and h > 0 then
+          height = h
+        end
+      end
+      -- Crop quad is owned with the admitted page, not rebuilt every
+      -- frame: key by realized dimensions so host resizes reuse it.
+      local quad = self:_showcaseSubBgQuad(resources, width, height)
+      self:_drawTinted(resources, subImage, quad, 0, 112, { r = 1, g = 1, b = 1 }, 1)
+    end
+  end
   -- Expanded header with real record number/date (no separate unexpanded
   -- paints): warmed in admission, drawn from cache with no bank acquire.
   do
@@ -819,77 +892,89 @@ local function drawShowcaseGrid(self, resources, status)
   end
   local keys = showcaseIconKeys(resources, party)
   drawIcons(resources, keys)
-  -- The grid keeps the full recorded list visible (so every member's species
-  -- paints) with the cursor-marked row, plus the selected detail below it.
-  -- Both refresh on cursor/record movement; B cancels from any cursor.
-  -- The exit target and the paging arrows paint at their hit-test anchors
-  -- so visible controls and touch agree; arrows show only while a page
-  -- exists in that direction (retail arrow visibility).
   local cursor = math.floor(tonumber(status.cursor) or 0)
   local exitSelected = status.exitSelected == true
-  local y = 24
-  for index, mon in ipairs(party) do
-    if type(mon) == "table" then
-      local marker = (index - 1 == cursor and not exitSelected) and "> " or "  "
-      local speciesLabel = type(mon.species) == "string" and speciesName(self, resources, mon.species) or ""
-      local lv = math.floor(tonumber(mon.level) or 0)
-      local levelKey = "181:1:lv:" .. tostring(lv)
-      local levelLine = formatDynamic(self, resources, 181, 1, { [0] = tostring(lv) }, levelKey)
-      paintText(resources, marker .. speciesLabel .. " " .. levelLine, 8, y)
-      y = y + 12
+  -- Cursor: the selected cell carries the marker so keyboard and touch
+  -- operate on the same visible control; empty slots show no marker.
+  if not exitSelected and party[cursor + 1] ~= nil then
+    local anchor = GRID_ANCHORS[cursor]
+    if anchor ~= nil then
+      paintText(resources, ">", math.max(0, anchor.x - 10), anchor.y + 8)
     end
   end
-  -- The detail follows the cursor without a page transition, below the
-  -- list so both paint together. Six detail lines at 12px (name, level, OT,
-  -- four moves) from y fit 192px: list 24..96 (6x12), detail 96..168 (6x12).
-  if not exitSelected then
-    local mon = status.mon
-    if type(mon) ~= "table" then
-      mon = party[cursor + 1]
+  -- Selected portrait: the correct member's own front picture from the
+  -- shared portrait owner (shiny/form/gender resolved, Nidoran-safe),
+  -- scaled into the corner panel. Empty selection draws nothing.
+  local selected = status.mon
+  if type(selected) ~= "table" then
+    selected = (not exitSelected) and party[cursor + 1] or nil
+  end
+  if type(selected) == "table" and type(selected.species) == "string" then
+    local normalized = {
+      species = selected.species,
+      form = tonumber(selected.form) or 0,
+      personality = tonumber(selected.personality) or 0,
+      origin = { trainerId = tonumber(selected.otId) or 0 },
+    }
+    local pair = HallOfFamePresentation.portraitSelectorsFor(normalized, resources.monCatalog)
+    if pair ~= nil then
+      self:_drawPortrait(resources, pair.front, 1, 200, 8, "normal", 1, 0.5)
     end
-    if type(mon) == "table" then
-      local detailY = 96
-      local name = tostring(mon.nickname or mon.species or "")
-      local speciesLabel = type(mon.species) == "string" and speciesName(self, resources, mon.species) or ""
-      if name == "" or name == tostring(mon.species) then
-        name = speciesLabel
+  end
+  -- Selected detail: nickname/species/level/OT/moves for the cursor
+  -- member, in the detail panel over the sub background (112..192).
+  -- Layout is a deliberate single-pane adaptation: header lines stack at
+  -- 10px rows (116/126/136) and all four moves paint in a two-column
+  -- grid (148/158/168/178 split across x=8 and x=104) so long names and
+  -- four-move sets never clip and never overlap the 3x2 icon grid above.
+  -- Empty slots and the exit target draw the Return line instead.
+  if not exitSelected and type(selected) == "table" then
+    local mon = selected
+    local name = tostring(mon.nickname or mon.species or "")
+    local speciesLabel = type(mon.species) == "string" and speciesName(self, resources, mon.species) or ""
+    if name == "" or name == tostring(mon.species) then
+      name = speciesLabel
+    end
+    local gender = mon.gender
+    if gender == nil and type(mon.personality) == "number" then
+      gender = derivedGender(resources, mon.species, mon.personality)
+    end
+    -- Retail suppresses the gender mark for Nidoran F/M
+    -- (hall_of_fame_showcase.c ShowMonDetail): both sexes paint no mark.
+    local genderSuffix = ""
+    if mon.species ~= "NIDORAN_F" and mon.species ~= "NIDORAN_M" then
+      if gender == "male" then
+        genderSuffix = " " .. messageLine(self, resources, 181, 3)
+      elseif gender == "female" then
+        genderSuffix = " " .. messageLine(self, resources, 181, 4)
       end
-      local gender = mon.gender
-      if gender == nil and type(mon.personality) == "number" then
-        gender = derivedGender(resources, mon.species, mon.personality)
-      end
-      -- Retail suppresses the gender mark for Nidoran F/M
-      -- (hall_of_fame_showcase.c ChangeRecord): both sexes paint no mark.
-      local genderSuffix = ""
-      if mon.species ~= "NIDORAN_F" and mon.species ~= "NIDORAN_M" then
-        if gender == "male" then
-          genderSuffix = " " .. messageLine(self, resources, 181, 3)
-        elseif gender == "female" then
-          genderSuffix = " " .. messageLine(self, resources, 181, 4)
-        end
-      end
-      local lv = math.floor(tonumber(mon.level) or 0)
-      local levelKey = "181:1:lv:" .. tostring(lv)
-      local levelLine = formatDynamic(self, resources, 181, 1, { [0] = tostring(lv) }, levelKey)
-      paintText(resources, name .. " " .. speciesLabel .. genderSuffix, 8, detailY)
-      detailY = detailY + 12
-      paintText(resources, levelLine, 8, detailY)
-      detailY = detailY + 12
-      paintText(resources, messageLine(self, resources, 181, 2) .. tostring(mon.otName or ""), 8, detailY)
-      detailY = detailY + 12
-      local moves = mon.moves
-      if type(moves) == "table" then
-        for index = 1, 4 do
-          local move = moves[index]
-          if type(move) == "string" and move ~= "" then
-            paintText(resources, moveName(self, resources, move), 8, detailY)
-            detailY = detailY + 12
+    end
+    local lv = math.floor(tonumber(mon.level) or 0)
+    local levelKey = "181:1:lv:" .. tostring(lv)
+    local levelLine = formatDynamic(self, resources, 181, 1, { [0] = tostring(lv) }, levelKey)
+    paintText(resources, name .. " " .. speciesLabel .. genderSuffix, 8, 116)
+    paintText(resources, levelLine, 8, 126)
+    paintText(resources, messageLine(self, resources, 181, 2) .. tostring(mon.otName or ""), 8, 136)
+    local moves = mon.moves
+    if type(moves) == "table" then
+      -- Two-column move grid: all four slots paint, empty slots paint
+      -- nothing but keep their cells so navigation geometry stays stable.
+      for index = 1, 4 do
+        local move = moves[index]
+        if type(move) == "string" and move ~= "" then
+          local col = (index - 1) % 2
+          local row = math.floor((index - 1) / 2)
+          local moveX = col == 0 and 8 or 104
+          local moveY = 148 + row * 12
+          if moveY + 8 > 192 then
+            moveY = 192 - 8
           end
+          paintText(resources, moveName(self, resources, move), moveX, moveY)
         end
       end
     end
   else
-    paintText(resources, messageLine(self, resources, 181, 6), 8, 96)
+    paintText(resources, messageLine(self, resources, 181, 6), 8, 116)
   end
   -- Paint the exit target at its own anchor in both states (not only
   -- while selected) and the paging arrows only while a page exists that
@@ -935,6 +1020,28 @@ function HallOfFamePresentation:_admittedImage(path)
   return image
 end
 
+-- The showcase detail-panel crop quad, owned with the admitted page: keyed
+-- by realized dimensions so host resizes reuse it instead of rebuilding
+-- the quad every frame. Lives on the class so local draw functions never
+-- reach the private quad cache directly.
+---@param resources table<string, unknown>
+---@param width number realized image width
+---@param height number realized image height
+---@return love.Quad quad
+function HallOfFamePresentation:_showcaseSubBgQuad(resources, width, height)
+  local graphics = assert(resources.graphics, "the showcase quad borrows its host graphics namespace")
+  assert(type(graphics.newQuad) == "function", "the showcase quad needs its host quad constructor")
+  self._quads = self._quads or {}
+  local key = string.format("showcase:subBg:%dx%d", width, height)
+  local quad = self._quads[key]
+  if quad == nil then
+    quad = graphics.newQuad(0, 112, 256, 80, width, height)
+    self._quads[key] = quad
+  end
+  assert(quad ~= nil, "the showcase sub background caches its crop quad")
+  return quad
+end
+
 -- Draws one image, tinted when the phase draws a silhouette instead of the
 -- admitted pixels: black silhouettes reuse the admitted image with a black
 -- ink, so only white and red variants are precolored at admission.
@@ -945,7 +1052,9 @@ end
 ---@param y number
 ---@param ink { r: number, g: number, b: number } multiply ink, 0..1 per channel
 ---@param alpha number opacity
-function HallOfFamePresentation:_drawTinted(resources, image, quad, x, y, ink, alpha)
+---@param scaleX number? uniform horizontal scale, 1 when absent
+---@param scaleY number? uniform vertical scale, defaults to scaleX
+function HallOfFamePresentation:_drawTinted(resources, image, quad, x, y, ink, alpha, scaleX, scaleY)
   local graphics = assert(resources.graphics, "the ending presentation borrows its host graphics namespace")
   assert(type(graphics.draw) == "function", "the ending graphics draws its images")
   local lg = love ~= nil and love.graphics or nil
@@ -954,7 +1063,15 @@ function HallOfFamePresentation:_drawTinted(resources, image, quad, x, y, ink, a
     prevR, prevG, prevB, prevA = lg.getColor()
     lg.setColor(ink.r, ink.g, ink.b, alpha)
   end
-  if quad ~= nil then
+  local sx = tonumber(scaleX) or 1
+  local sy = tonumber(scaleY) or sx
+  if sx ~= 1 or sy ~= 1 then
+    if quad ~= nil then
+      graphics.draw(image, quad, x, y, 0, sx, sy)
+    else
+      graphics.draw(image, x, y, 0, sx, sy)
+    end
+  elseif quad ~= nil then
     graphics.draw(image, quad, x, y)
   else
     graphics.draw(image, x, y)
@@ -980,16 +1097,20 @@ function HallOfFamePresentation:_portraitFrame(resources, selector, frameIdx, pa
   local entry = assert(manifest.entries[selector], "the portrait manifest carries its selector: " .. selector)
   assert(type(entry.frames) == "table", "a portrait entry carries its frames: " .. selector)
   local frame = assert(entry.frames[frameIdx], "a portrait entry carries its frame: " .. selector)
+  local MonCache = require("libs.assets.src.MonCache")
+  local pagePath = MonCache.portraitPagePath(assert(entry.pageId, "a portrait entry carries its page"))
   local pages = self._portraitPages
   assert(type(pages) == "table", "portrait pages admit before they draw")
-  local record = pages[selector]
+  local record = pages[pagePath]
   assert(type(record) == "table", "a portrait page is admitted before it draws: " .. selector)
   local image = record.image
   assert(image ~= nil, "an admitted portrait page carries its image")
-  local key = record.path .. "#" .. tostring(frameIdx)
+  -- Quads are keyed by selector (not page): two selectors sharing one page
+  -- sample different manifest rectangles even at the same frame index.
+  local key = selector .. "#" .. tostring(frameIdx)
   if palette == "white" then
     local silhouettes = assert(self._silhouettes, "silhouettes admit before they draw")
-    local white = assert(silhouettes["white:" .. selector], "a white silhouette is admitted before it draws")
+    local white = assert(silhouettes["white:" .. pagePath], "a white silhouette is admitted before it draws")
     image = assert(white.image, "an admitted white silhouette carries its image")
     key = key .. ":white"
   end
@@ -1015,7 +1136,8 @@ end
 ---@param y number anchor y
 ---@param palette string "normal" | "black" | "white" | "red"
 ---@param alpha number opacity
-function HallOfFamePresentation:_drawBakedFrame(resources, frames, frameIndex, x, y, palette, alpha)
+---@param scale number? uniform sprite scale from the scene track, 1 when absent
+function HallOfFamePresentation:_drawBakedFrame(resources, frames, frameIndex, x, y, palette, alpha, scale)
   local frame = frames[frameIndex]
   if type(frame) ~= "table" or frame.blank == true then
     return
@@ -1039,10 +1161,17 @@ function HallOfFamePresentation:_drawBakedFrame(resources, frames, frameIndex, x
     ox = tonumber(frame.origin.x) or 0
     oy = tonumber(frame.origin.y) or 0
   end
+  local drawScale = tonumber(scale) or 1
+  -- Scale the source bounding-box origin with the frame: the native
+  -- origin is in unscaled cell pixels around the sprite anchor, so a
+  -- nonzero origin must scale with the frame instead of shifting the
+  -- scaled sprite by the full unscaled offset.
+  local sx = x + ox * drawScale
+  local sy = y + oy * drawScale
   if palette == "black" then
-    self:_drawTinted(resources, image, nil, x + ox, y + oy, { r = 0, g = 0, b = 0 }, alpha)
+    self:_drawTinted(resources, image, nil, sx, sy, { r = 0, g = 0, b = 0 }, alpha, drawScale, drawScale)
   else
-    self:_drawTinted(resources, image, nil, x + ox, y + oy, { r = 1, g = 1, b = 1 }, alpha)
+    self:_drawTinted(resources, image, nil, sx, sy, { r = 1, g = 1, b = 1 }, alpha, drawScale, drawScale)
   end
 end
 
@@ -1055,12 +1184,14 @@ end
 ---@param y number
 ---@param palette string "normal" | "black" | "white"
 ---@param alpha number opacity
-function HallOfFamePresentation:_drawPortrait(resources, selector, frameIdx, x, y, palette, alpha)
+---@param scale number? uniform sprite scale from the scene track, 1 when absent
+function HallOfFamePresentation:_drawPortrait(resources, selector, frameIdx, x, y, palette, alpha, scale)
   local image, quad = self:_portraitFrame(resources, selector, frameIdx, palette)
+  local drawScale = tonumber(scale) or 1
   if palette == "black" then
-    self:_drawTinted(resources, image, quad, x, y, { r = 0, g = 0, b = 0 }, alpha)
+    self:_drawTinted(resources, image, quad, x, y, { r = 0, g = 0, b = 0 }, alpha, drawScale, drawScale)
   else
-    self:_drawTinted(resources, image, quad, x, y, { r = 1, g = 1, b = 1 }, alpha)
+    self:_drawTinted(resources, image, quad, x, y, { r = 1, g = 1, b = 1 }, alpha, drawScale, drawScale)
   end
 end
 
@@ -1237,30 +1368,23 @@ local function drawIndivScene(self, resources, view, scene, registration)
           sprite.x,
           sprite.y,
           sprite.palette or "normal",
-          tonumber(sprite.alpha) or 1
+          tonumber(sprite.alpha) or 1,
+          tonumber(sprite.scale) or 1
         )
       elseif sprite.kind == "ow" then
-        local owSeqs = scene.owLarge and registration.owLarge or registration.owSmall
-        local owSeqNo = tonumber(scene.owSeq) or 1
-        local seq = owSeqs ~= nil and owSeqs[owSeqNo] or nil
-        local owClock = tonumber(scene.owClock)
-        local frames = seq ~= nil and seq.frames or nil
-        if type(frames) == "table" and #frames > 0 then
-          local index = 1
-          if seq ~= nil and owClock ~= nil and type(seq.frames) == "table" then
-            local whole = seq.frames
-            index = HallOfFamePresentation.frameAt({ frames = whole }, owClock)
-          end
-          self:_drawBakedFrame(
-            resources,
-            frames,
-            math.min(index, #frames),
-            sprite.x,
-            sprite.y,
-            sprite.palette or "normal",
-            tonumber(sprite.alpha) or 1
-          )
-        end
+        -- Species-specific follower stand-in: the correct mon's own front
+        -- portrait at half scale (documented 2D adaptation), never a
+        -- generic overworld frame shared across species.
+        self:_drawPortrait(
+          resources,
+          selectors.front,
+          1,
+          sprite.x,
+          sprite.y,
+          sprite.palette or "normal",
+          tonumber(sprite.alpha) or 1,
+          (tonumber(sprite.scale) or 1) * 0.5
+        )
       elseif sprite.kind == "backShadow" or sprite.kind == "frontShadow" or sprite.kind == "owShadow" then
         local shadow = assert(registration.shadow, "the bundle carries its shadow frames")
         local shadowSeq = assert(shadow[0], "the shadow sequence carries its rest frame")
@@ -1272,7 +1396,8 @@ local function drawIndivScene(self, resources, view, scene, registration)
           sprite.x,
           sprite.y,
           sprite.palette or "black",
-          tonumber(sprite.alpha) or 1
+          tonumber(sprite.alpha) or 1,
+          tonumber(sprite.scale) or 1
         )
       end
     end
@@ -1380,7 +1505,21 @@ local function drawWholeScene(self, resources, view, scene, registration)
     end
   end
   if type(whole[1]) == "table" and type(whole[1].path) == "string" then
-    self:_drawTinted(resources, self:_admittedImage(whole[1].path), nil, scrollX, 0, { r = 1, g = 1, b = 1 }, 1)
+    -- The polka-dot layer wraps over its own width so a continuously held
+    -- photo never scrolls the finite layer offscreen.
+    local wrappedX = scrollX
+    local admitted = self:_admittedImage(whole[1].path)
+    if type(admitted.getWidth) == "function" then
+      local okWidth, layerWidth = pcall(admitted.getWidth, admitted)
+      if okWidth and type(layerWidth) == "number" and layerWidth > 0 then
+        wrappedX = scrollX % layerWidth
+        if wrappedX > 0 then
+          wrappedX = wrappedX - layerWidth
+        end
+        self:_drawTinted(resources, admitted, nil, wrappedX + layerWidth, 0, { r = 1, g = 1, b = 1 }, 1)
+      end
+    end
+    self:_drawTinted(resources, admitted, nil, wrappedX, 0, { r = 1, g = 1, b = 1 }, 1)
   end
   if type(whole[2]) == "table" and type(whole[2].path) == "string" then
     self:_drawTinted(resources, self:_admittedImage(whole[2].path), nil, 0, 0, { r = 1, g = 1, b = 1 }, 1)
@@ -1397,7 +1536,16 @@ local function drawWholeScene(self, resources, view, scene, registration)
         if type(mon) == "table" and type(mon.species) == "string" then
           local selectors = HallOfFamePresentation.portraitSelectorsFor(mon, catalog)
           if selectors ~= nil then
-            self:_drawPortrait(resources, selectors.front, 1, sprite.x, sprite.y, sprite.palette or "normal", alpha)
+            self:_drawPortrait(
+              resources,
+              selectors.front,
+              1,
+              sprite.x,
+              sprite.y,
+              sprite.palette or "normal",
+              alpha,
+              tonumber(sprite.scale) or 1
+            )
           end
         end
       elseif sprite.kind == "monShadow" then
@@ -1406,7 +1554,16 @@ local function drawWholeScene(self, resources, view, scene, registration)
         local index = frameIndex(seq, tonumber(scene.tick) or 0)
         local trackFrames = seq.frames
         assert(type(trackFrames) == "table", "a mon track carries its front frames")
-        self:_drawBakedFrame(resources, trackFrames, index, sprite.x, sprite.y, "white", alpha)
+        self:_drawBakedFrame(
+          resources,
+          trackFrames,
+          index,
+          sprite.x,
+          sprite.y,
+          "white",
+          alpha,
+          tonumber(sprite.scale) or 1
+        )
       elseif sprite.kind == "player" then
         local playerPics = view.playerGender == "female" and registration.playerLyra or registration.playerEthan
         assert(type(playerPics) == "table", "the bundle carries its player frames")
@@ -1415,7 +1572,16 @@ local function drawWholeScene(self, resources, view, scene, registration)
         local playerFrames = playerSeq.frames
         assert(type(playerFrames) == "table", "a player sequence carries its frames")
         local index = frameIndex({ frames = playerFrames }, tonumber(scene.wholeClock) or 0)
-        self:_drawBakedFrame(resources, playerFrames, index, sprite.x, sprite.y, "normal", alpha)
+        self:_drawBakedFrame(
+          resources,
+          playerFrames,
+          index,
+          sprite.x,
+          sprite.y,
+          "normal",
+          alpha,
+          tonumber(sprite.scale) or 1
+        )
       elseif sprite.kind == "playerShadow" then
         local twinkleShadow = registration.twinkleShadow
         assert(type(twinkleShadow) == "table", "the bundle carries its twinkle shadow")
@@ -1424,7 +1590,16 @@ local function drawWholeScene(self, resources, view, scene, registration)
         local shadowFrames = shadowSeq.frames
         assert(type(shadowFrames) == "table", "a shadow sequence carries its frames")
         local index = frameIndex({ frames = shadowFrames }, tonumber(scene.wholeClock) or 0)
-        self:_drawBakedFrame(resources, shadowFrames, index, sprite.x, sprite.y, "normal", alpha)
+        self:_drawBakedFrame(
+          resources,
+          shadowFrames,
+          index,
+          sprite.x,
+          sprite.y,
+          "normal",
+          alpha,
+          tonumber(sprite.scale) or 1
+        )
       elseif sprite.kind == "twinkle" then
         local tw = scene.twinkle
         if type(tw) == "table" then
@@ -1633,8 +1808,10 @@ local function cutsceneSequence(credits, gender, spriteId, animSeq)
 end
 
 -- The dancing mons and transition clouds over the scene backgrounds. The
--- visible six follow the source display flip; clouds cover the set while a
--- transition runs. Without a scene snapshot only backgrounds roll.
+-- visible set follows the source display flip: the flip swaps which logical
+-- surface the single pane shows, so dancer anchors mirror horizontally
+-- while the background layer stack stays stable. Without a scene snapshot
+-- only backgrounds roll.
 ---@param self HallOfFamePresentation
 ---@param resources table<string, unknown>
 ---@param credits table<string, unknown> bundle credits section
@@ -1643,8 +1820,12 @@ local function drawChoreographyDancers(self, resources, credits, choreo)
   local danceSequences = assert(credits.danceSequences, "the bundle carries its dance sequences")
   local danceSeq = assert(danceSequences[choreo.danceSeq], "the bundle carries the scene dance")
   local danceClock = tonumber(choreo.danceClock) or 0
+  local flipped = choreo.screensFlipped == true
   for index = 0, 5 do
     local x, y = danceAnchor(index)
+    if flipped then
+      x = 256 - x
+    end
     local frameIndex = HallOfFamePresentation.frameAt(danceSeq, danceClock)
     self:_drawBakedFrame(resources, assert(danceSeq.frames), frameIndex, x, y, "normal", 1)
   end
@@ -1661,6 +1842,11 @@ end
 
 -- The active story cutscene sprites over the dancing mons. Each draws its
 -- source anchor while active; finished sprites leave with their cutscene.
+-- The source places story sprites on the non-primary display
+-- (CreateCutsceneSprite) while the text window rides the sub BG
+-- (DisplayWindow): the single-pane port keeps both surfaces visible and
+-- routes the flip to surface placement (mirrored x), never to the
+-- background layer stack.
 ---@param self HallOfFamePresentation
 ---@param resources table<string, unknown>
 ---@param credits table<string, unknown> bundle credits section
@@ -1671,20 +1857,17 @@ local function drawChoreographyCutscenes(self, resources, credits, choreo)
     return
   end
   local gender = choreo.gender == "female" and "female" or "male"
+  local flipped = choreo.screensFlipped == true
   for _, sprite in ipairs(sprites) do
     if type(sprite) == "table" and sprite.active then
       local sequence = cutsceneSequence(credits, gender, sprite.spriteId, sprite.animSeq)
       local elapsed = tonumber(sprite.elapsed) or 0
       local frameIndex = HallOfFamePresentation.frameAt(sequence, elapsed)
-      self:_drawBakedFrame(
-        resources,
-        assert(sequence.frames),
-        frameIndex,
-        tonumber(sprite.x) or 0,
-        tonumber(sprite.y) or 0,
-        "normal",
-        1
-      )
+      local x = tonumber(sprite.x) or 0
+      if flipped then
+        x = 256 - x
+      end
+      self:_drawBakedFrame(resources, assert(sequence.frames), frameIndex, x, tonumber(sprite.y) or 0, "normal", 1)
     end
   end
 end
@@ -1695,56 +1878,56 @@ end
 local function drawCredits(self, resources, status)
   local credits = status.creditsSection
   assert(type(credits) == "table", "the credit roll reads its bundle section")
+  -- CreditsScene:status() is the sole source of the rendered
+  -- scene/flip/page state. The raw timer fallback below serves only
+  -- hand-built component snapshots without a choreography; production
+  -- always carries the choreography (or its frozen fade snapshot).
+  local choreo = status.credits
   local timer = tonumber(status.timer) or 0
-  local page = currentCreditPage(credits, status)
+  if type(choreo) == "table" and tonumber(choreo.timer) ~= nil then
+    timer = tonumber(choreo.timer) or timer
+  end
+  local page = currentCreditPage(credits, { timer = timer })
   local scenes = credits.scenes
   if type(scenes) == "table" and #scenes > 0 then
     local sceneIndex = 1
-    local timings = credits.sceneTransitionTimings
-    if type(timings) == "table" then
-      for index, timing in ipairs(timings) do
-        if tonumber(timing) <= timer then
-          sceneIndex = math.min(index + 1, #scenes)
-        else
-          break
+    if type(choreo) == "table" and tonumber(choreo.sceneIdx) ~= nil then
+      sceneIndex = math.min(math.max(math.floor(tonumber(choreo.sceneIdx) or 0) + 1, 1), #scenes)
+    else
+      local timings = credits.sceneTransitionTimings
+      if type(timings) == "table" then
+        for index, timing in ipairs(timings) do
+          if tonumber(timing) <= timer then
+            sceneIndex = math.min(index + 1, #scenes)
+          else
+            break
+          end
         end
       end
-    end
-    -- The source display flip (HandleSceneFlip) swaps the two displays on
-    -- the flip timeline; the single-pane port swaps the layer order so the
-    -- flip is observable instead of drawing both layers identically.
-    local flipped = false
-    local flips = credits.screenFlipTimings
-    if type(flips) == "table" then
-      local count = 0
-      for _, flip in ipairs(flips) do
-        if tonumber(flip) <= timer then
-          count = count + 1
-        else
-          break
-        end
-      end
-      flipped = count % 2 == 1
     end
     local scene = scenes[sceneIndex]
     if type(scene) == "table" then
+      -- Single-pane adaptation (documented): the source keeps BG2/BG3 as
+      -- layers within each engine and swaps which engine drives which
+      -- physical display (credits.c HandleSceneFlip). The port composites
+      -- one pane, so the background layer stack stays stable (lower then
+      -- upper) and the flip routes the logical surfaces (dancers /
+      -- cutscenes / text) instead of reordering opaque background layers.
       local lower = scene.lower
       local upper = scene.upper
-      local first = flipped and upper or lower
-      local second = flipped and lower or upper
-      if type(first) == "table" and type(first.path) == "string" then
-        paintImage(self, resources, first.path, 0, 0)
+      if type(lower) == "table" and type(lower.path) == "string" then
+        paintImage(self, resources, lower.path, 0, 0)
       end
-      if type(second) == "table" and type(second.path) == "string" then
-        paintImage(self, resources, second.path, 0, 0)
+      if type(upper) == "table" and type(upper.path) == "string" then
+        paintImage(self, resources, upper.path, 0, 0)
       end
     end
   end
   -- The dancing mons, transition clouds and story cutscenes play over the
   -- backgrounds while the text rolls above them, matching the source plane
-  -- order in the single-pane composite.
-  local choreo = status.credits
-  if type(choreo) == "table" then
+  -- order in the single-pane composite. Surface flip mirrors dancer and
+  -- cutscene placement; text always rides above both surfaces.
+  if type(choreo) == "table" and type(choreo.danceSeq) == "number" then
     drawChoreographyDancers(self, resources, credits, choreo)
     drawChoreographyCutscenes(self, resources, credits, choreo)
   end
@@ -1766,13 +1949,20 @@ local function drawCredits(self, resources, status)
       end
     end
   end
-  if page == nil then
-    return
+  if page ~= nil then
+    local bank = assert(credits.messageBank, "the credit roll names its message bank")
+    for _, line in ipairs(assert(page.lines, "a credit page carries its lines")) do
+      local message = messageLine(self, resources, bank, assert(line.message))
+      paintText(resources, message, math.floor(tonumber(line.x) or 8), math.floor(tonumber(line.y) or 24))
+    end
   end
-  local bank = assert(credits.messageBank, "the credit roll names its message bank")
-  for _, line in ipairs(assert(page.lines, "a credit page carries its lines")) do
-    local message = messageLine(self, resources, bank, assert(line.message))
-    paintText(resources, message, math.floor(tonumber(line.x) or 8), math.floor(tonumber(line.y) or 24))
+  -- Source fade envelope: retain the frozen frame and darken it through
+  -- the fade instead of restarting the roll. The overlay always applies
+  -- after the scene, even while no text page displays, so page gaps and
+  -- the opening title fade together with paged frames.
+  local fadeAlpha = tonumber(status.fadeAlpha) or 0
+  if fadeAlpha > 0 then
+    paintOverlay(resources, 0, 0, 0, math.min(1, fadeAlpha))
   end
 end
 
@@ -1790,8 +1980,10 @@ local function drawSaveStatus(self, resources, status)
     -- No explicit failure string: saving (15) before/during the write,
     -- save-result success (16) once the coordinator published, expanded
     -- with the live player name from cache (no bank acquire in draw).
+    -- The fade retains the success surface instead of regressing to the
+    -- saving line after publication.
     local phase = status.phase
-    if phase == "save_status" or phase == "save_se" then
+    if phase == "save_status" or phase == "save_se" or phase == "save_fade" then
       local playerName = type(status.playerName) == "string" and status.playerName or ""
       if playerName ~= "" then
         local cacheKey = "40:16:player:" .. playerName
@@ -1804,6 +1996,10 @@ local function drawSaveStatus(self, resources, status)
     end
   end
   paintText(resources, message, 8, 88)
+  local fadeAlpha = tonumber(status.fadeAlpha) or 0
+  if fadeAlpha > 0 then
+    paintOverlay(resources, 0, 0, 0, math.min(1, fadeAlpha))
+  end
 end
 
 -- The End: the source disables the text/OBJ layers and shows only its own
@@ -1819,6 +2015,10 @@ local function drawTheEndPresentation(self, resources, status)
   local theEnd = assert(credits.theEnd, "the bundle carries The End screen")
   assert(type(theEnd.path) == "string", "The End names its published image")
   paintImage(self, resources, theEnd.path, 0, 0)
+  local fadeAlpha = tonumber(status.fadeAlpha) or 0
+  if fadeAlpha > 0 then
+    paintOverlay(resources, 0, 0, 0, math.min(1, fadeAlpha))
+  end
 end
 
 -- A minimal valid application plan over one pane: content draws through the
@@ -1902,24 +2102,6 @@ end
 ---@return table<string, unknown>|nil mapped touch event or nil
 function HallOfFamePresentation.mapPointerPress(event)
   return showcaseMapInput(event, nil, nil)
-end
-
--- The registration view's own plan: the source party records the ending is
--- about to store, drawn by the generated registration section.
----@param status table<string, unknown> the ending's registration snapshot
----@return table<string, unknown>
-function HallOfFamePresentation:registrationPlan(status)
-  local section = self:_require("registration")
-  assert(type(status) == "table", "the registration plan needs its snapshot")
-  local content = { section = "registration", messageBank = section.messageBank }
-  local self_ = self
-  local function renderRegistration(resources, view)
-    drawRegistration(self_, resources, {
-      registrationSection = section,
-      party = assert(view.party, "the registration view carries its party"),
-    })
-  end
-  return fullScreenPlan("hall-of-fame-registration", content, renderRegistration)
 end
 
 -- The showcase plan over one immutable record page.
@@ -2010,16 +2192,20 @@ function HallOfFamePresentation:musicBoxWaitFrames()
   return math.floor(assert(section.musicBoxWaitFrames))
 end
 
--- The save-status message's own print duration, in fixed ticks. Without the
--- bundle nothing is printed, so nothing is waited for.
+-- The save-result dwell, in fixed ticks. Port-wide adaptation (documented):
+-- the port paints the saving/result string whole in one frame instead of
+-- running the source text printer with the player Options timing, so there
+-- is no source printer duration to reproduce. The dwell keeps the success
+-- message visible for its full hold before the save sound, independent of
+-- bundle art; it is a presentation constant, never a generated property.
+HallOfFamePresentation.SAVE_RESULT_DWELL_FRAMES = 30
+
 ---@return integer
 function HallOfFamePresentation:saveStatusFrames()
   if self.sections == nil then
     return 0
   end
-  local section = self:_require("credits")
-  local frames = section.saveStatusFrames
-  return type(frames) == "number" and math.floor(frames) or 0
+  return HallOfFamePresentation.SAVE_RESULT_DWELL_FRAMES
 end
 
 -- One palette fade's length. The source's own frame counts apply only while a
@@ -2051,6 +2237,25 @@ function HallOfFamePresentation:admitImages(resources, required)
       return false, nil
     end
     local names = required or HallOfFamePresentation.SECTIONS
+    -- Already-admitted immutable section preparation is an immediate
+    -- no-op: re-walking every published image record on each admitted tick
+    -- is pure overhead once the receipt holds.
+    do
+      local allAdmitted = true
+      if self._admittedSections ~= nil and self._admissionFailure == nil then
+        for _, name in ipairs(names) do
+          if self._admittedSections[name] ~= true then
+            allAdmitted = false
+            break
+          end
+        end
+      else
+        allAdmitted = false
+      end
+      if allAdmitted then
+        return true, nil
+      end
+    end
     local needed = {}
     for _, name in ipairs(names) do
       needed[name] = true
@@ -2203,6 +2408,19 @@ function HallOfFamePresentation:admitImages(resources, required)
     if needed.registration then
       local registration = assert(sections.registration, "the presentation bundle carries its registration section")
       local ok, failure = admitSectionImages(registration)
+      if failure ~= nil then
+        self._admissionFailure = tostring(failure)
+        return false, self._admissionFailure
+      end
+      if not ok then
+        return false, nil
+      end
+    end
+    -- Admit the showcase's own main/sub backgrounds whenever the PC
+    -- history surface needs them.
+    if needed.showcase then
+      local showcase = assert(sections.showcase, "the presentation bundle carries its showcase section")
+      local ok, failure = admitSectionImages(showcase)
       if failure ~= nil then
         self._admissionFailure = tostring(failure)
         return false, self._admissionFailure
@@ -2632,9 +2850,17 @@ end
 ---@return string? failure
 function HallOfFamePresentation:_admitPortraitPage(resources, selector)
   self._portraitPages = self._portraitPages or {}
-  local cached = self._portraitPages[selector]
-  if cached ~= nil then
-    return cached, nil
+  local entryPreview = self._portraitManifest ~= nil
+      and self._portraitManifest.entries ~= nil
+      and self._portraitManifest.entries[selector]
+    or nil
+  if type(entryPreview) == "table" and type(entryPreview.pageId) == "number" then
+    local MonCachePreview = require("libs.assets.src.MonCache")
+    local previewPath = MonCachePreview.portraitPagePath(entryPreview.pageId)
+    local preview = self._portraitPages[previewPath]
+    if preview ~= nil then
+      return preview, nil
+    end
   end
   local cacheFs = resources.cacheFs
   local graphics = resources.graphics
@@ -2672,7 +2898,9 @@ function HallOfFamePresentation:_admitPortraitPage(resources, selector)
     pcall(image.setFilter, image, "nearest", "nearest")
   end
   local record = { image = image, path = path, entry = entry, fileData = fileData }
-  self._portraitPages[selector] = record
+  -- Pages are keyed by page path (not selector): co-resident selectors
+  -- share one uploaded page instead of duplicating identical bytes.
+  self._portraitPages[path] = record
   return record, nil
 end
 
@@ -2732,9 +2960,13 @@ function HallOfFamePresentation:_admitSilhouetteVariant(resources, pageRecord, c
   return record, nil
 end
 
--- Admits the recorded party's own front/back portrait pages plus the white
--- silhouette pages the whole-party pre-flash draws. Pending while pages or
--- images are unavailable; terminal on malformed selectors or manifests.
+-- Admits the recorded party's portrait pages. Registration needs front/back
+-- plus the white silhouette pages the whole-party pre-flash draws; the PC
+-- showcase needs only the selected fronts and never draws silhouettes.
+-- Pending while pages or images are unavailable; terminal on malformed
+-- selectors or manifests. Only the current record's required pages stay
+-- pinned: browsing history prunes stale pages, white variants and quads so
+-- the 30-record viewer holds bounded live interest.
 ---@param resources table<string, unknown> borrowed generated cache + graphics + mon catalog
 ---@param party table<string, unknown>[] recorded party members with identity records
 ---@return boolean admitted
@@ -2765,6 +2997,9 @@ function HallOfFamePresentation:admitPortraits(resources, party)
       self._portraitManifest = manifest
     end
     local selectors = {}
+    local needsBack = self._admittedSections == nil or self._admittedSections.registration == true
+    -- Showcase-only receipts never warm backs or silhouettes: the viewer
+    -- draws the selected front only. Registration warms both facings.
     for _, mon in ipairs(party) do
       if type(mon) ~= "table" or type(mon.species) ~= "string" then
         self._admissionFailure = "the registration draws only identified party members"
@@ -2776,33 +3011,121 @@ function HallOfFamePresentation:admitPortraits(resources, party)
         return false, self._admissionFailure
       end
       selectors[#selectors + 1] = pair.front
-      selectors[#selectors + 1] = pair.back
+      if needsBack then
+        selectors[#selectors + 1] = pair.back
+      end
     end
+    local MonCachePages = require("libs.assets.src.MonCache")
+    local requiredPaths = {}
     for _, selector in ipairs(selectors) do
       local _, failure = self:_admitPortraitPage(resources, selector)
       if failure ~= nil then
         self._admissionFailure = tostring(failure)
         return false, self._admissionFailure
       end
-      if self._portraitPages[selector] == nil then
+      local manifestEntry = assert(self._portraitManifest.entries[selector], "a portrait selector resolves its page")
+      local pagePath = MonCachePages.portraitPagePath(assert(manifestEntry.pageId))
+      requiredPaths[pagePath] = true
+      if self._portraitPages[pagePath] == nil then
         return false, nil
       end
-      local page = self._portraitPages[selector]
-      local whiteKey = "white:" .. selector
-      if self._silhouettes == nil or self._silhouettes[whiteKey] == nil then
-        local _, whiteFailure = self:_admitSilhouetteVariant(resources, page, { r = 31, g = 31, b = 31 }, whiteKey)
-        if whiteFailure ~= nil then
-          self._admissionFailure = tostring(whiteFailure)
-          return false, self._admissionFailure
-        end
+      if needsBack then
+        local page = self._portraitPages[pagePath]
+        -- White silhouettes are keyed by page path: co-resident selectors
+        -- share one recolored page instead of baking identical copies.
+        local whiteKey = "white:" .. pagePath
         if self._silhouettes == nil or self._silhouettes[whiteKey] == nil then
-          return false, nil
+          local _, whiteFailure = self:_admitSilhouetteVariant(resources, page, { r = 31, g = 31, b = 31 }, whiteKey)
+          if whiteFailure ~= nil then
+            self._admissionFailure = tostring(whiteFailure)
+            return false, self._admissionFailure
+          end
+          if self._silhouettes == nil or self._silhouettes[whiteKey] == nil then
+            return false, nil
+          end
+        end
+      end
+    end
+    -- Prune pages, silhouette variants and quads the current record no
+    -- longer needs so history browsing holds only live front interest.
+    do
+      local function releaseImage(image)
+        if image ~= nil and type(image.release) == "function" then
+          pcall(image.release, image)
+        end
+      end
+      if self._portraitPages ~= nil then
+        for path, record in pairs(self._portraitPages) do
+          if requiredPaths[path] ~= true then
+            if type(record) == "table" then
+              releaseImage(record.image)
+            end
+            self._portraitPages[path] = nil
+            local whiteKey = "white:" .. path
+            if self._silhouettes ~= nil and self._silhouettes[whiteKey] ~= nil then
+              local white = self._silhouettes[whiteKey]
+              if type(white) == "table" then
+                releaseImage(white.image)
+              end
+              self._silhouettes[whiteKey] = nil
+            end
+          end
+        end
+      end
+      if self._quads ~= nil then
+        for key, _ in pairs(self._quads) do
+          local keep = false
+          for _, selector in ipairs(selectors) do
+            if type(key) == "string" and key:sub(1, #selector) == selector then
+              keep = true
+              break
+            end
+          end
+          if not keep then
+            self._quads[key] = nil
+          end
         end
       end
     end
     -- White and red copies of the whole-party shadow blob for the
     -- pre-flash silhouettes and the individual-scene red shadows.
-    -- Black silhouettes draw straight from the admitted frames.
+    -- Black silhouettes draw straight from the admitted frames. The
+    -- showcase never draws these registration-only silhouettes, so a
+    -- showcase-only receipt skips them instead of demanding registration
+    -- art outside its own phase.
+    if self._admittedSections == nil or self._admittedSections.registration ~= true then
+      -- Pre-warm portrait quads outside draw so the first showcase frame
+      -- performs no new persistent allocations.
+      local graphics = resources.graphics
+      if graphics ~= nil and type(graphics.newQuad) == "function" then
+        self._quads = self._quads or {}
+        for _, selector in ipairs(selectors) do
+          local entry = self._portraitManifest.entries[selector]
+          if type(entry) == "table" and type(entry.frames) == "table" then
+            local pagePath = require("libs.assets.src.MonCache").portraitPagePath(assert(entry.pageId))
+            local record = self._portraitPages[pagePath]
+            if type(record) == "table" and record.image ~= nil then
+              local okW, w = pcall(record.image.getWidth, record.image)
+              local okH, h = pcall(record.image.getHeight, record.image)
+              if okW and okH and type(w) == "number" and type(h) == "number" then
+                for frameIdx, frame in ipairs(entry.frames) do
+                  if type(frame) == "table" then
+                    local key = selector .. "#" .. tostring(frameIdx)
+                    if self._quads[key] == nil then
+                      local okQ, quad = pcall(graphics.newQuad, frame.x, frame.y, frame.width, frame.height, w, h)
+                      if okQ and quad ~= nil then
+                        self._quads[key] = quad
+                      end
+                    end
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+      return true, nil
+    end
     local registration = assert(self.sections.registration, "the bundle carries its registration section")
     local shadow = assert(registration.shadow, "the bundle carries its shadow frames")
     local shadowSeq = assert(shadow[0], "the shadow sequence carries its rest frame")
@@ -3114,6 +3437,7 @@ function HallOfFamePresentation:draw(resources, status)
       registration = view.registration,
       playerName = view.playerName,
       trainerId = view.trainerId,
+      playerGender = view.playerGender,
     })
     return
   end
@@ -3129,18 +3453,21 @@ function HallOfFamePresentation:draw(resources, status)
       saveMessage = view.saveMessage,
       phase = view.phase,
       playerName = view.playerName,
+      fadeAlpha = view.fadeAlpha,
     })
     return
   end
   if sectionName == "the_end" then
-    drawTheEndPresentation(self, resources, { creditsSection = credits })
+    drawTheEndPresentation(self, resources, { creditsSection = credits, fadeAlpha = view.fadeAlpha })
     return
   end
-  drawCredits(
-    self,
-    resources,
-    { creditsSection = credits, timer = view.timer or 0, versionId = view.versionId, credits = view.credits }
-  )
+  drawCredits(self, resources, {
+    creditsSection = credits,
+    timer = view.timer or 0,
+    versionId = view.versionId,
+    credits = view.credits,
+    fadeAlpha = view.fadeAlpha,
+  })
 end
 
 function HallOfFamePresentation:dispose()
@@ -3159,8 +3486,28 @@ function HallOfFamePresentation:dispose()
   self._detailAdmitted = false
   self._cutsceneGender = nil
   self._partyAdmitted = false
+  self._quads = nil
+  local function releaseImage(image)
+    if image ~= nil and type(image.release) == "function" then
+      pcall(image.release, image)
+    end
+  end
+  if self._portraitPages ~= nil then
+    for _, record in pairs(self._portraitPages) do
+      if type(record) == "table" then
+        releaseImage(record.image)
+      end
+    end
+  end
   self._portraitPages = nil
   self._portraitManifest = nil
+  if self._silhouettes ~= nil then
+    for _, record in pairs(self._silhouettes) do
+      if type(record) == "table" then
+        releaseImage(record.image)
+      end
+    end
+  end
   self._silhouettes = nil
   self._memoLandmarks = nil
   self._headerAdmitted = false

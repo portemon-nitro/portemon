@@ -105,6 +105,10 @@ function GameClearState.new(options)
     _sceneParty = sceneParty,
     _scene = nil,
     _choreography = nil,
+    _frozenCredits = nil,
+    _fadeTarget = 0,
+    _savingArmed = false,
+    _savingPresented = false,
   }, GameClearState)
   return state
 end
@@ -158,9 +162,6 @@ function GameClearState:_presentationBlocked()
   end
   if type(presentation.isDrawReady) == "function" then
     return not presentation:isDrawReady(self:_requiredSections())
-  end
-  if type(presentation.isPhaseReady) == "function" then
-    return not presentation:isPhaseReady(self:_requiredSections())
   end
   return false
 end
@@ -263,9 +264,28 @@ end
 ---@param phase string
 ---@param frames integer
 function GameClearState:_beginFade(phase, frames)
+  -- Freezing the visible credit choreography before resetting the clock:
+  -- the fade must retain the last rendered roll frame instead of
+  -- rewinding to page 0 (the choreography clock itself stays frozen
+  -- because step() no longer advances it off the credits phase).
+  if self._phase == "credits" and self._choreography ~= nil then
+    local ok, snapshot = pcall(function()
+      return self._choreography:status()
+    end)
+    if ok and type(snapshot) == "table" then
+      self._frozenCredits = snapshot
+    end
+  end
   self._phase = phase
   self._timer = 0
   self._fadeTarget = self:_fadeFrames(frames)
+end
+
+-- Marks the saving surface as genuinely presented: the draw owner calls
+-- this after painting the saving phase so the transaction cannot publish
+-- on a fixed tick that no draw ever displayed.
+function GameClearState:noteSavingPresented()
+  self._savingPresented = true
 end
 
 ---@param sound string
@@ -391,6 +411,19 @@ function GameClearState:step(input)
     if self:_presentationBlocked() then
       return "wait"
     end
+    -- The first admitted tick only arms the timer; publication additionally
+    -- requires a genuinely presented saving frame (headless simulates the
+    -- same wait without a surface). A fixed tick is not proof of a draw:
+    -- catch-up ticks in one outer update must not publish over a surface
+    -- the player never saw.
+    if not self._savingArmed then
+      self._savingArmed = true
+      self._savingTimer = (self._savingTimer or 0) + 1
+      return "wait"
+    end
+    if self._presentation ~= nil and not self._headless and not self._savingPresented then
+      return "wait"
+    end
     self._savingTimer = (self._savingTimer or 0) + 1
     if self._savingTimer <= 1 then
       return "wait"
@@ -407,6 +440,8 @@ function GameClearState:step(input)
       self._phase = "saving"
       self._timer = 0
       self._savingTimer = 0
+      self._savingArmed = false
+      self._savingPresented = false
       return "wait"
     end
     return "wait"
@@ -442,6 +477,8 @@ function GameClearState:step(input)
       self._phase = "saving"
       self._timer = 0
       self._savingTimer = 0
+      self._savingArmed = false
+      self._savingPresented = false
       return "wait"
     end
     return "wait"
@@ -562,20 +599,23 @@ function GameClearState:step(input)
     if phase == "credits_fade" then
       self._phase = "the_end_fade_in"
       self._timer = 0
-      self._fadeTarget = self:_fadeFrames(1)
+      self._fadeTarget = self:_fadeFrames(THE_END_FADE_FRAMES)
       return "wait"
     end
     self._phase = "credits"
     self._timer = 0
+    self._fadeTarget = 0
     return "wait"
   end
   if phase == "the_end_fade_in" then
     self._phase = "the_end"
     self._musicBoxTimer = 0
+    self._fadeTarget = 0
     return "wait"
   end
   assert(phase == "the_end_fade_out", "the game-clear state is a closed phase set")
   self._phase = "complete"
+  self._fadeTarget = 0
   return "complete"
 end
 
@@ -597,9 +637,31 @@ function GameClearState:saveFailed()
   self._timer = 0
 end
 
--- The immutable per-tick snapshot the field draws.
+-- The immutable per-tick snapshot the field draws. Fade is a phase-owned
+-- envelope, never a stale generic timer: steady phases publish zero,
+-- fade-out phases publish 0->1, and the_end_fade_in publishes 1->0. Fade
+-- timing rides the fade phase's own timer, independent of the frozen
+-- roll/page timer the credits_fade snapshot retains.
 ---@return table<string, unknown>
 function GameClearState:status()
+  local phase = self._phase
+  local target = self._fadeTarget or 0
+  local fadeAlpha = 0
+  if phase == "save_fade" or phase == "credits_fade" or phase == "the_end_fade_out" then
+    if target > 0 then
+      fadeAlpha = math.min(1, math.max(0, self._timer / target))
+    else
+      fadeAlpha = 0
+    end
+  elseif phase == "the_end_fade_in" then
+    if target > 0 then
+      fadeAlpha = 1 - math.min(1, math.max(0, self._timer / target))
+    else
+      fadeAlpha = 0
+    end
+  else
+    fadeAlpha = 0
+  end
   local status = {
     phase = self._phase,
     timer = self._timer,
@@ -607,12 +669,31 @@ function GameClearState:status()
     skipped = self._skipped,
     previouslyCleared = self._previouslyCleared,
     vsRed = self._vsRed,
+    fadeTarget = self._fadeTarget or 0,
+    fadeAlpha = fadeAlpha,
   }
   if self._phase == "congratulations" and self._scene ~= nil then
     status.registration = self._scene:status()
   end
   if self._phase == "credits" and self._choreography ~= nil then
     status.credits = self._choreography:status()
+  end
+  -- The fade retains the last visible roll frame: drawing the reset timer
+  -- would rewind to page 0, losing dancers and cutscenes during the fade.
+  if self._phase == "credits_fade" then
+    local frozen = self._frozenCredits
+    if frozen == nil and self._choreography ~= nil then
+      local ok, snapshot = pcall(function()
+        return self._choreography:status()
+      end)
+      if ok and type(snapshot) == "table" then
+        frozen = snapshot
+      end
+    end
+    if type(frozen) == "table" then
+      status.credits = frozen
+      status.timer = tonumber(frozen.timer) or self._timer
+    end
   end
   return status
 end

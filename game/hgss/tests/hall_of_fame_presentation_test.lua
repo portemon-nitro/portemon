@@ -18,7 +18,11 @@ local function bundle()
     registration = {
       messageBank = 180,
     },
-    showcase = { messageBank = 181, backgroundArchive = "NARC_a_0_9_7" },
+    showcase = {
+      messageBank = 181,
+      mainBg = { path = "show-main", sha1 = "aa" },
+      subBg = { path = "show-sub", sha1 = "bb" },
+    },
     credits = {
       frames = CREDIT_FRAMES,
       musicBoxWaitFrames = MUSIC_BOX_WAIT,
@@ -29,7 +33,11 @@ local function bundle()
       spriteResources = { charMember = 1, paletteMember = 0, cellMember = 2, animMember = 3 },
       cutsceneResources = { charBaseMember = 20, paletteMember = 149, count = 16 },
       scenes = {
-        { index = 0, lower = { path = "data/generated/ending/images/a.png", sha1 = "aa" }, upper = { path = "data/generated/ending/images/b.png", sha1 = "bb" } },
+        {
+          index = 0,
+          lower = { path = "data/generated/ending/images/a.png", sha1 = "aa" },
+          upper = { path = "data/generated/ending/images/b.png", sha1 = "bb" },
+        },
       },
       pages = {
         { page = 0, startTime = 0, duration = 105, lines = { { x = 0, y = 70, message = 0 } } },
@@ -79,24 +87,31 @@ local function fakeResources(sink)
   local images = {}
   return {
     graphics = {
-      draw = function(first, second, third, fourth)
-        -- Host calls use dot syntax (no self): (image, x, y) or
-        -- (image, quad, x, y).
-        local image, x, y
-        if fourth ~= nil then
+      draw = function(first, second, third, fourth, fifth, sixth, seventh)
+        -- Host calls use dot syntax (no self): (image, x, y),
+        -- (image, quad, x, y) or scaled (image, quad, x, y, r, sx, sy).
+        local image, x, y, scaleX, scaleY
+        if seventh ~= nil or sixth ~= nil or fifth ~= nil then
+          image, x, y, scaleX, scaleY = first, third, fourth, sixth, seventh
+        elseif fourth ~= nil then
           image, x, y = first, third, fourth
         else
           image, x, y = first, second, third
         end
         sink.images = sink.images or {}
-        sink.images[#sink.images + 1] = { image = image, x = x, y = y }
+        sink.images[#sink.images + 1] = { image = image, x = x, y = y, scaleX = scaleX, scaleY = scaleY }
+      end,
+      rectangle = function(_, mode, x, y, w, h)
+        sink.overlays = sink.overlays or {}
+        sink.overlays[#sink.overlays + 1] = { mode = mode, x = x, y = y }
+      end,
+      newQuad = function(_, x, y, w, h, iw, ih)
+        return { x = x, y = y, width = w, height = h }
       end,
       newImage = function(_, fileData)
         local image = { fileData = fileData }
-        function image:setFilter()
-        end
-        function image:release()
-        end
+        function image:setFilter() end
+        function image:release() end
         function image:getWidth()
           return 256
         end
@@ -150,8 +165,7 @@ local function fakeResources(sink)
       format = function(_, template)
         return { text = template.text, tokens = {} }
       end,
-      releaseBank = function()
-      end,
+      releaseBank = function() end,
     },
     images = images,
     cacheFs = {
@@ -192,11 +206,7 @@ function T.tests.prepared_presentation_reports_source_timelines()
   local presentation = HallOfFamePresentation.new(bundle())
   Assert.isTrue(presentation:isReady(), "a prepared presentation is ready")
   Assert.equal(presentation:creditFrames(), CREDIT_FRAMES, "the roll keeps the source credit frames")
-  Assert.equal(
-    presentation:musicBoxWaitFrames(),
-    MUSIC_BOX_WAIT,
-    "The End keeps the source music-box wait"
-  )
+  Assert.equal(presentation:musicBoxWaitFrames(), MUSIC_BOX_WAIT, "The End keeps the source music-box wait")
 end
 
 function T.tests.prepared_showcase_plan_draws_record_party_and_credit_layers()
@@ -240,7 +250,11 @@ function T.tests.prepared_registration_draws_congratulations_party()
     heights = { [0] = { male = 40, female = 40 } },
   }
   local function frame(path)
-    return { frames = { { path = path, width = 32, height = 32, origin = { x = 0, y = 0 }, durationTicks = 1 } }, playMode = "forward", loopStart = 0 }
+    return {
+      frames = { { path = path, width = 32, height = 32, origin = { x = 0, y = 0 }, durationTicks = 1 } },
+      playMode = "forward",
+      loopStart = 0,
+    }
   end
   local bundle = {
     signature = "ending-cache-v1:rom:deps",
@@ -248,16 +262,32 @@ function T.tests.prepared_registration_draws_congratulations_party()
       messageBank = 180,
       bgIndiv = { { path = "bg0", sha1 = "aa" }, { path = "bg1", sha1 = "bb" }, { path = "bg2", sha1 = "cc" } },
       bgWhole = { { path = "bgw0", sha1 = "dd" }, { path = "bgw1", sha1 = "ee" } },
-      owSmall = { [0] = frame("ow"), [1] = frame("ow"), [2] = frame("ow"), [3] = frame("ow") },
-      owLarge = { [0] = frame("ow"), [1] = frame("ow"), [2] = frame("ow"), [3] = frame("ow") },
       twinkle = { [0] = frame("tw") },
       twinkleShadow = { [0] = frame("tws") },
       shadow = { [0] = frame("sh") },
       playerEthan = { [0] = frame("pl") },
       playerLyra = { [0] = frame("pl") },
       monTracks = tracks,
-      spotlightColors = { { 31, 31, 12 }, { 31, 31, 16 }, { 31, 28, 8 }, { 31, 31, 12 }, { 31, 31, 16 }, { 31, 28, 8 }, { 31, 31, 12 }, { 31, 31, 12 } },
-      confettiColors = { { 31, 0, 0 }, { 0, 31, 0 }, { 0, 0, 31 }, { 31, 31, 0 }, { 0, 31, 31 }, { 31, 0, 31 }, { 31, 31, 31 }, { 16, 16, 16 } },
+      spotlightColors = {
+        { 31, 31, 12 },
+        { 31, 31, 16 },
+        { 31, 28, 8 },
+        { 31, 31, 12 },
+        { 31, 31, 16 },
+        { 31, 28, 8 },
+        { 31, 31, 12 },
+        { 31, 31, 12 },
+      },
+      confettiColors = {
+        { 31, 0, 0 },
+        { 0, 31, 0 },
+        { 0, 0, 31 },
+        { 31, 31, 0 },
+        { 0, 31, 31 },
+        { 31, 0, 31 },
+        { 31, 31, 31 },
+        { 16, 16, 16 },
+      },
       flashFrames = 40,
       reflashFrames = 15,
       fadeFrames = 15,
@@ -265,7 +295,11 @@ function T.tests.prepared_registration_draws_congratulations_party()
       kanseiSe = "SEQ_SE_GS_DENDOUIRI_KANSEI",
       bgm = "SEQ_GS_E_DENDOUIRI",
     },
-    showcase = { messageBank = 181 },
+    showcase = {
+      messageBank = 181,
+      mainBg = { path = "show-main", sha1 = "aa" },
+      subBg = { path = "show-sub", sha1 = "bb" },
+    },
     credits = {
       frames = CREDIT_FRAMES,
       musicBoxWaitFrames = MUSIC_BOX_WAIT,
@@ -283,7 +317,17 @@ function T.tests.prepared_registration_draws_congratulations_party()
     section = "registration",
     phase = "congratulations",
     party = {
-      { species = "TYPHLOSION", level = 60, form = 0, personality = 0, nickname = "TYPHLOSION", otName = "GOLD", origin = { trainerId = 1, trainerName = "GOLD", game = "heartgold" }, met = { location = 1 }, egg = { location = 0 } },
+      {
+        species = "TYPHLOSION",
+        level = 60,
+        form = 0,
+        personality = 0,
+        nickname = "TYPHLOSION",
+        otName = "GOLD",
+        origin = { trainerId = 1, trainerName = "GOLD", game = "heartgold" },
+        met = { location = 1 },
+        egg = { location = 0 },
+      },
     },
     playerName = "GOLD",
     trainerId = 1,
@@ -580,6 +624,347 @@ function T.tests.showcase_preparation_distinguishes_pending_from_terminal()
     Assert.isFalse(ready == true, "a ready receipt with no bundle never reads ready")
     Assert.isTrue(failure ~= nil, "the published-but-missing bundle is terminal")
   end
+end
+
+function T.tests.co_resident_portrait_selectors_share_one_page_with_distinct_quads()
+  local staged = bundle()
+  staged.registration.shadow = { [0] = { frames = { { path = "sh", width = 8, height = 8, durationTicks = 1 } } } }
+  local presentation = HallOfFamePresentation.new(staged)
+  local sink = { text = {}, windows = {} }
+  local resources = fakeResources(sink)
+  resources.monCatalog.form = function(_, _)
+    return { portrait = "SPECIES/f0/male/plain" }
+  end
+  resources.cacheFs.loadLua = function(_, path)
+    if tostring(path):find("portrait", 1, true) ~= nil then
+      return {
+        entries = {
+          ["SPECIES/f0/male/plain"] = {
+            pageId = 7,
+            width = 320,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/male/plain/back"] = {
+            pageId = 7,
+            width = 320,
+            height = 80,
+            frames = { { x = 80, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/female/plain"] = {
+            pageId = 7,
+            width = 320,
+            height = 80,
+            frames = { { x = 160, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/female/plain/back"] = {
+            pageId = 7,
+            width = 320,
+            height = 80,
+            frames = { { x = 240, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/male/shiny"] = {
+            pageId = 7,
+            width = 320,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/male/shiny/back"] = {
+            pageId = 7,
+            width = 320,
+            height = 80,
+            frames = { { x = 80, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/female/shiny"] = {
+            pageId = 7,
+            width = 320,
+            height = 80,
+            frames = { { x = 160, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/female/shiny/back"] = {
+            pageId = 7,
+            width = 320,
+            height = 80,
+            frames = { { x = 240, y = 0, width = 80, height = 80 } },
+          },
+        },
+      }
+    end
+    return { memo = { landmarks = { wildByLocation = {}, giftByLocation = {}, fallback = "NOWHERE" } } }
+  end
+  resources.graphics.newQuad = function(x, y, w, h, iw, ih)
+    return { x = x, y = y, width = w, height = h }
+  end
+  resources.monCatalog.form = function(_, _)
+    return { portrait = "SPECIES/f0/male/plain" }
+  end
+  local party = {
+    { species = "SPECIES", level = 5, form = 0, personality = 0, origin = { trainerId = 1 } },
+  }
+  -- Coerce the shared selector owner onto one page with distinct rects.
+  local HallOfFame = require("game.hgss.src.ending.HallOfFamePresentation")
+  local pair = HallOfFame.portraitSelectorsFor(party[1], {
+    species = function()
+      return { name = "SPECIES", nativeId = 1, genderRatio = 31 }
+    end,
+    form = function()
+      return { portrait = "SPECIES/f0/male/plain" }
+    end,
+  })
+  Assert.isTrue(pair ~= nil, "the selector owner resolves its pair")
+  local imagesAdmitted, imagesFailure = presentation:admitImages(resources, { "registration" })
+  Assert.isTrue(imagesAdmitted, "registration images admit: " .. tostring(imagesFailure))
+  local admitted, failure = presentation:admitPortraits(resources, party)
+  Assert.isTrue(admitted, "co-resident portraits admit: " .. tostring(failure))
+  local pages = 0
+  for _ in pairs(presentation._portraitPages) do
+    pages = pages + 1
+  end
+  Assert.equal(pages, 1, "co-resident selectors share one uploaded page")
+  local frontImage, frontQuad = presentation:_portraitFrame(resources, pair.front, 1, "normal")
+  local backImage, backQuad = presentation:_portraitFrame(resources, pair.back, 1, "normal")
+  Assert.isTrue(frontImage == backImage, "one page backs both selectors")
+  Assert.isTrue(frontQuad ~= backQuad, "distinct rectangles sample distinct quads")
+  Assert.isTrue(frontQuad.x ~= backQuad.x, "the sampled cells differ on the shared page")
+end
+
+function T.tests.portrait_draw_applies_the_scene_scale()
+  local stagedScale = bundle()
+  stagedScale.registration.shadow = { [0] = { frames = { { path = "sh", width = 8, height = 8, durationTicks = 1 } } } }
+  local presentation = HallOfFamePresentation.new(stagedScale)
+  local sink = { text = {}, windows = {} }
+  local resources = fakeResources(sink)
+  resources.graphics.newQuad = function(x, y, w, h, iw, ih)
+    return { x = x, y = y, width = w, height = h }
+  end
+  resources.monCatalog.form = function(_, _)
+    return { portrait = "SPECIES/f0/male/plain" }
+  end
+  resources.cacheFs.loadLua = function(_, path)
+    if tostring(path):find("portrait", 1, true) ~= nil then
+      return {
+        entries = {
+          ["SPECIES/f0/male/plain"] = {
+            pageId = 3,
+            width = 80,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/male/plain/back"] = {
+            pageId = 3,
+            width = 80,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/female/plain"] = {
+            pageId = 3,
+            width = 80,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/female/plain/back"] = {
+            pageId = 3,
+            width = 80,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/male/shiny"] = {
+            pageId = 3,
+            width = 80,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/male/shiny/back"] = {
+            pageId = 3,
+            width = 80,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/female/shiny"] = {
+            pageId = 3,
+            width = 80,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+          ["SPECIES/f0/female/shiny/back"] = {
+            pageId = 3,
+            width = 80,
+            height = 80,
+            frames = { { x = 0, y = 0, width = 80, height = 80 } },
+          },
+        },
+      }
+    end
+    return { memo = { landmarks = { wildByLocation = {}, giftByLocation = {}, fallback = "NOWHERE" } } }
+  end
+  local party = {
+    { species = "SPECIES", level = 5, form = 0, personality = 0, origin = { trainerId = 1 } },
+  }
+  local HallOfFame = require("game.hgss.src.ending.HallOfFamePresentation")
+  local pair = HallOfFame.portraitSelectorsFor(party[1], {
+    species = function()
+      return { name = "SPECIES", nativeId = 1, genderRatio = 31 }
+    end,
+    form = function()
+      return { portrait = "SPECIES/f0/male/plain" }
+    end,
+  })
+  local imagesAdmitted = presentation:admitImages(resources, { "registration" })
+  Assert.isTrue(imagesAdmitted, "registration images admit before the scale draw")
+  local admitted = presentation:admitPortraits(resources, party)
+  Assert.isTrue(admitted, "portraits admit before the scale draw")
+  sink.images = {}
+  presentation:_drawPortrait(resources, pair.front, 1, 10, 20, "normal", 1, 0.5)
+  local drawn = assert(sink.images[#sink.images], "a scaled portrait draws")
+  Assert.equal(drawn.scaleX, 0.5, "the scene scale reaches the draw")
+  Assert.equal(drawn.scaleY, 0.5, "the scene scale stays uniform")
+end
+
+function T.tests.save_fade_retains_the_success_surface()
+  local presentation = HallOfFamePresentation.new(bundle())
+  local sink = { text = {}, windows = {} }
+  local resources = fakeResources(sink)
+  local admitted, failure = presentation:admitImages(resources, { "save" })
+  Assert.isTrue(admitted, "save art admits: " .. tostring(failure))
+  local saveAdmitted, saveFailure = presentation:admitSaveResult("GOLD", resources)
+  Assert.isTrue(saveAdmitted, "save result admits: " .. tostring(saveFailure))
+  sink.text = {}
+  presentation:draw(resources, { phase = "save_fade", playerName = "GOLD", fadeAlpha = 0.5 })
+  local joined = {}
+  for _, entry in ipairs(sink.text) do
+    joined[#joined + 1] = tostring(entry.text)
+  end
+  local painted = table.concat(joined, "\n")
+  Assert.isTrue(painted:find("msg40:16", 1, true) ~= nil, "the fade retains the success line, not the saving line")
+end
+
+function T.tests.credits_draw_uses_the_choreography_snapshot_not_the_reset_timer()
+  local presentation = HallOfFamePresentation.new(bundle())
+  local sink = { text = {}, windows = {} }
+  local resources = fakeResources(sink)
+  local staged = bundle()
+  staged.credits.danceSequences = {
+    [1] = { frames = { { durationTicks = 1, path = "dance", blank = false } }, playMode = "forward" },
+    [7] = { frames = { { durationTicks = 1, path = "cloud", blank = false } }, playMode = "forward" },
+  }
+  presentation = HallOfFamePresentation.new(staged)
+  local admitted, failure = presentation:admitImages(resources, { "credits" })
+  Assert.isTrue(admitted, "credit art admits: " .. tostring(failure))
+  sink.images = {}
+  -- A choreography deep in the roll with the reset fade timer: the
+  -- background must follow the frozen snapshot, not timer 0.
+  local choreo = {
+    timer = 2000,
+    sceneIdx = 2,
+    danceSeq = 1,
+    danceClock = 0,
+    cloudSeq = 7,
+    cloudsVisible = false,
+    cloudClock = 0,
+    screensFlipped = true,
+    flipCount = 1,
+    cutsceneIdx = 0,
+    cutsceneSprites = {},
+    gender = "male",
+  }
+  presentation:draw(resources, {
+    phase = "credits_fade",
+    timer = 0,
+    fadeAlpha = 0.5,
+    credits = choreo,
+  })
+  Assert.isTrue(#(sink.images or {}) >= 2, "the frozen roll still draws its scene layers")
+end
+
+function T.tests.showcase_paints_all_four_moves_without_icon_overlap()
+  -- F03: a history record with four distinct moves shows every move in
+  -- its own rectangle, and the detail panel never overlaps the icon grid.
+  local staged = bundle()
+  staged.showcase.mainBg = { path = "show-main", sha1 = "aa" }
+  staged.showcase.subBg = { path = "show-sub", sha1 = "bb" }
+  local presentation = HallOfFamePresentation.new(staged)
+  local sink = { text = {}, windows = {} }
+  local resources = fakeResources(sink)
+  -- Admit images through the real path so mainBg/subBg upload.
+  resources.cacheFs.read = function(_, _)
+    return BLANK_PNG
+  end
+  local admitted, failure = presentation:admitImages(resources, { "showcase" })
+  Assert.isTrue(admitted, "showcase art admits: " .. tostring(failure))
+  local status = showcaseStatus()
+  status.party = {
+    {
+      species = "TYPHLOSION",
+      level = 60,
+      form = 0,
+      personality = 0,
+      otId = 1,
+      otName = "VERYLONGOTNAME",
+      nickname = "VERYLONGNICKNAME",
+      moves = { "A", "BB", "CCC", "DDDD" },
+    },
+  }
+  status.mon = status.party[1]
+  status.cursor = 0
+  status.exitSelected = false
+  -- Move names resolve through the catalog: distinct lengths give distinct
+  -- native ids, and the fake bank paints msg750:<id>. Override before
+  -- admission so warmed text matches drawn text.
+  resources.monCatalog.move = function(_, key)
+    return { nativeId = string.len(tostring(key)) }
+  end
+  local headerAdmitted, headerFailure = presentation:admitShowcaseHeader(status.recordNumber, status.date, resources)
+  Assert.isTrue(headerAdmitted, "showcase header admits: " .. tostring(headerFailure))
+  local partyAdmitted, partyFailure = presentation:admitParty({
+    { species = "TYPHLOSION", level = 60, form = 0, moves = { "A", "BB", "CCC", "DDDD" } },
+  }, resources)
+  Assert.isTrue(partyAdmitted, "showcase party admits: " .. tostring(partyFailure))
+  sink.text = {}
+  sink.icons = {}
+  presentation:draw(resources, status)
+  local painted = {}
+  for _, entry in ipairs(sink.text) do
+    painted[#painted + 1] = tostring(entry.text)
+  end
+  local joined = table.concat(painted, "\n")
+  for _, id in ipairs({ 1, 2, 3, 4 }) do
+    -- Each distinct move id paints; the fourth slot is never dropped.
+    Assert.isTrue(joined:find("msg750:" .. tostring(id), 1, true) ~= nil, "move " .. id .. " paints")
+  end
+  -- Detail rows stay at/below y=116 while icons stay at/above y=100.
+  local detailTop = 1e9
+  for _, entry in ipairs(sink.text) do
+    if tostring(entry.text):find("msg750:", 1, true) ~= nil then
+      detailTop = math.min(detailTop, tonumber(entry.y) or 1e9)
+    end
+  end
+  Assert.isTrue(detailTop >= 140, "moves paint inside the detail panel")
+  for _, icon in ipairs(sink.icons or {}) do
+    Assert.isTrue((tonumber(icon.y) or 0) + 32 <= 112, "icons never enter the detail panel")
+  end
+end
+
+function T.tests.credits_overlay_applies_during_page_gaps()
+  -- F01: the fade overlay paints even when no text page displays, so
+  -- page gaps and the opening title fade together with paged frames.
+  local staged = bundle()
+  staged.credits.pages = {
+    { page = 0, startTime = 200, duration = 10, lines = { { x = 8, y = 24, message = 0 } } },
+  }
+  staged.credits.scenes = {}
+  local presentation = HallOfFamePresentation.new(staged)
+  local sink = { text = {}, windows = {} }
+  local resources = fakeResources(sink)
+  local admitted, failure = presentation:admitImages(resources, { "credits" })
+  Assert.isTrue(admitted, "credit art admits: " .. tostring(failure))
+  sink.overlays = {}
+  presentation:draw(resources, {
+    phase = "credits_fade",
+    timer = 0,
+    fadeAlpha = 0.5,
+    credits = { timer = 0, sceneIdx = 0, danceSeq = nil },
+  })
+  Assert.isTrue(#(sink.overlays or {}) >= 1, "the fade paints with no active page")
 end
 
 return T
