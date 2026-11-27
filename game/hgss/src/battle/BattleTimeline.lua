@@ -4273,6 +4273,11 @@ local function translateBrokeFree(self, event)
         oldX = resting.x,
         oldY = resting.y,
         battlerType = battlerTypeOf(self, target),
+        -- The open cue also advances the target growth after the open
+        -- event so the seal and the zero-affine tinted growth start
+        -- together on the same controller edge; the queued reveal then
+        -- continues (never restarts) that growth.
+        target = target,
         x = spot.x,
         y = spot.y,
         opening = self._ballOpening ~= nil and self._ballOpening(sendOutBall) or nil,
@@ -6302,12 +6307,15 @@ function CaptureActor.tickBallCaptureOpenCue(self, cue)
   ball.paletteFlashColor = nil
   -- The open holds its frame-2 cell once the animation reaches it
   -- (native SetAnimationFrame hold through the burst): the 23-frame
-  -- entry counter runs independently, so the open completes at 23
-  -- without joining the burst lifetime. The later idle barrier joins
-  -- the burst before the flash/drop, like BALL_FALL waits for both
-  -- the open and the controller completion.
+  -- entry counter runs independently, so the open completes only after
+  -- both the entry and the burst retire, like BALL_FALL waits for both
+  -- the open and the controller completion. The closing frame 0 is
+  -- restored on the burst retirement edge itself, not deferred to the
+  -- later flash cue.
   if elapsed < burstTick then
     ball.drawableKey = CaptureActor.cellKey(cue, ballKey, math.max(1, elapsed))
+  elseif cue.burstDone == true then
+    ball.drawableKey = CaptureActor.cellForFrameIndex(cue, ballKey, 0)
   else
     ball.drawableKey = CaptureActor.cellForFrameIndex(cue, ballKey, 2)
   end
@@ -6322,7 +6330,30 @@ function CaptureActor.tickBallCaptureOpenCue(self, cue)
       y = cue.y,
     }
   end
-  return elapsed >= CaptureActor.ENTRY_TICKS
+  -- Join the burst retirement edge before completing: with a live idle
+  -- probe the open holds past 23 until the burst retires (and restores
+  -- frame 0 above on that edge); without a probe (headless unit
+  -- fixtures) it completes on the entry counter alone.
+  if elapsed >= burstTick and cue.burstDone ~= true then
+    local probe = self._particleIdleProbe
+    if probe ~= nil then
+      local ok, idle = pcall(probe)
+      if ok and idle == true then
+        cue.burstDone = true
+        ball.drawableKey = CaptureActor.cellForFrameIndex(cue, ballKey, 0)
+      end
+    end
+  end
+  if elapsed < CaptureActor.ENTRY_TICKS then
+    return false
+  end
+  if self._particleIdleProbe ~= nil and cue.burstDone ~= true and elapsed >= burstTick then
+    return false
+  end
+  -- Ensure the closed frame is restored even when no probe observed
+  -- the retirement (headless fixtures with empty sets).
+  ball.drawableKey = CaptureActor.cellForFrameIndex(cue, ballKey, 0)
+  return true
 end
 
 ---@param self BattleTimeline
@@ -6340,10 +6371,10 @@ function CaptureActor.tickBallFlashCue(self, cue)
   local downTicks = math.ceil(peak / step)
   local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
   if ball ~= nil and elapsed == 1 then
-    -- The flash/drop run on the closed ball only after the burst
-    -- retires: the open held frame 2 through the burst, so restore
-    -- the opening animation's closed frame here (native OPEN_DONE
-    -- SetAnimationFrame(0)).
+    -- The flash/drop run on the closed ball: the open already restored
+    -- frame 0 on the burst retirement edge, so reassert the closed
+    -- frame here (native OPEN_DONE SetAnimationFrame(0)) without
+    -- disturbing the joined timing.
     local selector = ball.selector --[[@as string?]]
     local key = type(selector) == "string" and selector:match("^ball:([%w_]+)$") or nil
     local opening = cue.opening
@@ -6538,6 +6569,32 @@ function CaptureActor.tickBallBreakoutOpenCue(self, cue)
   if frameKey ~= nil then
     ball.drawableKey = frameKey
   end
+  -- Start the target growth on the same open-event edge as the seal so
+  -- the effect never expands in an empty space: the growth advances in
+  -- this cue alongside the ball tail, and the queued reveal continues
+  -- (never restarts) it below.
+  if openTick >= CaptureActor.BREAKOUT_OPEN_EVENT_TICK and type(cue.target) == "number" then
+    local target = cue.target --[[@as integer]]
+    local shown = self:_shown(target)
+    -- Only the tinted send-out poofs through affine; an unstaged ball
+    -- color leaves both this growth and the queued reveal on their
+    -- unfaded path so headless fixtures without staged art stay exact.
+    local attemptColor = self._ballFadeColor ~= nil and self._ballFadeColor(ballKey) or nil
+    if shown ~= nil and type(attemptColor) == "number" then
+      local growthTick = openTick - CaptureActor.BREAKOUT_OPEN_EVENT_TICK + 1
+      cue.growthTick = growthTick
+      local growthCue = {
+        elapsed = growthTick,
+        duration = BattleTimeline.BALL_SCALE_TICKS + BattleTimeline.BALL_FADE_TICKS,
+        fadeColor = attemptColor,
+        rowHeight = cue.growthRowHeight,
+      }
+      tickBallPoof(self, growthCue, shown, true)
+      cue.growthRowHeight = growthCue.rowHeight
+      self._breakoutGrowth = self._breakoutGrowth or {}
+      self._breakoutGrowth[target] = { tick = growthTick, rowHeight = growthCue.rowHeight }
+    end
+  end
   if openTick >= CaptureActor.BREAKOUT_OPEN_TICKS then
     ball.visible = false
     return true
@@ -6560,10 +6617,14 @@ function CaptureActor.tickBallFadeCue(self, cue)
   local ball = self._openingPresentation and self._openingPresentation.ballThrow or nil
   if ball ~= nil then
     if elapsed >= CaptureActor.FADE_TICKS then
+      -- Retire the capture override with the actor: clearing the
+      -- coefficients returns control to the ordinary scene blend
+      -- instead of leaving a stale 0/16 global override through the
+      -- post-fade hold and registration.
       ball.visible = false
-      ball.fadeAlpha = 0
-      ball.fadeBeta = 16
-      ball.oamMode = "translucent"
+      ball.fadeAlpha = nil
+      ball.fadeBeta = nil
+      ball.oamMode = nil
       return true
     end
     -- CaptureStateFadeOut starts A/B at 16/0, switches the ball OBJ
@@ -6677,32 +6738,53 @@ end
 
 local function tickWithdrawCue(self, cue)
   local shown = self:_shown(cue.combatant --[[@as integer]])
-  if shown ~= nil and cue.fadeColor ~= nil then
-    tickBallPoof(self, cue, shown, false)
-  elseif shown ~= nil and cue.captureAbsorb == true then
+  if shown ~= nil and cue.captureAbsorb == true then
     -- Task_PokemonEnterBall tints toward the attempted ball, sets
     -- shadow affine, then shrinks -32 per update and moves Y upward by
-    -- one pixel while the remaining height is nonzero, deleting the
-    -- picture at zero scale.
+    -- one pixel per update only while the remaining source height is
+    -- nonzero, deleting the picture at zero scale. This branch owns the
+    -- capture kind: cue.captureAbsorb selects it, never the presence of
+    -- a fade color, so ordinary recall still runs tickBallPoof below.
     local step = cue.elapsed --[[@as integer]]
     local affine = math.max(0, 0x100 - 0x20 * step)
     local fadeColor = cue.fadeColor
     if type(fadeColor) == "number" then
-      shown.paletteFade = { applied = true, targetColor = fadeColor, intensity = math.min(16, step * 2) }
+      -- Pokepic_StartPaletteFade(..., 0, 16, 0, color) steps one unit
+      -- per update toward the attempted-ball color.
+      shown.paletteFade = { applied = true, targetColor = fadeColor, intensity = math.min(16, step) }
+    else
+      shown.paletteFade = nil
     end
-    shown.shadowAffine = false
+    shown.shadowAffine = true
+    if cue.baseYOffset == nil then
+      cue.baseYOffset = shown.pictureYOffset or 0
+      local appearance = self._faintAppearance and self._faintAppearance(shown) or nil
+      local height = appearance ~= nil and appearance.height or 0
+      if type(height) ~= "number" or height < 0 then
+        height = 0
+      end
+      cue.absorbInitial = math.floor(height)
+      cue.absorbMoved = 0
+    end
+    local base = cue.baseYOffset --[[@as integer]]
+    local moved = cue.absorbMoved --[[@as integer]] or 0
     if affine < 0x100 then
       shown.affineMode = true
       shown.affineWidth = affine
       shown.affineHeight = affine
-      if cue.baseYOffset == nil then
-        cue.baseYOffset = shown.pictureYOffset or 0
+      -- Consume one unit of source height per shrink step while any
+      -- remains; zero-height targets never displace.
+      local initial = cue.absorbInitial --[[@as integer]] or 0
+      if moved < initial then
+        moved = moved + 1
+        cue.absorbMoved = moved
       end
-      shown.pictureYOffset = cue.baseYOffset --[[@as integer]] - step
+      shown.pictureYOffset = base - moved
     else
       shown.affineMode = nil
       shown.affineWidth = nil
       shown.affineHeight = nil
+      shown.pictureYOffset = base
     end
     shown.visible = true
     if affine == 0 then
@@ -6711,8 +6793,12 @@ local function tickWithdrawCue(self, cue)
       shown.affineMode = nil
       shown.affineWidth = nil
       shown.affineHeight = nil
+      shown.shadowAffine = nil
+      shown.pictureYOffset = base
       return true
     end
+  elseif shown ~= nil and cue.fadeColor ~= nil then
+    tickBallPoof(self, cue, shown, false)
   end
   if
     cue.elapsed --[[@as integer]]
@@ -6724,7 +6810,13 @@ local function tickWithdrawCue(self, cue)
         shown.affineMode = nil
         shown.affineWidth = nil
         shown.affineHeight = nil
-        shown.pictureYOffset = nil
+        shown.shadowAffine = nil
+        shown.paletteFade = nil
+        if cue.baseYOffset ~= nil then
+          shown.pictureYOffset = cue.baseYOffset
+        else
+          shown.pictureYOffset = nil
+        end
       end
       if cue.keepHud == true then
         shown.hudVisible = true
@@ -6760,6 +6852,23 @@ local function tickRevealCue(self, cue)
       shown.pictureXOffset = nil
     end
   elseif shown ~= nil and cue.fadeColor ~= nil then
+    -- A breakout open already advanced this growth alongside the ball
+    -- tail: continue from that progress instead of snapping back to
+    -- zero affine. The stored tick is consumed once here.
+    if cue.elapsed == 1 and self._breakoutGrowth ~= nil then
+      local progress = self._breakoutGrowth[
+        cue.combatant --[[@as integer]]
+      ]
+      if type(progress) == "table" and type(progress.tick) == "number" and progress.tick > 1 then
+        cue.elapsed = progress.tick + 1
+        if progress.rowHeight ~= nil then
+          cue.rowHeight = progress.rowHeight
+        end
+      end
+      self._breakoutGrowth[
+        cue.combatant --[[@as integer]]
+      ] = nil
+    end
     tickBallPoof(self, cue, shown, true)
   end
   -- Send-out animation starts where the source starts it: as the poof

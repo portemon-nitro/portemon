@@ -117,9 +117,11 @@ local function plan(start, particles)
       return true
     end
   end
-  -- The breakout's mode-1 open plays the generic burst (virtual ball
-  -- 1027, NARC_a_0_9_5 member 52): all of its emitters, never the
-  -- attempted ball's catch-opening burst and never the seal.
+  -- The shared generic set is the recall mode-5 effect (virtual ball
+  -- 1027, NARC_a_0_9_5 member 52), not a breakout effect: the corrected
+  -- breakout runs mode-1 ThrowArcAndOpen with the attempted-ball seal.
+  -- No capture cue starts "generic-burst"; the selector stays for the
+  -- future recall owner that actually wires mode 5.
   if start.effect == "generic-burst" then
     if particles.genericBurst == nil then
       return nil, nil, "missing-generic-set"

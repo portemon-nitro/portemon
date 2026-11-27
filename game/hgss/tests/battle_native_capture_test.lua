@@ -752,7 +752,17 @@ function T.fade_publishes_translucent_alpha_not_a_hide_timer()
 end
 
 function T.absorb_shrinks_affine_before_hiding()
-  local timeline = BattleTimeline.new({})
+  -- The production battle screen always stages the attempted-ball fade
+  -- color: supplying it here forces the capture-absorb branch instead
+  -- of the ordinary recall poof that a missing color would select.
+  local timeline = BattleTimeline.new({
+    ballFadeColor = function(_)
+      return 21
+    end,
+    faintAppearance = function(_)
+      return { height = 32, shadowHeight = 0 }
+    end,
+  })
   stageBallArt(timeline)
   timeline:reset(openingView())
   local driver = driveParticles(timeline)
@@ -766,12 +776,27 @@ function T.absorb_shrinks_affine_before_hiding()
     return false
   end, 3000)
   Assert.isTrue(shrank, "the target shrinks through affine before vanishing")
+  local target = battler(timeline:battlers(), 3)
+  -- Capture absorb keeps shadow affine on (retail POKEPIC_SHADOW_AFFINE)
+  -- and tints one unit per update toward the attempted ball, never the
+  -- recall double-step.
+  Assert.isTrue(target.shadowAffine == true, "the absorb keeps shadow affine on")
+  Assert.isTrue(target.paletteFade ~= nil, "the absorb tints toward the attempted ball")
+  if target.paletteFade ~= nil then
+    Assert.equal(target.paletteFade.targetColor, 21, "the absorb uses the attempted-ball color")
+    Assert.isTrue(target.paletteFade.intensity <= 16, "the absorb tint steps one unit per update")
+  end
   Assert.isTrue(
     waitFor(timeline, driver, function()
       return not battler(timeline:battlers(), 3).visible
     end, 3000),
     "the target hides after its shrink"
   )
+  -- The retired absorb restores the base offset and clears the transient
+  -- pose so the breakout reveal starts clean.
+  local hidden = battler(timeline:battlers(), 3)
+  Assert.isTrue(hidden.affineMode == nil, "the retired absorb clears affine")
+  Assert.isTrue(hidden.shadowAffine == nil, "the retired absorb clears shadow affine")
 end
 
 return { tests = T }

@@ -1305,6 +1305,7 @@ local function compositionAnimation(view, engine, priorityOverride)
       evy = clampCoefficient(systemBlend.blend.evy),
     }
   end
+  local captureBlendActive = false
   if engine == "main" then
     local spriteBlend = view.spriteBlend --[[@as table<string, unknown>?]]
     if type(spriteBlend) == "table" and type(spriteBlend.blendCoefficientA) == "number" then
@@ -1314,8 +1315,17 @@ local function compositionAnimation(view, engine, priorityOverride)
         evb = clampCoefficient(spriteBlend.blendCoefficientB),
         evy = 0,
       }
-      firstTarget[worldRole] = true
+      -- Native ball first-target NONE: the translucent OBJ blends
+      -- against the second planes, never by marking the world plane
+      -- first-target. Mark every native second plane eligible so the
+      -- ball stays translucent over world3d/window/transition as well
+      -- as the battlefield; an ineligible immediate second plane would
+      -- otherwise force the shader back to opaque.
+      secondTarget.world3d = true
+      secondTarget.window = true
+      secondTarget.transition = true
       secondTarget.battlefield = true
+      captureBlendActive = true
     end
   else
     -- Ordinary sub-engine menus blend BG1 over the planes below it
@@ -1330,7 +1340,9 @@ local function compositionAnimation(view, engine, priorityOverride)
       secondTarget.battlefield = true
     end
   end
-  if type(compositor.blend) == "table" then
+  -- A scripted compositor blend never replaces the live capture-ball
+  -- coefficients while the translucent actor owns the register.
+  if type(compositor.blend) == "table" and captureBlendActive ~= true then
     local source = compositor.blend --[[@as table<string, unknown>]]
     blend = {
       mode = source.mode or "none",
