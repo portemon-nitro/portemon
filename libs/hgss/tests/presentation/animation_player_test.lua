@@ -69,6 +69,32 @@ function T.once_completes_exactly_at_numFrame_times_frame_unit()
   Assert.isTrue(p:isComplete(), "completed players do not advance")
 end
 
+-- Stopping the wing's loop task lets each channel finish its current
+-- iteration, not a shared longest-channel modulo boundary.
+function T.finish_current_loop_completes_each_channel_at_its_own_terminal()
+  local short, long = new(3), new(6)
+  for _ = 1, 6 do
+    short:updateFixed()
+    long:updateFixed()
+  end
+  Assert.equal(short.frameFx, 0, "the short channel already wrapped twice")
+  Assert.equal(long.frameFx, 0, "the long channel completed one pass but keeps looping")
+  short:finishCurrentLoop()
+  long:finishCurrentLoop()
+  for _ = 1, 3 do
+    short:updateFixed()
+    long:updateFixed()
+  end
+  Assert.isTrue(short:isComplete(), "the short channel finishes at its own three-frame terminal")
+  Assert.isFalse(long:isComplete(), "the long channel still owns a different boundary")
+  for _ = 1, 3 do
+    long:updateFixed()
+  end
+  Assert.isTrue(long:isComplete(), "the long channel finishes three ticks later")
+  Assert.equal(short.frameFx, 3 * 0x1000)
+  Assert.equal(long.frameFx, 6 * 0x1000)
+end
+
 function T.players_are_independent()
   local a, b = new(8), new(8)
   a.loopMode = "once"

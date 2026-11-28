@@ -1148,8 +1148,8 @@ local function hasVisualKeys(archive, anim)
 end
 
 -- Compile one legend scene's source parts into a scene definition: each part
--- keeps its normalized model and the clips of every source phase, with the
--- longest clip of a phase as that phase's own duration.
+-- keeps its normalized model and every phase's clip ids, longest duration and
+-- per-channel durations.
 ---@param romFs table<string, unknown>
 ---@param parts table[]
 ---@param role string family asset role for the legend models
@@ -1200,7 +1200,7 @@ local function compileLegendParts(romFs, parts, role, meshes, textures, memberHa
     local descriptor = assert(compiledModels[index], "legend scene model did not compile: " .. source.key)
     local clips = {}
     for _, phase in ipairs(compiledPhases[index]) do
-      local ids, frames = {}, 0
+      local ids, frames, frameCounts = {}, 0, {}
       for _, anim in ipairs(phase.anims) do
         local _, kind = animationKind(anim.format)
         ids[#ids + 1] = phase.role .. "." .. kind
@@ -1209,15 +1209,139 @@ local function compileLegendParts(romFs, parts, role, meshes, textures, memberHa
         for _, id in ipairs(ids) do
           if clip.id == id then
             frames = math.max(frames, clip.frameCount)
+            frameCounts[id] = clip.frameCount
           end
         end
       end
       assert(frames > 0, "legend scene phase has no source clip: " .. source.key .. "/" .. phase.role)
-      clips[phase.role] = { ids = ids, frames = frames }
+      clips[phase.role] = { ids = ids, frames = frames, frameCounts = frameCounts }
     end
     definitionParts[index] = { model = descriptor, clips = clips }
   end
   return { parts = definitionParts }
+end
+
+-- Lance's source cut-in: the Dragonite model plus prepared trainer animation
+-- frames and the flyer cell. These are real generated resources; runtime waits
+-- never synthesize sprite/flyer status.
+---@param romFs table<string, unknown>
+---@param meshes table<string, table<string, unknown>>
+---@param textures table<string, table<string, unknown>>
+---@param memberHashes table[]
+---@return table<string, unknown>
+local function compileLanceDeparture(romFs, meshes, textures, memberHashes)
+  local source = FieldEffects.lanceDeparture
+  local models, modelMeshes, modelTextures, hashes = LegendAppearanceCompiler.compileModels(romFs, {
+    archive = source.modelArchive,
+    cinematicArchive = source.modelArchive,
+    label = "Lance departure",
+    role = "field-effect-lance-departure",
+    keyPrefix = "field-effect:",
+    models = { source.model },
+  })
+  for sha1, mesh in pairs(modelMeshes) do
+    meshes[sha1] = mesh
+  end
+  for sha1, texture in pairs(modelTextures) do
+    textures[sha1] = texture
+  end
+  for _, entry in ipairs(hashes) do
+    memberHashes[#memberHashes + 1] = entry
+  end
+  local model = assert(models[1], "Lance departure model did not compile")
+  model.key = "field-effect:lance_departure"
+  local clipIds = {}
+  for _, animation in ipairs(source.model.animations) do
+    clipIds[#clipIds + 1] = animation.id
+  end
+
+  local archive = assert(romFs:openNarc(source.spriteArchive), "the departure sprite archive is unavailable")
+  local function read(memberId, decode, label)
+    assert(memberId >= 0 and memberId < archive:memberCount(), "departure sprite member is unavailable")
+    local bytes = assert(archive:readMember(memberId), "departure sprite member is unreadable")
+    memberHashes[#memberHashes + 1] = {
+      archive = source.spriteArchive,
+      memberId = memberId,
+      sha1 = Hashing.sha1hex(bytes),
+    }
+    if bytes:sub(1, 1) == "\17" then
+      local plain, err = Lz11.decode(bytes)
+      if plain == nil then
+        Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "departure sprite member could not be decompressed", {
+          memberId = memberId,
+          role = label,
+          error = tostring(err),
+        })
+      end
+      bytes = assert(plain)
+    end
+    local decoded, err = decode(bytes, { label = source.spriteArchive .. ":" .. memberId })
+    if decoded == nil then
+      Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "departure sprite member could not be decoded", {
+        memberId = memberId,
+        role = label,
+        error = tostring(err),
+      })
+    end
+    return assert(decoded)
+  end
+
+  local function publish(image, duration)
+    local png = PngWriter.encode(image.width, image.height, image.pixels)
+    local sha1 = Hashing.sha1hex(png)
+    textures[sha1] = { data = png, width = image.width, height = image.height }
+    local offset = image.offset or image.origin
+    return {
+      path = FieldEffectAssetCache.imagePath(sha1),
+      width = image.width,
+      height = image.height,
+      offsetX = offset.x,
+      offsetY = offset.y,
+      duration = duration,
+    }
+  end
+
+  local trainer = source.trainer
+  local trainerChars = read(trainer.charMemberId, G2dDecoder.decodeChar, "trainer characters")
+  local trainerPalette = read(trainer.paletteMemberId, G2dDecoder.decodePalette, "trainer palette")
+  local trainerCells = read(trainer.cellMemberId, G2dDecoder.decodeCell, "trainer cells")
+  local trainerAnimation = read(trainer.animationMemberId, G2dDecoder.decodeAnimation, "trainer animation")
+  -- FieldMoveCutIn_StepCreateFlyTrainerSprite selects native animation
+  -- sequence 1 (the second sequence); Lua arrays are one-based.
+  local sequence = assert(trainerAnimation.anims[2], "the departure trainer animation is missing")
+  local trainerFrames, trainerFrameDurations = {}, {}
+  for index, frame in ipairs(sequence.frames) do
+    local image = G2dRasterizer.renderAnimationFrame(
+      trainerChars,
+      trainerPalette,
+      trainerCells,
+      sequence,
+      index,
+      { asset = source.spriteArchive, member = trainer.animationMemberId, role = "departure trainer" }
+    )
+    trainerFrames[#trainerFrames + 1] = publish(image, frame.duration)
+    trainerFrameDurations[#trainerFrameDurations + 1] = frame.duration
+  end
+
+  local flyer = source.flyer
+  local flyerChars = read(flyer.charMemberId, G2dDecoder.decodeChar, "flyer characters")
+  local flyerPalette = read(flyer.paletteMemberId, G2dDecoder.decodePalette, "flyer palette")
+  local flyerCells = read(flyer.cellMemberId, G2dDecoder.decodeCell, "flyer cells")
+  local flyerImage = G2dRasterizer.renderCell(
+    flyerChars,
+    flyerPalette,
+    assert(flyerCells.cells[1], "the departure flyer cell is missing"),
+    { asset = source.spriteArchive, member = flyer.cellMemberId, role = "departure flyer" }
+  )
+  local flyerFrame = publish(flyerImage, 1)
+  flyerFrame.duration = nil
+  return {
+    model = model,
+    clipIds = clipIds,
+    trainer = { frames = trainerFrames },
+    trainerFrameDurations = trainerFrameDurations,
+    flyer = flyerFrame,
+  }
 end
 
 ---@param romFs table<string, unknown>
@@ -1253,6 +1377,7 @@ function Compiler.compile(romFs, meshes, textures)
     compileLegendParts(romFs, LegendEffects.unownParts, "field-effect-sinjoh-unown", meshes, textures, memberHashes)
   definitions.sinjoh_egg =
     compileLegendParts(romFs, LegendEffects.eggParts, "field-effect-sinjoh-egg", meshes, textures, memberHashes)
+  definitions.lance_departure = compileLanceDeparture(romFs, meshes, textures, memberHashes)
   local montageArchive, montageErr = romFs:openNarc(MONTAGE_ARCHIVE)
   if montageArchive == nil then
     Errors.raise("FIELD_EFFECT_SOURCE_MISSING", "the Arceus montage archive is unavailable", {

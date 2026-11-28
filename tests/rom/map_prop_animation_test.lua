@@ -11,6 +11,10 @@
 local Assert = require("tests.support.Assert")
 local Hashing = require("romdump.src.digest.Hashing")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
+local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
+local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
+local MapProps = require("libs.hgss.src.world.MapProps")
+local CianwoodGym = require("libs.hgss.src.field.gymmick.CianwoodGym")
 
 local T = {}
 
@@ -81,6 +85,62 @@ function T.real_members_still_decode_with_their_clip_facts(romFs, _)
   assert(machine, "the machine_l03 clip is present")
   Assert.equal(machine.source.format, "NSBTA")
   Assert.equal(machine.frameCount, 61)
+end
+
+-- Cianwood's real target definitions own exact copies of source 174's four
+-- record slots, and 175 identifies only record 0. Exercise the actual binding
+-- and one-shot completion contracts over the generated ROM assets.
+function T.cianwood_bound_clips_play_and_settle_on_the_real_target_models(romFs, _)
+  local bundle = compileInto(romFs, "MAP_CIANWOOD_GYM")
+  local water = ModelInstance.new(ModelDefinition.fromNitroDescriptor(assert(descriptorOf(bundle, 173))))
+  local winch = ModelInstance.new(ModelDefinition.fromNitroDescriptor(assert(descriptorOf(bundle, 175))))
+  local props = MapProps.new({
+    placements = {
+      { placementIndex = 0, modelKey = "indoor:173:test" },
+      { placementIndex = 1, modelKey = "indoor:175:test" },
+    },
+    instances = { [0] = water, [1] = winch },
+    doorTiles = {},
+  })
+  CianwoodGym.restoreSettled({ mapProps = props })
+  local waterProp = assert(props:prop(0))
+  local winchProp = assert(props:prop(1))
+  local function ids(instance)
+    local out = {}
+    for _, category in ipairs({ "joint", "material" }) do
+      for _, handle in ipairs(instance.animationState:attachments(category)) do
+        out[#out + 1] = handle.clip.id
+      end
+    end
+    table.sort(out)
+    return out
+  end
+  local boundIds = ids(water)
+  Assert.deepEqual(boundIds, {
+    "cianwood.water.1.build_anim-146",
+    "cianwood.water.2.build_anim-147",
+    "cianwood.water.3.build_anim-148",
+    "cianwood.water.4.build_anim-149",
+  }, "173 owns exactly source 174's four record slots")
+  Assert.deepEqual(ids(winch), { "cianwood.winch.0.build_anim-150" }, "175 restores only record 0")
+  for _, category in ipairs({ "joint", "material" }) do
+    for _, handle in ipairs(water.animationState:attachments(category)) do
+      Assert.isTrue(handle.player:isComplete(), "reload settles the real bound clip at its terminal")
+    end
+  end
+
+  waterProp:stopAll()
+  local plays = {}
+  for _, id in ipairs(boundIds) do
+    plays[#plays + 1] = waterProp:play(id, { loopMode = "once" })
+  end
+  Assert.isFalse(waterProp:arePlaysFinished(plays), "the real one-shot starts incomplete")
+  for _ = 1, 119 do
+    water:updateFixed()
+  end
+  Assert.isFalse(waterProp:arePlaysFinished(plays), "the checked terminal has not been reached")
+  water:updateFixed()
+  Assert.isTrue(waterProp:arePlaysFinished(plays), "all four real channels complete at frame 120")
 end
 
 return require("tests.rom.support.RomSuite").fromFacts(T)

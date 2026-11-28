@@ -22,6 +22,7 @@ local KINDS = {
   "blackthorn_gym_platform_wide",
   "blackthorn_gym_platform_narrow",
   "hall_of_fame_machine",
+  "lance_departure",
 }
 -- The legendary-story effects the runtime loads, keyed by their index entry kind
 -- (the model scenes and the Arceus montage application).
@@ -81,6 +82,11 @@ local function cacheWithIndexSchema(schema)
     definition = "hall_of_fame_machine",
     path = FieldEffectAssetCache.definitionPath("hall_of_fame_machine"),
   }
+  index.effects.lance_departure = {
+    kind = "lance_departure",
+    definition = "lance_departure",
+    path = FieldEffectAssetCache.definitionPath("lance_departure"),
+  }
   for kind, entryKind in pairs(LEGEND_SCENES) do
     index.effects[kind] = {
       kind = entryKind,
@@ -117,6 +123,15 @@ local function cacheWithIndexSchema(schema)
       end
       if kind == "hall_of_fame_machine" then
         return { models = { staticModel("field-effect:hall-of-fame-ball") } }
+      end
+      if kind == "lance_departure" then
+        return {
+          model = staticModel("field-effect:lance-departure"),
+          clipIds = { "lance.departure.joint" },
+          trainer = { frames = { {} } },
+          trainerFrameDurations = { 1 },
+          flyer = {},
+        }
       end
       local sceneKind = LEGEND_SCENES[kind]
       if sceneKind == "scene" then

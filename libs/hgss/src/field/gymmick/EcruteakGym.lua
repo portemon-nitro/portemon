@@ -66,21 +66,25 @@ EcruteakGym.DELAY_TICKS = 30
 EcruteakGym.LAST_SCALE_FACTOR = 4
 
 -- src/field/gymmick/ecruteak.c::GymmickInit_Ecruteak installs the gym's fog:
--- blend alpha, colour 0 (black) and the slope below, with every density table
--- entry -1, which disables fog at every depth. The port publishes the same
--- state as the fog-off preset it already draws with, keeping the source colour
--- and slope so the record states what the source set.
+-- enabled with GX_FOGBLEND_COLOR_ALPHA (blend 0), colour 0 (black), alpha 31,
+-- offset 0 and slope GX_FOGSLOPE_0x0020 (10), with every density table entry
+-- the packed byte 0xff (signed -1). The port publishes the same enabled state
+-- so the dark gym draws, keeping the source colour, alpha, offset and slope.
+-- Like the source's ApplyFogToMapObjects, active billboard models draw with
+-- fog disabled; the world fog in `presentation().fog` stays enabled while
+-- billboard items keep their generated fogEnabled=false gate.
 local FOG_TABLE_ENTRIES = 32
 local fogTable = {}
 for index = 1, FOG_TABLE_ENTRIES do
-  fogTable[index] = -1
+  fogTable[index] = 255
 end
 EcruteakGym.FOG = {
-  enabled = false,
+  enabled = true,
+  blendMode = 0,
   color = 0,
-  alpha = 0,
+  alpha = 31,
   offset = 0,
-  slope = 0x0020,
+  slope = 10,
   table = fogTable,
 }
 

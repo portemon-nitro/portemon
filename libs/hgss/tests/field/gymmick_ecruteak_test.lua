@@ -202,14 +202,20 @@ function T.a_restored_union_hides_only_its_settled_candles()
   Assert.near(placements[1].scale, 1, 1e-9, "a restored candle keeps the scale its own record implies")
 end
 
--- The gym's own fog state is the source's: black, with the density table
--- disabling fog at every depth.
+-- The gym's own fog state is the source's: enabled black fog with full source
+-- alpha, slope 0x0020 (10), offset 0 and a density table of packed 0xff
+-- (signed -1) at every depth. Independently derived from
+-- GymmickInit_Ecruteak, not from the preset under test.
 function T.the_gym_fog_is_the_source_fog_state()
-  Assert.isFalse(EcruteakGym.FOG.enabled)
+  Assert.isTrue(EcruteakGym.FOG.enabled, "the gym enables its dark fog")
   Assert.equal(EcruteakGym.FOG.color, 0, "the gym's fog colour is black")
+  Assert.equal(EcruteakGym.FOG.alpha, 31, "the gym's fog keeps the source alpha 31")
+  Assert.equal(EcruteakGym.FOG.slope, 10, "the gym's fog slope is GX_FOGSLOPE_0x0020")
+  Assert.equal(EcruteakGym.FOG.offset, 0, "the gym's fog offset is 0")
+  Assert.equal(EcruteakGym.FOG.blendMode, 0, "the gym's fog blends colour and alpha")
   Assert.equal(#EcruteakGym.FOG.table, 32)
   for index, value in ipairs(EcruteakGym.FOG.table) do
-    Assert.equal(value, -1, "density entry " .. index .. " disables fog")
+    Assert.equal(value, 255, "density entry " .. index .. " is packed 0xff")
   end
 end
 

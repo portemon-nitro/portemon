@@ -6382,6 +6382,9 @@ function FieldRuntime:_setLiveWeather(runtimeMap, weatherId)
   runtimeMap.effectiveWeatherId = weatherId
   self.lastEffectiveWeatherId = weatherId
   environment.fog = preset
+  if self.gymMechanism ~= nil then
+    self.gymMechanism:applyEnvironment(runtimeMap)
+  end
 end
 
 -- Advance the active map's field lighting from the injected local clock,

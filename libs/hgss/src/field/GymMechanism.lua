@@ -204,6 +204,32 @@ function GymMechanism:bindMap(runtimeMap)
   self:_restoreMapState()
 end
 
+-- Reapply the active mechanism's map-scoped render environment after map
+-- weather publication. Weather owns the live fog preset; only the Ecruteak
+-- visit overrides it. Outside Ecruteak the mechanism clears its own
+-- actor-fog exemption and projection offset and leaves the weather-owned
+-- fog untouched, so dynamic effective weather and source polygon flags
+-- survive. Restoration of the effective preset after leaving the gym is the
+-- weather owner's job (FieldRuntime reapplies effective weather); this
+-- seam never restores base fog on its own.
+---@param runtimeMap table<string, unknown>
+function GymMechanism:applyEnvironment(runtimeMap)
+  local environment = runtimeMap.renderEnvironment
+  if environment == nil then
+    return
+  end
+  assert(environment.baseFog ~= nil, "a runtime render environment carries its base fog")
+  local ecruteak = self._state:kind() == GymMechanismState.ECRUTEAK
+  if ecruteak then
+    environment.fog = EcruteakGym.FOG
+    environment.actorFogEnabled = false
+    environment.billboardDepthOffsetTiles = 0.0625
+    return
+  end
+  environment.actorFogEnabled = nil
+  environment.billboardDepthOffsetTiles = 0.5
+end
+
 -- GymmickInit_*: the settled union decides what the loaded map starts with.
 -- Ecruteak installs the gym's own fog; Cianwood puts the winch records on
 -- their last frame. Violet and Azalea own only their runtime geometry and
@@ -214,14 +240,8 @@ function GymMechanism:_restoreMapState()
   if runtimeMap == nil then
     return
   end
+  self:applyEnvironment(runtimeMap)
   local kind = self._state:kind()
-  if kind == GymMechanismState.ECRUTEAK then
-    local environment = runtimeMap.renderEnvironment
-    if environment ~= nil then
-      environment.fog = EcruteakGym.FOG
-    end
-    return
-  end
   if kind == GymMechanismState.CIANWOOD and self._state:cianwoodWinchRaised() then
     CianwoodGym.restoreSettled(runtimeMap)
   end
@@ -248,6 +268,7 @@ function GymMechanism:initialize(kind)
   end
   self._state:initialize(kind)
   self:_syncModels()
+  self:_restoreMapState()
 end
 
 -- The non-connection world swap: the source clears the union before the

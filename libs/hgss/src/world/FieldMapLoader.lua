@@ -312,7 +312,9 @@ end
 -- are borrowed from validated generated data. Only live fog and
 -- fieldTimeSeconds are ever replaced; the generated record is never
 -- mutated. FieldRuntime advances fieldTimeSeconds from the host clock every
--- update, independently of presentation.
+-- update, independently of presentation. The actor-fog exemption stays
+-- absent until the Ecruteak mechanism installs its own map-local override,
+-- so ordinary billboards keep their source polygon flag.
 ---@param fieldData table<string, unknown>
 ---@return table<string, unknown>
 local function materializeRenderEnvironment(fieldData)
@@ -324,6 +326,8 @@ local function materializeRenderEnvironment(fieldData)
     baseWeatherId = assert(generated.weatherId, "render environment requires its base weather"),
     baseFog = baseFog,
     fog = baseFog,
+    actorFogEnabled = nil,
+    billboardDepthOffsetTiles = 0.5,
     fieldTimeSeconds = FieldLightProfile.DEFAULT_TIME_SECONDS,
   }
 end

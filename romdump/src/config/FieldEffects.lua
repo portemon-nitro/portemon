@@ -155,6 +155,27 @@ return {
     -- no placement carries, so only its model and source clip travel here.
     { key = "hall_of_fame_ball", mapSymbol = "MAP_POKEMON_LEAGUE_HALL_OF_FAME", modelMemberId = 107 },
   },
+  -- Lance's Lake of Rage departure (Task_LanceFliesAway) uses the source
+  -- Dragonite model/animations from field_static_models and the trainer/flyer
+  -- sprite resources from choose_starter_sub_res.
+  lanceDeparture = {
+    modelArchive = "field_static_models",
+    model = {
+      id = "lance_departure",
+      memberId = 131,
+      animations = {
+        { memberId = 165, format = "NSBCA", id = "lance.departure.joint", category = "joint", kind = "trs" },
+        { memberId = 167, format = "NSBMA", id = "lance.departure.color", category = "material", kind = "color" },
+      },
+    },
+    spriteArchive = "NARC_application_choose_starter_choose_starter_sub_res",
+    -- Source cut-in tables for trainerGraphics = 2 (Lance):
+    -- gCutInTrainerCharFiles[2] = 23, gCutInTrainerPlttFiles[1] = 8,
+    -- gCutInTrainerCellFiles[2] = 24, gCutInTrainerAnimFiles[2] = 25.
+    -- The flyer reuses the landing effect's own resources: char 11, cell 12.
+    trainer = { charMemberId = 23, paletteMemberId = 8, cellMemberId = 24, animationMemberId = 25 },
+    flyer = { charMemberId = 11, paletteMemberId = 6, cellMemberId = 12 },
+  },
   -- The Rocket hideout's own script-driven field effects
   -- (src/field/script_field_effects.c sTrapEffects and
   -- Task_ShowHideoutAlarm): the three trap models travel with their own clips

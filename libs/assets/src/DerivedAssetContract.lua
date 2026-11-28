@@ -438,6 +438,8 @@ DerivedAssetContract.newGameInit = {
 }
 
 DerivedAssetContract.fieldEffects = {
+  -- v18 requires per-channel legendary durations and publishes Lance's
+  -- source Dragonite/trainer/flyer departure resources.
   -- v17 selects native model/texture banks from the published effect model
   -- definitions and stages rasterized cinematic layers as PNGs beside them.
   -- v16 carries per-vertex straddle sources in dynamic model batches.
@@ -445,8 +447,8 @@ DerivedAssetContract.fieldEffects = {
   -- summary, and per cinematic shot one shared part plus one overlay per
   -- time-of-day variant.
   -- v14 adds the source models and animation clips used by both Ho-Oh cinematic shots.
-  cacheFormat = "field-effect-cache-v17",
-  indexSchema = "g4-field-effect-index-v4",
+  cacheFormat = "field-effect-cache-v18",
+  indexSchema = "g4-field-effect-index-v5",
 }
 
 -- The League ending's own bundle: the Hall of Fame registration and showcase

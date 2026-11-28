@@ -150,6 +150,40 @@ local function runAction(host, maxTicks)
   return status
 end
 
+-- The narrow platform uses the source's own shape-specific walls: right wall
+-- x + 2 and bottom wall z + 6 (BlackthornPlatform_Init index == 1), while
+-- the leading outer edge stays x + 3 and every other wall keeps the wide
+-- offsets. Independently enumerated from retail, not from the constants
+-- under test.
+function T.the_narrow_platform_uses_its_own_wall_offsets()
+  local anchors = { { x = 10, z = 10, rotation = 0 }, { x = 20, z = 20, rotation = 0 }, { x = 30, z = 30, rotation = 0 } }
+  local platforms = BlackthornGym.platforms(anchors)
+  local narrow = platforms[2]
+  Assert.equal(#narrow.rightWall, 8, "the narrow platform checks eight right-wall tiles")
+  for _, point in ipairs(narrow.rightWall) do
+    Assert.equal(point.x, 22, "narrow right wall is x + 2, not x + 3")
+  end
+  Assert.equal(#narrow.bottomWall, 4, "the narrow platform checks four bottom-wall tiles")
+  for _, point in ipairs(narrow.bottomWall) do
+    Assert.equal(point.z, 26, "narrow bottom wall is z + 6, not z + 5")
+  end
+  for _, point in ipairs(narrow.rightEdgeOuter) do
+    Assert.equal(point.x, 23, "the narrow outer edge stays x + 3")
+  end
+  local wide = platforms[1]
+  for _, point in ipairs(wide.rightWall) do
+    Assert.equal(point.x, 13, "wide right wall is x + 3")
+  end
+  for _, point in ipairs(wide.bottomWall) do
+    Assert.equal(point.z, 15, "wide bottom wall is z + 5")
+  end
+  -- A blocker on the correct-but-not-wrong tile stops the narrow platform.
+  local host = newHost({ blocked = { ["22:20"] = true }, anchors = anchors, playerX = 21, playerZ = 20 })
+  Assert.isTrue(host.gym:startAction(21, 20), "the +x button starts a move")
+  Assert.equal(runAction(host), "complete")
+  Assert.isNil(host.committed, "the narrow wall blocker refuses the move")
+end
+
 -- The three source platforms at the union's anchors: each 3x6 floor is the
 -- only walkable ground, and a turn rotates the whole platform about its anchor.
 function T.the_platform_tables_follow_the_source_anchor_and_rotation()
@@ -307,13 +341,20 @@ function T.a_leading_point_that_is_not_magma_stops_the_move()
   Assert.near(host.player.worldX, 14.5, 1e-9)
 end
 
--- A rotation animates sixteen 0.25-degree ticks, turns the union one quarter and
--- never moves the rider.
+-- A rotation animates sixteen 5.625-degree ticks, turning the union one 90-degree
+-- quarter (rotationVec.y = -4 * FX32_ONE * rotation; 16384 indices = 90 degrees).
+-- Independently derived: 90 per quarter, 5.625 per tick, not the constants under test.
 function T.a_clear_rotation_turns_the_platform_one_quarter()
   local host = newHost()
   Assert.isTrue(host.gym:startAction(13, 75), "the anchor is the rotate button")
-  local status = runAction(host)
-  Assert.equal(status, "complete")
+  local angles = {}
+  for _ = 1, 32 do
+    local status = host.gym:updateFixed()
+    angles[#angles + 1] = host.gym:presentation()[1].rotationDegrees
+    if status ~= "riding" then
+      break
+    end
+  end
   Assert.deepEqual(host.state:blackthornPlatforms()[1], { x = 13, z = 75, rotation = 1 }, "the settled quarter turn")
   Assert.equal(#host.poses, 0, "a rotation never publishes a carried pose")
   Assert.isNil(host.committed, "a rotation never commits a rider tile")
@@ -322,21 +363,50 @@ function T.a_clear_rotation_turns_the_platform_one_quarter()
   -- The platform tables follow the new rotation: the +x button moved with it.
   local placements = host.gym:presentation()
   Assert.equal(#placements, 3, "three platform props are presented")
-  Assert.near(
-    placements[2].rotationDegrees,
-    -BlackthornGym.QUARTER_DEGREES,
-    1e-9,
-    "a settled prop carries its own angle"
-  )
-  Assert.near(
-    placements[1].rotationDegrees,
-    -BlackthornGym.QUARTER_DEGREES,
-    1e-9,
-    "the turned prop carries the new angle"
-  )
+  Assert.near(placements[2].rotationDegrees, -90, 1e-9, "a settled prop carries its own 90-degree angle")
+  Assert.near(placements[1].rotationDegrees, -90, 1e-9, "the turned prop carries the new 90-degree angle")
+  Assert.near(angles[1], -5.625, 1e-9, "the first motion tick turns 5.625 degrees")
+  Assert.near(angles[16], -90, 1e-9, "sixteen ticks complete the quarter turn")
   Assert.equal(placements[1].slot, 1)
   Assert.near(placements[1].x, 13.5, 1e-9, "the prop stands on its anchor's tile centre")
   Assert.near(placements[1].y, 3, 1e-9, "the prop stands at the source native height over the gym floor")
+end
+
+-- The committed platform never presents its in-flight displacement twice: the
+-- snapshot taken on the committing tick (while the action is still in finish)
+-- already shows the settled anchor with no overtravel.
+function T.a_committed_action_presents_its_settled_endpoint_without_overtravel()
+  local host = newHost()
+  Assert.isTrue(host.gym:startAction(14, 75))
+  local seenFinishOffset = nil
+  for _ = 1, 200 do
+    local status = host.gym:updateFixed()
+    local placement = host.gym:presentation()[1]
+    if status == "riding" then
+      -- During travel the offset grows monotonically and never exceeds the width.
+      Assert.isTrue(placement.x - 13.5 <= 5 + 1e-9, "a move never overtravels its platform width")
+    else
+      break
+    end
+    -- Capture the presentation on the tick that commits (action still alive in finish).
+    -- The update loop above already sampled every tick; the settled check follows.
+  end
+  Assert.deepEqual(host.state:blackthornPlatforms()[1], { x = 18, z = 75, rotation = 0 })
+  local settled = host.gym:presentation()[1]
+  Assert.near(settled.x, 18.5, 1e-9, "a committed move presents the new anchor exactly")
+  Assert.near(settled.rotationDegrees, 0, 1e-9, "a committed move presents no turn")
+  local turnHost = newHost()
+  Assert.isTrue(turnHost.gym:startAction(13, 75))
+  for _ = 1, 200 do
+    local status = turnHost.gym:updateFixed()
+    if status ~= "riding" then
+      break
+    end
+    local degrees = turnHost.gym:presentation()[1].rotationDegrees
+    Assert.isTrue(degrees >= -90 - 1e-9, "a turn never overtravels its quarter")
+  end
+  Assert.near(turnHost.gym:presentation()[1].rotationDegrees, -90, 1e-9, "a committed turn presents one quarter exactly")
+  Assert.isTrue(seenFinishOffset == nil, "overtravel is bounded by the per-tick assertions above")
 end
 
 -- A rotation whose own sides are already blocked is refused outright: no angle

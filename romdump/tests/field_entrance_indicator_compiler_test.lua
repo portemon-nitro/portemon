@@ -174,6 +174,14 @@ local function installStoryEffectCompilerMock()
         definitions[kind] = { parts = { { model = descriptor(kind), clips = {} } } }
         memberHashes[#memberHashes + 1] = { memberId = 900 + index, sha1 = kind .. "-source" }
       end
+      definitions.lance_departure = {
+        model = descriptor("lance_departure"),
+        clipIds = { "lance.departure.joint" },
+        trainer = { frames = { {} } },
+        trainerFrameDurations = { 1 },
+        flyer = {},
+      }
+      memberHashes[#memberHashes + 1] = { memberId = 950, sha1 = "lance-departure-source" }
       return { definitions = definitions, memberHashes = memberHashes }
     end,
   }
@@ -606,6 +614,8 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local hallOfFame = result.effects.hall_of_fame_machine
   Assert.equal(result.index.effects.hall_of_fame_machine.kind, "hall_of_fame")
   Assert.equal(result.index.effects.hall_of_fame_machine.definition, "hall_of_fame_machine")
+  Assert.equal(result.index.effects.lance_departure.kind, "lance_departure")
+  Assert.equal(result.index.effects.lance_departure.definition, "lance_departure")
   Assert.equal(hallOfFame.machineModelMemberId, 38)
   Assert.equal(#hallOfFame.models, 1)
   Assert.equal(hallOfFame.models[1].key, "field-effect:hall_of_fame_ball")

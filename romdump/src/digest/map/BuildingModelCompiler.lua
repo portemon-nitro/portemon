@@ -13,6 +13,25 @@ local Errors = require("libs.errors.src.Errors")
 
 local BuildingModelCompiler = {}
 
+-- src/field/gymmick/cianwood.c::CianwoodGymmick_RebindAnims binds 174's
+-- animation records onto render object 173 and awaits 175's record 0. The
+-- generated target definitions own those exact clips so runtime playback never
+-- attaches a foreign object or depends on 174 having a map placement.
+local CIANWOOD_WATER_MEMBER = 173
+local CIANWOOD_WATER_SOURCE_MEMBER = 174
+local CIANWOOD_WINCH_MEMBER = 175
+local CIANWOOD_WATER_CLIP_PREFIX = "cianwood.water."
+local CIANWOOD_WINCH_CLIP_PREFIX = "cianwood.winch.0."
+
+local function copyClipWithId(clip, id)
+  local copy = {}
+  for key, value in pairs(clip) do
+    copy[key] = value
+  end
+  copy.id = id
+  return copy
+end
+
 local function readMember(narc, alias, memberId)
   local count = narc:memberCount()
   assert(
@@ -143,6 +162,26 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
 
   local models, modelKeyOf, memberShaOf = {}, {}, {}
   local unresolvedMaterials, animDeps = {}, {}
+  local animResults = {}
+  local function animationsFor(memberId)
+    if animResults[memberId] ~= nil then
+      return animResults[memberId]
+    end
+    assert(memberId < animListNarc:memberCount(), "building animation source member is unavailable")
+    local listBytes = assert(animListNarc:readMember(memberId))
+    animDeps[#animDeps + 1] = { memberId = memberId, sha1 = Hashing.sha1hex(listBytes) }
+    local result = MapPropAnimCompiler.compile(listBytes, animResNarc, {
+      archiveAlias = animListAliasForArea(area),
+      memberId = memberId,
+      resourceCache = opts.resourceCache,
+    })
+    for _, clip in ipairs(result.clips) do
+      animDeps[#animDeps + 1] = { resourceId = clip.source.memberId, sha1 = clip.source.sha1 }
+    end
+    animResults[memberId] = result
+    return result
+  end
+
   for _, memberId in ipairs(memberIds) do
     local modelBytes = readMember(bldNarc, archiveAlias, memberId)
     local modelSha1 = Hashing.sha1hex(modelBytes)
@@ -157,15 +196,25 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
     local modelDescriptor
     local animated = false
     if memberId < animListNarc:memberCount() then
-      local listBytes = assert(animListNarc:readMember(memberId))
-      animDeps[#animDeps + 1] = { memberId = memberId, sha1 = Hashing.sha1hex(listBytes) }
-      local animResult = MapPropAnimCompiler.compile(listBytes, animResNarc, {
-        archiveAlias = animListAliasForArea(area),
-        memberId = memberId,
-        resourceCache = opts.resourceCache,
-      })
-      for _, clip in ipairs(animResult.clips) do
-        animDeps[#animDeps + 1] = { resourceId = clip.source.memberId, sha1 = clip.source.sha1 }
+      local animResult = animationsFor(memberId)
+      -- The Cianwood rebinding is scoped to the indoor building archive:
+      -- 173/175 are the Cianwood objects in the indoor archive, not a
+      -- global member identity across indoor and outdoor archives.
+      local isIndoorArchive = archiveAlias == "interior_build_models"
+      if memberId == CIANWOOD_WATER_MEMBER and isIndoorArchive then
+        local source = animationsFor(CIANWOOD_WATER_SOURCE_MEMBER)
+        local clips = {}
+        for _, clip in ipairs(animResult.clips) do
+          clips[#clips + 1] = clip
+        end
+        for recordIndex, clip in ipairs(source.clips) do
+          clips[#clips + 1] =
+            copyClipWithId(clip, string.format("%s%d.%s", CIANWOOD_WATER_CLIP_PREFIX, recordIndex, clip.id))
+        end
+        animResult = { clips = clips, doorSoundType = animResult.doorSoundType }
+      elseif memberId == CIANWOOD_WINCH_MEMBER and isIndoorArchive then
+        assert(#animResult.clips > 0, "the Cianwood winch carries source record 0")
+        animResult.clips[1].id = CIANWOOD_WINCH_CLIP_PREFIX .. animResult.clips[1].id
       end
       if #animResult.clips > 0 then
         local descriptor, unresolved = DynamicModelCompiler.compile(

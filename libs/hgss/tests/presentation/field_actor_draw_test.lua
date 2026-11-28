@@ -144,6 +144,31 @@ function T.billboards_forward_and_reuse_the_geometry_bounds_reference()
   Assert.isNil(staticItems[1].bounds, "a static-model item does not carry billboard bounds")
 end
 
+function T.a_map_scoped_fog_gate_overrides_actor_items_without_mutating_assets()
+  local asset = entry(99)
+  local storage = { items = {}, actorSlots = {}, generation = 0 } --[[@as FieldActorDrawStorage]]
+  local records = { record() }
+  local ordinary = FieldActorDraw.itemsInto(records, function()
+    return asset
+  end, storage)
+  Assert.isTrue(ordinary[1].fogEnabled, "the generated actor gate is the default")
+  local exempt = FieldActorDraw.itemsInto(records, function()
+    return asset
+  end, storage, { fogEnabled = false })
+  Assert.isFalse(exempt[1].fogEnabled, "the gym-scoped actor draw gate disables fog")
+  Assert.isTrue(asset.visual.render.polygon.fogEnabled, "the generated asset remains immutable")
+  local restored = FieldActorDraw.itemsInto(records, function()
+    return asset
+  end, storage)
+  Assert.isTrue(restored[1].fogEnabled, "leaving the gym restores the generated gate")
+  local fogless = entry(100)
+  fogless.visual.render.polygon.fogEnabled = false
+  local foglessItems = FieldActorDraw.itemsInto(records, function()
+    return fogless
+  end, storage)
+  Assert.isFalse(foglessItems[1].fogEnabled, "a fog-exempt source polygon stays exempt without an override")
+end
+
 function T.static_model_actors_keep_the_world_projection()
   local item = FieldActorDraw.item(record({ spriteId = 183, facing = "north" }), staticModelEntry(183))
   Assert.isFalse(item.billboardProjection)

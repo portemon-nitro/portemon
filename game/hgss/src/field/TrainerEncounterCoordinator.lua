@@ -672,6 +672,10 @@ function TrainerEncounterCoordinator:_approachTick(slot)
       return false
     end
     approach.timer = 0
+    approach.phase = "check"
+    return true
+  end
+  if phase == "check" then
     approach.phase = approach.remaining --[[@as integer]] <= 1 and "arrived" or "step"
     return true
   end
@@ -682,7 +686,7 @@ function TrainerEncounterCoordinator:_approachTick(slot)
     end
     if self:_stepMotion(slot) then
       approach.remaining = approach.remaining --[[@as integer]] - 1
-      approach.phase = "wait"
+      approach.phase = "check"
       return true
     end
     return false
@@ -708,7 +712,16 @@ function TrainerEncounterCoordinator:_approachTick(slot)
       and (slot.index == 0 or slot.encounterType == TrainerBattleTrigger.ENCOUNTER_TWO_TRAINERS)
     then
       player:turn(facing)
+      approach.phase = "wait_turn"
+      return false
     end
+    approach.phase = "reset"
+    return true
+  end
+  if phase == "wait_turn" then
+    -- The source holds the player's facing movement and waits for its
+    -- completion before resetting. The port updates facing instantly but
+    -- preserves the yield boundary on its own tick.
     approach.phase = "reset"
     return true
   end

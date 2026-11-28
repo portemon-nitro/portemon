@@ -377,6 +377,48 @@ function GameClearCoordinator:_stageCandidate()
     base.hallOfFame = history:capture()
   end
 
+  -- The detached post-reset checkpoint: the live ending owns a suspended
+  -- foreground environment, its instances/tasks/locks and the old map's entry
+  -- continuation, none of which retail resumes (the native path resets the
+  -- system). Publish no suspended continuation: keep the scheduler counters
+  -- and tick for monotonicity, but carry no environments, instances, tasks or
+  -- locks. Likewise carry no old-map actors or gym union to the bedroom;
+  -- the destination boots its own objects and union from source. The live
+  -- script stays alive until publication succeeds, so a failed save can retry
+  -- with the same staged candidate.
+  local ScriptSave = require("libs.script.src.ScriptSave")
+  local capturedScripts = assert(base.scripts, "a captured save carries its scripts bucket")
+  base.scripts = {
+    schema = capturedScripts.schema,
+    capturedAtSimulationTick = capturedScripts.capturedAtSimulationTick,
+    nextEnvironmentId = capturedScripts.nextEnvironmentId,
+    nextInstanceId = capturedScripts.nextInstanceId,
+    nextTaskId = capturedScripts.nextTaskId,
+    environments = {},
+    instances = {},
+    tasks = {},
+  }
+  if not ScriptSave.isQuiescent(base.scripts) then
+    return nil, "the ending checkpoint must carry no suspended script continuation"
+  end
+  local worldBucket = assert(base.world, "a captured save carries its world bucket")
+  local objectsBucket = worldBucket.objects
+  if type(objectsBucket) == "table" then
+    base.world.objects = {
+      schema = objectsBucket.schema,
+      rng = objectsBucket.rng,
+      actors = {},
+    }
+  else
+    base.world.objects = { actors = {} }
+  end
+  local GymMechanismState = require("libs.hgss.src.field.GymMechanismState")
+  base.gymmick = {
+    schema = GymMechanismState.SCHEMA,
+    kind = GymMechanismState.NONE,
+    data = {},
+  }
+
   self._candidate = base
   return base, nil
 end

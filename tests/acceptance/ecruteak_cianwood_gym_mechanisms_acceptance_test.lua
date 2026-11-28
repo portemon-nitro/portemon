@@ -14,6 +14,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FinalizedGameFixture = require("tests.support.FinalizedGameFixture")
+local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
 
 local T = {
   metadata = {
@@ -207,6 +208,13 @@ end
 -- A save capture requires every autonomous actor to be settled between its own
 -- steps, and this map's black belts walk continuously, so advance to the next
 -- settled tick before writing the ordinary save.
+local function assertEcruteakEnvironment(game)
+  local environment = assert(game.runtime.runtimeMap.renderEnvironment, "the gym owns a render environment")
+  Assert.equal(environment.fog, EcruteakGym.FOG, "normal gym lifecycle installs the source fog preset")
+  Assert.isFalse(environment.actorFogEnabled, "the gym disables fog at the actor draw boundary")
+  Assert.near(environment.billboardDepthOffsetTiles, 0.0625, 1e-9, "the gym installs its one-unit projection offset")
+end
+
 local function saveWhenSettled(game)
   for _ = 1, 480 do
     local captured = pcall(game.runtime.captureGameSave, game.runtime)
@@ -231,6 +239,7 @@ function T.tests.ecruteak_candle_commands_run_for_the_medium_trainer_interaction
       "the gym's own init script completes: " .. failureText(game, ECRUTEAK_INIT_SCRIPT)
     )
     game:waitForFieldReady(480)
+    assertEcruteakEnvironment(game)
     Assert.equal(
       actorCount(game),
       sourceObjectCount(game),
@@ -374,6 +383,7 @@ function T.tests.ecruteak_gym_state_survives_continue_and_reinitializes_on_a_com
     game:restart()
     game:waitForFieldReady(960)
     Assert.equal(game:snapshot().mapSymbol, ECRUTEAK_MAP, "Continue returns to the gym")
+    assertEcruteakEnvironment(game)
     Assert.equal(
       #game:recordsForScript(ECRUTEAK_INIT_SCRIPT, "script.started"),
       0,
@@ -406,6 +416,7 @@ function T.tests.ecruteak_gym_state_survives_continue_and_reinitializes_on_a_com
       "the gym's own init script completes again: " .. failureText(game, ECRUTEAK_INIT_SCRIPT)
     )
     Assert.equal(actorCount(game), actorsBefore, "the re-entered gym publishes no duplicate map object")
+    assertEcruteakEnvironment(game)
   end, { fieldX = 12, fieldZ = 20 })
 end
 

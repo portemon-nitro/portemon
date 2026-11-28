@@ -70,6 +70,18 @@ function M.load(cacheFs)
   assert(type(hallDefinition.models) == "table" and #hallDefinition.models == 1, "Hall of Fame ball model is missing")
   ModelAsset.validate(hallDefinition.models[1])
   effects.hall_of_fame_machine = hallDefinition
+  local departureEntry = assert(index.effects.lance_departure, "field-effect index is missing lance_departure")
+  assert(
+    departureEntry.kind == "lance_departure"
+      and departureEntry.definition == "lance_departure"
+      and departureEntry.path == FieldEffectAssetCache.definitionPath("lance_departure"),
+    "field-effect index has an invalid lance_departure entry"
+  )
+  local departureDefinition =
+    assert(cacheFs:loadLua(departureEntry.path), "field-effect definition is missing: lance_departure")
+  assert(type(departureDefinition.model) == "table", "Lance departure model is missing")
+  ModelAsset.validate(departureDefinition.model)
+  effects.lance_departure = departureDefinition
   local model = effects.warp_entrance.model
   return { model = model, schema = index.schema, index = index, effects = effects }, FieldEntranceIndicator.new()
 end

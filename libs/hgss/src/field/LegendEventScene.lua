@@ -20,15 +20,19 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local AnimationPlayer = require("libs.hgss.src.presentation.AnimationPlayer")
 
 ---@class LegendEventScene.EffectPart
 ---@field model table<string, unknown> the normalized source model descriptor
----@field clips table<string, { ids: string[], frames: integer }> clip role -> source clips and their longest frame count
+---@field clips table<string, { ids: string[], frames: integer, frameCounts: table<string, integer> }> clip role -> source clips, longest frame count and per-channel durations
 
 ---@class LegendEventScene.EffectDefinition
+---@field model table<string, unknown>? a single normalized source model
 ---@field parts LegendEventScene.EffectPart[]?
 ---@field models table<string, unknown>[]? the source models keyed by source slot
 ---@field machineModelMemberId integer? the placed machine the hall-of-fame balls anchor on
+---@field clipIds string[]? the Lance departure's Dragonite clip ids
+---@field trainerFrameDurations integer[]? the Lance departure's trainer frame durations
 ---@field ballAnimationFrameCount integer? the ball clip's source frame count
 ---@field ballPositions { role: string, offset: { x: number, y: number, z: number } }[]? one source ball offset per party slot
 ---@field sound string?
@@ -46,6 +50,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field foregroundScript (fun(): string|nil)?
 ---@field currentScriptBankId (fun(): integer|nil)? the live map's source script bank
 ---@field anchorOf fun(modelMemberId: integer): { x: number, y: number, z: number }|nil? the live map's own placed-prop translation by source build model
+---@field departureFactory (fun(definition: LegendEventScene.EffectDefinition, positions: table<string, { x: number, y: number, z: number }>): table<string, unknown>)? presented departure effect factory
 
 ---@class LegendEventScene.PartPresentation
 ---@field part integer one-based source part index
@@ -64,6 +69,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field kind string?
 ---@field parts LegendEventScene.PartPresentation[]?
 ---@field cinematic LegendEventScene.CinematicPresentation?
+---@field departure { trainer: table<string, unknown>, flyer: table<string, unknown>?, model: table<string, unknown>? }?
 
 ---@class LegendEventScene
 ---@field private _definitions table<string, LegendEventScene.EffectDefinition>
@@ -75,6 +81,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field private _currentScriptBankId (fun(): integer|nil)?
 ---@field private _anchorOf (fun(modelMemberId: integer): { x: number, y: number, z: number }|nil)?
 ---@field private _modelFactory (fun(kind: string, part: table<string, unknown>, index: integer): table<string, unknown>)?
+---@field private _departureFactory (fun(definition: LegendEventScene.EffectDefinition, positions: table<string, { x: number, y: number, z: number }>): table<string, unknown>)?
 ---@field private _montage table<string, unknown>? the prepared montage image owner
 ---@field private _ownerScript string?
 ---@field private _active table<string, unknown>|nil
@@ -93,11 +100,11 @@ LegendEventScene.WHITE_FADE_SPEED = 1
 LegendEventScene.UNOWN_ANIMATE_TICKS = 100
 LegendEventScene.ARCEUS_OBJECT_TICKS = 150
 
--- src/field/field_move_cut_in.c: the fly-with-object cut-in's own step table.
-LegendEventScene.LANCE_FLY_STEPS = 12
--- The take-off lift applied over those steps: the source sprites rise by one
--- billboard unit per step before the cut-in releases them.
-LegendEventScene.LANCE_FLY_LIFT_PER_STEP = 0.5
+-- src/field/field_move_cut_in.c: the fly-with-object cut-in's own step table
+-- (gFieldMoveCutInFlyWithObjectSteps, 12 steps). The port mirrors the step
+-- order and gates with resource/flyer status, not a fixed tick count.
+LegendEventScene.LANCE_PICKUP_WAIT_TICKS = 20
+LegendEventScene.LANCE_FLY_SOUND = "SEQ_SE_DP_FW019"
 
 -- src/application/arceus_cinematic.c::enum ArceusScriptCmdId. The timeline is a
 -- closed command stream: an opcode followed by its own arguments.
@@ -154,6 +161,9 @@ function LegendEventScene.new(options)
   if options.anchorOf ~= nil then
     assert(type(options.anchorOf) == "function", "the map placement lookup must be a function")
   end
+  if options.departureFactory ~= nil then
+    assert(type(options.departureFactory) == "function", "the departure factory creates the fly-with-object effect")
+  end
   return setmetatable({
     _definitions = options.definitions,
     _audio = audio,
@@ -164,6 +174,7 @@ function LegendEventScene.new(options)
     _currentScriptBankId = options.currentScriptBankId,
     _anchorOf = options.anchorOf,
     _modelFactory = nil,
+    _departureFactory = options.departureFactory,
     _ownerScript = nil,
     _active = nil,
   }, LegendEventScene)
@@ -179,6 +190,17 @@ function LegendEventScene:setModelFactory(factory)
   end
   self:_releaseModels()
   self._modelFactory = factory
+end
+
+-- The presented composition supplies the source sprite/model owner for Lance's
+-- departure. A headless composition constructs the same effect over a pure
+-- ModelInstance when this factory is absent.
+---@param factory (fun(definition: LegendEventScene.EffectDefinition, positions: table<string, { x: number, y: number, z: number }>): table<string, unknown>)|nil
+function LegendEventScene:setDepartureFactory(factory)
+  if factory ~= nil then
+    assert(type(factory) == "function", "the departure factory creates the fly-with-object effect")
+  end
+  self._departureFactory = factory
 end
 
 ---@private
@@ -309,6 +331,52 @@ local function playRole(model, part, role, loop)
   end
 end
 
+-- Play one wing phase and retain the real attachment handles. A headless
+-- composition advances the same AnimationPlayer state over each generated
+-- channel's own duration; it does not own a second scalar phase clock.
+---@param model table<string, unknown>|nil
+---@param part LegendEventScene.EffectPart
+---@param role string
+---@param loop boolean?
+---@return table<string, unknown>[]
+local function playWingRole(model, part, role, loop)
+  local clip = assert(part.clips and part.clips[role], "the legend scene part carries its " .. role .. " clips")
+  local handles = {}
+  for _, id in ipairs(clip.ids) do
+    if model ~= nil then
+      handles[#handles + 1] = model:play(id, { loopMode = loop and "loop" or "once" })
+    else
+      local frameCount = assert(clip.frameCounts and clip.frameCounts[id], "the wing clip has its channel duration")
+      local player = AnimationPlayer.new({ frameCount = frameCount })
+      player.loopMode = loop and "loop" or "once"
+      handles[#handles + 1] = { player = player }
+    end
+  end
+  return handles
+end
+
+---@param active table<string, unknown>
+local function stopWingPlays(active)
+  local model = active.models and active.models[1] or nil
+  for _, handle in ipairs(active.plays or {}) do
+    if model ~= nil then
+      model:stop(handle)
+    end
+  end
+  active.plays = {}
+end
+
+---@param active table<string, unknown>
+---@return boolean
+local function wingPlaysFinished(active)
+  for _, handle in ipairs(active.plays or {}) do
+    if not handle.player:isComplete() then
+      return false
+    end
+  end
+  return true
+end
+
 -- ScrCmd_ShowLegendaryWing (774): load the source wing model on the player,
 -- play its own sound, run the intro clip, start the loop clip together with the
 -- map's own child script, and only after the child returned let the loop finish
@@ -325,16 +393,46 @@ function LegendEventScene:_beginWing(kind)
     definition = definition,
     part = part,
     phase = "load",
-    ticks = 0,
     x = player.worldX,
     y = player.worldY,
     z = player.worldZ,
+    plays = {},
   }
 end
 
+-- A headless departure still owns a real ModelDefinition/ModelInstance and
+-- the real flyer state machine; only GPU-backed image handles are absent.
+---@param definition LegendEventScene.EffectDefinition
+---@param positions table<string, { x: number, y: number, z: number }>
+---@return table<string, unknown>
+local function headlessDeparture(definition, positions)
+  local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
+  local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
+  local LanceDepartureEffect = require("libs.hgss.src.presentation.LanceDepartureEffect")
+  local instance = ModelInstance.new(ModelDefinition.fromNitroDescriptor(assert(definition.model)))
+  local handle = {}
+  function handle:play(id, opts)
+    return instance:play(id, opts)
+  end
+  function handle:stop(play)
+    return instance:stop(play)
+  end
+  function handle:updateFixed()
+    instance:updateFixed()
+  end
+  function handle:dispose() end
+  return LanceDepartureEffect.new({
+    model = handle,
+    clipIds = assert(definition.clipIds),
+    trainerFrameDurations = assert(definition.trainerFrameDurations),
+    screenOffset = LanceDepartureEffect.screenOffsetFor(assert(positions.player), assert(positions.lance)),
+  })
+end
+
 -- ScrCmd_LanceFlyAway (775): resolve the two source object ids and run the
--- fly-with-object take-off over the source's own step count, lifting both
--- actors until the cut-in released them.
+-- fly-with-object take-off through the source's own step order. The generated
+-- cut-in mon is the source Dragonite; the scene owns the two object
+-- identities and never a generic Fly.
 ---@param first unknown
 ---@param second unknown
 function LegendEventScene:_beginLanceDeparture(first, second)
@@ -356,11 +454,41 @@ function LegendEventScene:_beginLanceDeparture(first, second)
   end
   local lance = actorFor(first, "lance")
   local dragonite = actorFor(second, "dragonite")
+  assert(
+    self._actors.getById and self._actors.hide and self._actors.show,
+    "the departure needs live object presentation"
+  )
+  local function positionOf(actorId, label)
+    local actor = self._actors:getById(actorId)
+    local position = actor ~= nil and actor:getWorldPosition() or nil
+    if position == nil or position.x == nil or position.y == nil or position.z == nil then
+      Errors.raise(
+        FieldErrors.FIELD_LEGEND_SCENE_ACTOR_MISSING,
+        "the departure's source object has no world position",
+        {
+          label = label,
+          actorId = actorId,
+        }
+      )
+    end
+    return position --[[@as { x: number, y: number, z: number }]]
+  end
+  local player = assert(self._playerOf(), "the departure needs the live field player")
+  local positions = {
+    player = { x = player.worldX, y = player.worldY, z = player.worldZ },
+    lance = positionOf(lance, "lance"),
+    dragonite = positionOf(dragonite, "dragonite"),
+  }
+  local definition = self:_requireDefinition("lance_departure")
+  local factory = self._departureFactory or headlessDeparture
   self._active = {
     kind = "lance_departure",
-    phase = "fly",
-    ticks = 0,
+    phase = "load_sprites",
+    timer = 0,
     actors = { lance, dragonite },
+    dragonite = dragonite,
+    positions = positions,
+    departure = factory(definition, positions),
   }
 end
 
@@ -540,15 +668,19 @@ function LegendEventScene:childScriptId()
   return ScriptIdentity.formatVanilla(bankId, LegendEventScene.WING_CHILD_SCRIPT_ENTRY)
 end
 
--- The child returned: the wing effect resumes with its loop's remaining
--- source cycle before it switches to the end clip.
+-- The child returned: stop the independent loop task and let every loop
+-- channel finish its current iteration at its own checked terminal before the
+-- end phase replaces the attachment set.
 function LegendEventScene:childComplete()
   local active = self._active
   if active == nil or active.phase ~= "child" then
     return
   end
+  for _, handle in ipairs(active.plays or {}) do
+    handle.player:finishCurrentLoop()
+  end
   active.phase = "loop"
-  active.ticks = 0
+  active.childRequested = nil
 end
 
 -- One fixed tick of the Hall of Fame machine, one native task invocation per
@@ -646,43 +778,48 @@ function LegendEventScene:_stepWing(active)
   -- The wing definition keys one part per source kind, so the claim holds only
   -- the selected part as one dense instance.
   local kindIndex = active.sourceKind + 1
+  local model = active.models and active.models[1] or nil
   if active.phase == "load" then
     local definition = active.definition
     if definition.sound ~= nil then
       self._audio:play(definition.sound)
     end
     local claimed = self:_claimModels(definition, "legend_wing", kindIndex)
-    active.models = { claimed[kindIndex] }
-    playRole(active.models[1], part, "intro")
+    local claimedModel = claimed[kindIndex]
+    active.models = claimedModel ~= nil and { claimedModel } or nil
+    active.plays = playWingRole(claimedModel, part, "intro")
     active.phase = "intro"
-    active.ticks = 0
     return "wait"
   end
   if active.phase == "intro" then
-    active.ticks = active.ticks + 1
-    if active.ticks >= clipFrames(part, "intro") then
-      playRole(active.models[1], part, "loop", true)
-      active.phase = "child"
-      active.childRequested = true
-      active.ticks = 0
-      return "child"
+    if not wingPlaysFinished(active) then
+      return "wait"
     end
+    stopWingPlays(active)
+    active.plays = playWingRole(model, part, "loop", true)
+    active.phase = "child"
+    active.childRequested = true
+    return "child"
+  end
+  if active.phase == "child" then
+    -- The task polls the map child without stepping the scene; the loop
+    -- players advance in updatePresentation.
     return "wait"
   end
   if active.phase == "loop" then
-    active.ticks = active.ticks + 1
-    if active.ticks >= clipFrames(part, "loop") then
-      playRole(active.models[1], part, "end")
-      active.phase = "end"
-      active.ticks = 0
+    if not wingPlaysFinished(active) then
+      return "wait"
     end
+    stopWingPlays(active)
+    active.plays = playWingRole(model, part, "end")
+    active.phase = "end"
     return "wait"
   end
   assert(active.phase == "end", "the wing effect has no other phase")
-  active.ticks = active.ticks + 1
-  if active.ticks < clipFrames(part, "end") then
+  if not wingPlaysFinished(active) then
     return "wait"
   end
+  stopWingPlays(active)
   self:_releaseModels()
   self._active = nil
   return "complete"
@@ -692,13 +829,83 @@ end
 ---@param active table<string, unknown> the live scene claim
 ---@return string
 function LegendEventScene:_stepLanceDeparture(active)
-  active.ticks = active.ticks + 1
-  local lift = active.ticks * LegendEventScene.LANCE_FLY_LIFT_PER_STEP
-  for _, actorId in ipairs(active.actors) do
-    self._actors:setPresentationOffset(actorId, { x = 0, y = lift, z = 0 })
-  end
-  if active.ticks < LegendEventScene.LANCE_FLY_STEPS then
+  local phase = active.phase
+  local departure = assert(active.departure, "the departure owns its presentation effect")
+  if phase == "load_sprites" then
+    departure:loadSpriteGraphics()
+    active.phase = "wait_sprites"
     return "wait"
+  end
+  if phase == "wait_sprites" then
+    if not departure:spritesReady() then
+      return "wait"
+    end
+    active.phase = "create_trainer_sprite"
+    return "wait"
+  end
+  if phase == "create_trainer_sprite" then
+    departure:createTrainer()
+    active.phase = "show_other_object"
+    return "wait"
+  end
+  if phase == "show_other_object" then
+    self._actors:hide(active.dragonite)
+    departure:showOtherObject(active.positions.dragonite)
+    active.phase = "wait_model_effect"
+    return "wait"
+  end
+  if phase == "wait_model_effect" then
+    if not departure:isModelDone() then
+      return "wait"
+    end
+    departure:releaseModel()
+    active.phase = "load_fly_graphics"
+    return "wait"
+  end
+  if phase == "load_fly_graphics" then
+    departure:loadFlyGraphics()
+    active.phase = "wait_fly_graphics"
+    return "wait"
+  end
+  if phase == "wait_fly_graphics" then
+    if not departure:flyerReady() then
+      return "wait"
+    end
+    active.phase = "wait_before_pickup"
+    active.timer = 0
+    return "wait"
+  end
+  if phase == "wait_before_pickup" then
+    active.timer = active.timer + 1
+    if active.timer < LegendEventScene.LANCE_PICKUP_WAIT_TICKS then
+      return "wait"
+    end
+    active.timer = 0
+    departure:createFlyer()
+    departure:startPickup()
+    active.phase = "wait_fly_away"
+    return "wait"
+  end
+  if phase == "wait_fly_away" then
+    if departure:flyerStatus() ~= 3 then
+      return "wait"
+    end
+    self._audio:play(LegendEventScene.LANCE_FLY_SOUND)
+    active.phase = "wait_fly_end"
+    return "wait"
+  end
+  if phase == "wait_fly_end" then
+    if departure:flyerStatus() ~= 2 then
+      return "wait"
+    end
+    departure:destroyFlyer()
+    active.phase = "free_sprites"
+    return "wait"
+  end
+  assert(phase == "free_sprites", "the Lance departure is a closed step set")
+  departure:dispose()
+  for _, actorId in ipairs(active.actors) do
+    self._actors:setPresentationOffset(actorId, { x = 0, y = 0, z = 0 })
   end
   self._active = nil
   return "complete"
@@ -1014,11 +1221,23 @@ function LegendEventScene:takeResult()
   return result
 end
 
--- Advance the presented source models one fixed tick. Only the instances' own
--- clip clocks move here.
+-- Advance the presented source models one fixed tick. A headless wing owns
+-- the same logical channel players as its presented counterpart; only the
+-- model's GPU-backed evaluation is absent.
 function LegendEventScene:updatePresentation()
   local active = self._active
-  if active == nil or active.models == nil then
+  if active == nil then
+    return
+  end
+  if active.kind == "lance_departure" then
+    active.departure:updateFixed()
+  end
+  if active.models == nil then
+    if active.kind == "legend_wing" then
+      for _, handle in ipairs(active.plays or {}) do
+        handle.player:updateFixed()
+      end
+    end
     return
   end
   for _, model in ipairs(active.models) do
@@ -1037,6 +1256,22 @@ function LegendEventScene:presentation()
     return {}
   end
   local snapshot = { kind = active.kind } ---@type LegendEventScene.Presentation
+  if active.kind == "lance_departure" then
+    snapshot.departure = active.departure:snapshot()
+    local model = snapshot.departure.model
+    if model ~= nil then
+      snapshot.parts = {
+        {
+          part = 1,
+          model = model.handle,
+          x = model.x,
+          y = model.y,
+          z = model.z,
+          rotationDegrees = 0,
+        },
+      }
+    end
+  end
   local balls = active.balls
   if balls ~= nil then
     local placed = {}
@@ -1097,6 +1332,8 @@ function LegendEventScene:cancel(_)
     return
   end
   if active.kind == "lance_departure" then
+    active.departure:dispose()
+    self._actors:show(active.dragonite)
     for _, actorId in ipairs(active.actors) do
       self._actors:setPresentationOffset(actorId, { x = 0, y = 0, z = 0 })
     end

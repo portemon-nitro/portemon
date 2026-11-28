@@ -1028,6 +1028,7 @@ function Compiler.compile(romFs, hashLua)
   end
   effects[FieldEffects.hideoutAlarmOverlay.key] =
     assert(storyEffects.definitions[FieldEffects.hideoutAlarmOverlay.key], "hideout alarm overlay is missing")
+  effects.lance_departure = assert(storyEffects.definitions.lance_departure, "Lance departure definition is missing")
   -- The legendary-story scenes: the wing effect, the Mystri Stage, the Sinjoh
   -- Unown circle and egg cutscenes and the Arceus montage application.
   for _, kind in ipairs(FieldEffectAssetCache.LEGEND_SCENE_KINDS) do
@@ -1099,6 +1100,11 @@ function Compiler.compile(romFs, hashLua)
         kind = "hall_of_fame",
         definition = "hall_of_fame_machine",
         path = FieldEffectAssetCache.definitionPath("hall_of_fame_machine"),
+      },
+      lance_departure = {
+        kind = "lance_departure",
+        definition = "lance_departure",
+        path = FieldEffectAssetCache.definitionPath("lance_departure"),
       },
       violet_gym_car = {
         kind = "animated_model",

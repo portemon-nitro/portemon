@@ -2440,6 +2440,10 @@ function FieldState:draw()
         end
         drawFieldWorld()
       end
+      local departure = self.runtime.legendEventScene and self.runtime.legendEventScene:presentation().departure
+      if departure ~= nil and resources.gymMechanismRenderer ~= nil then
+        resources.gymMechanismRenderer:drawLanceDeparture(departure)
+      end
       self._presentedRuntimeMap = self.runtime.runtimeMap
       self.runtime:acknowledgeDestinationPresentation()
     end

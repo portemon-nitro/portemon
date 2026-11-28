@@ -137,7 +137,7 @@ T.tests["publishes the surf attachment definition and its referenced paths atomi
   local bundle = {
     marker = "field-effect-cache-v12:rom:dep",
     index = {
-      schema = "g4-field-effect-index-v4",
+      schema = "g4-field-effect-index-v5",
       effects = {
         warp_entrance = { path = FieldEffectAssetCache.definitionPath("warp_entrance"), definition = "warp_entrance" },
         tall_grass = { path = FieldEffectAssetCache.definitionPath("tall_grass"), definition = "tall_grass" },

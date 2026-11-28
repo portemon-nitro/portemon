@@ -86,6 +86,15 @@ local function ambientHeader(raw6, ids)
   return record(1, 0, 0, 0, 0x0000, raw6, 1, ids)
 end
 
+function T.each_source_id_slot_remains_a_distinct_record()
+  local result = compile(ambientHeader(2, { 1, 2 }), 119, { 1, 2 }, function()
+    return AnimationFixture.jntFull()
+  end)
+  Assert.equal(#result.records, 2, "source record slots stay distinct")
+  Assert.equal(result.records[1].clips[1], result.clips[1])
+  Assert.equal(result.records[2].clips[1], result.clips[2])
+end
+
 function T.every_clip_of_an_ambient_policy_record_is_an_ambient_loop()
   -- Header 01 00 00 00 00 00 02 01: the ambient policy with TWO non-door
   -- clips (like the real as_yacht / fall_futago pairs). The ordinary

@@ -117,14 +117,18 @@ function T.a_faulted_child_faults_the_parent_scene()
   Assert.isTrue(Errors.is(result.result.error), "a faulted child surfaces as an attributed parent fault")
 end
 
-function T.a_scene_without_a_child_bank_finishes_its_own_loop()
+function T.a_scene_without_a_child_bank_is_an_attributed_failure()
   local scene = fakeScene()
   scene.statuses = { "child", "complete" }
+  scene.childScriptIdValue = nil
   local ctx = context(scene)
   local state = LegendEventTask.create({ action = "wing", kind = 0 }, ctx)
-  LegendEventTask.poll(state, ctx)
+  local ok, err = pcall(function()
+    return LegendEventTask.poll(state, ctx)
+  end)
+  Assert.isFalse(ok, "a missing child bank must not silently skip the story child")
+  Assert.isTrue(Errors.is(err), "the missing bank is an attributed failure")
   Assert.equal(#ctx.scheduler.children, 0, "an unresolved map bank starts no child")
-  Assert.equal(state.phase, "wait")
 end
 
 function T.cancelling_the_task_releases_the_scene_exactly_once()

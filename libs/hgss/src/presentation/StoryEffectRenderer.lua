@@ -34,6 +34,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
+local LanceDepartureEffect = require("libs.hgss.src.presentation.LanceDepartureEffect")
 
 -- One generated definition per source prop: the normalized nitro-dynamic
 -- descriptor its own map's build model compiled.
@@ -94,6 +95,7 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 ---@field _trap table<string, unknown>?
 ---@field _sceneResources table<string, table<integer, StoryEffectSceneResource>>?
 ---@field _montageImages table<string, unknown>?
+---@field _lanceDeparture table<string, unknown>?
 local StoryEffectRenderer = {}
 StoryEffectRenderer.__index = StoryEffectRenderer
 
@@ -487,6 +489,7 @@ function StoryEffectRenderer:dispose()
   self.traps = {}
   self._trap = nil
   self.overlay = nil
+  self._lanceDeparture = nil
   self._sceneResources = nil
   self._montageImages = nil
   self.resources = nil
@@ -552,6 +555,9 @@ function StoryEffectRenderer:newSceneModel(kind, index, partOverride)
   function handle:play(name, opts)
     return instance:play(name, opts)
   end
+  function handle:stop(play)
+    return instance:stop(play)
+  end
   function handle:updateFixed()
     instance:updateFixed()
   end
@@ -559,6 +565,82 @@ function StoryEffectRenderer:newSceneModel(kind, index, partOverride)
     handle.record = nil
   end
   return handle
+end
+
+-- Claim the source Dragonite model and prepared trainer/flyer sprites for
+-- Lance's departure. The returned effect owns their presentation lifetime and
+-- publishes readiness/status to the script consumer.
+---@param definition table<string, unknown>
+---@param positions table<string, { x: number, y: number, z: number }>
+---@return table<string, unknown>
+function StoryEffectRenderer:newLanceDeparture(definition, positions)
+  assert(self._lanceDeparture == nil, "a Lance departure already owns the cut-in resources")
+  local model = self:newSceneModel("lance_departure", 1, { model = assert(definition.model) })
+  local trainer = {}
+  for _, frame in ipairs(assert(definition.trainer.frames)) do
+    trainer[#trainer + 1] = {
+      image = self.pool:sharedImage(frame.path, "clamp", "clamp"),
+      width = frame.width,
+      height = frame.height,
+      offsetX = frame.offsetX,
+      offsetY = frame.offsetY,
+    }
+  end
+  local flyerFrame = assert(definition.flyer)
+  local flyer = {
+    image = self.pool:sharedImage(flyerFrame.path, "clamp", "clamp"),
+    width = flyerFrame.width,
+    height = flyerFrame.height,
+    offsetX = flyerFrame.offsetX,
+    offsetY = flyerFrame.offsetY,
+  }
+  local record = { trainer = trainer, flyer = flyer }
+  self._lanceDeparture = record
+  local renderer = self
+  local function releaseDeparture()
+    if renderer._lanceDeparture == record then
+      renderer._lanceDeparture = nil
+    end
+  end
+  return LanceDepartureEffect.new({
+    model = model,
+    clipIds = assert(definition.clipIds),
+    trainerFrameDurations = assert(definition.trainerFrameDurations),
+    screenOffset = LanceDepartureEffect.screenOffsetFor(assert(positions.player), assert(positions.lance)),
+    onDispose = releaseDeparture,
+  })
+end
+
+-- Paint the departure's source 2D sprite layer over the field. The Dragonite
+-- model itself travels through the ordinary world queue.
+---@param status table<string, unknown>
+function StoryEffectRenderer:drawLanceDeparture(status)
+  local resources = self._lanceDeparture
+  if resources == nil then
+    return
+  end
+  local graphics = assert(love and love.graphics, "the Lance departure requires the graphics boundary")
+  local width, height = graphics.getDimensions()
+  local scaleX, scaleY = width / 256, height / 192
+  local function draw(frame, placement)
+    if placement == nil or placement.visible ~= true then
+      return
+    end
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(
+      frame.image,
+      (placement.x + frame.offsetX) * scaleX,
+      (placement.y + frame.offsetY) * scaleY,
+      math.rad(placement.rotation or 0),
+      (placement.scale or 1) * scaleX,
+      (placement.scale or 1) * scaleY
+    )
+  end
+  draw(resources.trainer[assert(status.trainer.frame)], status.trainer)
+  if status.flyer ~= nil then
+    draw(resources.flyer, status.flyer)
+  end
+  graphics.setColor(1, 1, 1, 1)
 end
 
 -- Claim the Arceus montage's prepared images. The layers are the source's own

@@ -276,7 +276,8 @@ function MapPropAnimCompiler.compile(listBytes, resNarc, opts)
   end
 
   for _, resourceId in ipairs(record.ids) do
-    clips[#clips + 1] = modelClip(resourceId, resNarc:readMember(resourceId))
+    local clip = modelClip(resourceId, resNarc:readMember(resourceId))
+    clips[#clips + 1] = clip
   end
   annotatePolicy(clips, record)
   local hasDoor = false

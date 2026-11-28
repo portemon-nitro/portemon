@@ -22,6 +22,7 @@ local function withRendererMocks(overrides, fn)
   end
   local plays = {}
   local updates = 0
+  local images = {}
   package.loaded["libs.hgss.src.presentation.ModelDefinition"] = {
     fromNitroDescriptor = function(descriptor)
       return {
@@ -74,6 +75,7 @@ local function withRendererMocks(overrides, fn)
         return { mesh = { path = path }, center = { 0, 0, 0 } }
       end,
       sharedImage = function(_, path)
+        images[#images + 1] = path
         return { image = { path = path }, palette = nil, indexed = false }
       end,
     }
@@ -94,6 +96,7 @@ local function withRendererMocks(overrides, fn)
         },
       },
       candle = overrides.candle,
+      legend = overrides.legend,
     }
     fn({
       Renderer = Renderer,
@@ -103,6 +106,7 @@ local function withRendererMocks(overrides, fn)
       updates = function()
         return updates
       end,
+      images = images,
     })
   end)
   for _, name in ipairs(MODULES) do
@@ -350,6 +354,41 @@ end
 
 T.tests["the adapter requires both source prop models"] = function()
   withRendererMocks({ spider = { model = nil }, expectFailure = true }, function() end)
+end
+
+T.tests["the Lance departure acquires and releases its prepared sprite resources"] = function()
+  local definition = {
+    model = {
+      key = "field-effect:lance-departure",
+      geometry = "lance-mesh",
+      materials = {},
+      animations = { { id = "lance.departure.joint", name = "lance.departure.joint" } },
+    },
+    clipIds = { "lance.departure.joint" },
+    trainer = {
+      frames = { { path = "trainer.png", width = 64, height = 64, offsetX = -32, offsetY = -64, duration = 1 } },
+    },
+    trainerFrameDurations = { 1 },
+    flyer = { path = "flyer.png", width = 64, height = 64, offsetX = -32, offsetY = -32 },
+  }
+  withRendererMocks({ legend = { lance_departure = definition } }, function(harness)
+    local effect = harness.renderer:newLanceDeparture(definition, {
+      player = { x = 0, y = 0, z = 0 },
+      lance = { x = 2, y = 0, z = 1 },
+      dragonite = { x = 5, y = 0, z = 6 },
+    })
+    Assert.deepEqual(harness.images, { "trainer.png", "flyer.png" }, "the cut-in acquires real prepared images")
+    Assert.notNil(harness.renderer._lanceDeparture)
+    local snapshot = effect:snapshot()
+    Assert.equal(snapshot.trainer.x, 128 + 2 * 8, "the trainer sprite offsets from the departing trainer")
+    Assert.equal(snapshot.trainer.y, 320 + 1 * 16, "the trainer sprite offsets from the departing trainer")
+    effect:loadSpriteGraphics()
+    effect:updateFixed()
+    Assert.isTrue(effect:spritesReady())
+    effect:dispose()
+    Assert.isNil(harness.renderer._lanceDeparture, "effect disposal releases the sprite claim")
+    harness.renderer:dispose()
+  end)
 end
 
 return T

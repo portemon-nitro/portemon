@@ -99,8 +99,9 @@ end
 ---@param entry FieldActorDraw.Entry
 ---@param partIndex integer?
 ---@param item table<string, unknown>
+---@param options { fogEnabled: boolean? }?
 ---@return table<string, unknown>
-local function writeItem(record, entry, partIndex, item)
+local function writeItem(record, entry, partIndex, item, options)
   assert(type(record) == "table" and type(record.world) == "table", "a draw record needs a world position")
   assert(type(entry) == "table" and type(entry.visual) == "table", "a draw record needs its visual asset")
   local visual = entry.visual
@@ -225,7 +226,12 @@ local function writeItem(record, entry, partIndex, item)
   item.polygonId = polygon.polygonId
   item.translucentDepthWrite = polygon.translucentDepthWrite
   item.depthEqual = polygon.depthEqual
-  item.fogEnabled = polygon.fogEnabled
+  if options ~= nil and options.fogEnabled ~= nil then
+    assert(type(options.fogEnabled) == "boolean", "actor fog override must be boolean")
+    item.fogEnabled = options.fogEnabled
+  else
+    item.fogEnabled = polygon.fogEnabled
+  end
   item.center = geometry.center or item.center or { 0, geometry.bounds.height / 2, 0 }
   item.actorId = record.actorId
   item.spriteId = record.spriteId
@@ -256,8 +262,9 @@ end
 ---@param records FieldActorDraw.Record[]
 ---@param assetFor fun(spriteId: integer): FieldActorDraw.Entry
 ---@param storage FieldActorDrawStorage
+---@param options { fogEnabled: boolean? }?
 ---@return table[]
-function FieldActorDraw.itemsInto(records, assetFor, storage)
+function FieldActorDraw.itemsInto(records, assetFor, storage, options)
   assert(type(assetFor) == "function", "FieldActorDraw.itemsInto needs an asset lookup")
   assert(type(storage) == "table" and storage.items and storage.actorSlots, "FieldActorDraw storage is incomplete")
   storage.generation = (storage.generation or 0) + 1
@@ -305,7 +312,8 @@ function FieldActorDraw.itemsInto(records, assetFor, storage)
           actorSlots[partIndex] = slot
         end
         itemCount = itemCount + 1
-        items[itemCount] = writeItem(record, entry, render.kind == "staticModel" and partIndex or nil, slot.item)
+        items[itemCount] =
+          writeItem(record, entry, render.kind == "staticModel" and partIndex or nil, slot.item, options)
       end
       for partIndex = #actorSlots, partCount + 1, -1 do
         actorSlots[partIndex] = nil

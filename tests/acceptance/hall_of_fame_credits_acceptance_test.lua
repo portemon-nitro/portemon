@@ -402,6 +402,20 @@ function T.tests.first_clear_publishes_one_record_and_continues_in_the_post_clea
       game.runtime.scripts.worldState:isFlagSet(FLAG_GAME_CLEAR),
       "the published ending sets the authoritative game-clear flag"
     )
+    -- F01: the checkpoint must not retain the old map's live ending
+    -- continuation. Independently derived from the scheduler snapshot schema:
+    -- no suspended environment, instance, task, lock or old map-entry script.
+    local ScriptSave = require("libs.script.src.ScriptSave")
+    Assert.isTrue(
+      ScriptSave.isQuiescent(saved.scripts),
+      "the published checkpoint carries no suspended script continuation"
+    )
+    Assert.equal(#saved.scripts.environments, 0, "no ending environment survives publication")
+    Assert.equal(#saved.scripts.instances, 0, "no ending instance survives publication")
+    Assert.equal(#saved.scripts.tasks, 0, "no game-clear task survives publication")
+    Assert.equal(saved.gymmick.kind, "none", "the bedroom carries no gym union")
+    local savedActors = saved.world ~= nil and saved.world.objects ~= nil and saved.world.objects.actors or nil
+    Assert.isTrue(savedActors == nil or next(savedActors) == nil, "no old-map actors survive publication")
     loaded = saved
   end, debug.traceback)
   game:close()

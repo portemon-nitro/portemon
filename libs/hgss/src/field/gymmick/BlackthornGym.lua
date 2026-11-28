@@ -12,8 +12,8 @@
 -- (BlackthornPlatform_ApplyRotation), so a turned platform answers its buttons,
 -- its floor and its walls in the turned frame. A move travels one platform
 -- width in the direction the rotation implies, one tile per two 8-unit motion
--- ticks, and the rider is carried with it; a rotation is one 4-degree quarter
--- turn animated over sixteen 0.25-degree ticks.
+-- ticks, and the rider is carried with it; a rotation is one 90-degree quarter
+-- turn animated over sixteen 5.625-degree ticks.
 --
 -- Both actions test their leading geometry over the map's own collision and
 -- metatile behavior first (BlackthornGymmick_CheckWallCollision accepts a point
@@ -118,11 +118,12 @@ BlackthornGym.MAGMA_BEHAVIOR = 44
 BlackthornGym.MOTION_TILES = 0.5
 BlackthornGym.TICKS_PER_TILE = 2
 
--- Task_BlackthornGymmick_RotatePlatform: sixteen 0.25-degree ticks make one
--- 4-degree quarter turn (rotationVec.y = -4 * FX32_ONE * rotation).
+-- Task_BlackthornGymmick_RotatePlatform: sixteen 5.625-degree ticks make one
+-- 90-degree quarter turn (rotationVec.y = -4 * FX32_ONE * rotation; 16384
+-- indices = 90 degrees, 1024 indices = 5.625 degrees per tick).
 BlackthornGym.ROTATION_TICKS = 16
-BlackthornGym.TURN_DEGREES = 0.25
-BlackthornGym.QUARTER_DEGREES = 4
+BlackthornGym.TURN_DEGREES = 5.625
+BlackthornGym.QUARTER_DEGREES = 90
 
 -- The rotation extent tables below count 1/64ths of a quarter turn, so 64 is
 -- the full travel FX_DEG_TO_IDX(FX32_CONST(90)).
@@ -256,16 +257,18 @@ local function buildPlatform(slot, anchor)
   local moveRightButton = point(x - 1, z)
 
   local rightWall = {}
+  local rightDx = shapeIndex == 1 and 2 or 3
   for index = 0, height - 1 do
-    rightWall[#rightWall + 1] = point(x + 3, z - 2 + index)
+    rightWall[#rightWall + 1] = point(x + rightDx, z - 2 + index)
   end
   local leftWall = {}
   for index = 0, height - 1 do
     leftWall[#leftWall + 1] = point(x - 3, z - 2 + index)
   end
   local bottomWall = {}
+  local bottomDz = shapeIndex == 1 and 6 or 5
   for index = 0, width - 1 do
-    bottomWall[#bottomWall + 1] = point(x - 2 + index, z + 5)
+    bottomWall[#bottomWall + 1] = point(x - 2 + index, z + bottomDz)
   end
   local topWall = {}
   for index = 0, width - 1 do
@@ -607,6 +610,7 @@ function BlackthornGym:_commitMove(action)
     origin.worldY
   )
   action.committed = true
+  action.travelled = 0
   self:_restorePlatforms()
 end
 
@@ -616,6 +620,7 @@ end
 function BlackthornGym:_commitRotation(action)
   self._state:advanceBlackthornRotation(action.slot)
   action.committed = true
+  action.travelled = 0
   self:_restorePlatforms()
 end
 
@@ -780,7 +785,7 @@ function BlackthornGym:presentation()
     local offsetX, offsetZ = 0, 0
     -- A turning platform's animated angle accumulates fractional travel.
     local degrees = -BlackthornGym.QUARTER_DEGREES * platform.rotation ---@type number
-    if action ~= nil and action.slot == slot then
+    if action ~= nil and action.slot == slot and not action.committed then
       if action.kind == "move" then
         local direction = assert(action.direction, "a moving platform carries its direction")
         offsetX, offsetZ = direction.x * action.travelled, direction.z * action.travelled

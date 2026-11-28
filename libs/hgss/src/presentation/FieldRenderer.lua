@@ -143,7 +143,7 @@ function FieldRenderer:draw(
   assert(captureOnly ~= true or captureLayers == true, "capture-only field draws request planes")
   local viewMatrix = camera:view(alpha)
   local worldProjection = camera:projection()
-  local billboardProjection = camera:billboardProjection()
+  local billboardProjection = camera:billboardProjection(renderEnvironment.billboardDepthOffsetTiles)
   local queue =
     RenderQueue.buildInto(worldParts or {}, viewMatrix, worldProjection, billboardProjection, self._queueScratch)
   -- The retained Gx frame record is overwritten every draw: no per-frame

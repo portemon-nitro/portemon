@@ -804,9 +804,8 @@ end
 -- reactions are generated from the same builder so the declared set cannot
 -- drift from the validated set.
 -- One legendary-story scene: each part carries its normalized source model and
--- the clips of every source phase, with the longest clip of a phase as that
--- phase's own duration. The scenes publish no placement of their own: the
--- runtime mechanism owns every transform.
+-- every phase's clips, longest duration and per-channel durations. The scenes
+-- publish no placement of their own: the runtime mechanism owns every transform.
 ---@param expectedParts integer
 ---@return fun(definition: table<string, unknown>, kind: string): boolean
 local function validLegendSceneDefinition(expectedParts)
@@ -833,10 +832,22 @@ local function validLegendSceneDefinition(expectedParts)
         if not finiteNumber(clip.frames) or clip.frames < 1 or clip.frames % 1 ~= 0 then
           return false
         end
+        if type(clip.frameCounts) ~= "table" then
+          return false
+        end
+        local longest = 0
         for _, id in ipairs(clip.ids) do
           if type(id) ~= "string" or id == "" then
             return false
           end
+          local frames = clip.frameCounts[id]
+          if not finiteNumber(frames) or frames < 1 or frames % 1 ~= 0 then
+            return false
+          end
+          longest = math.max(longest, frames)
+        end
+        if longest ~= clip.frames then
+          return false
         end
       end
     end
@@ -844,6 +855,51 @@ local function validLegendSceneDefinition(expectedParts)
     return true
   end
   return validate
+end
+
+-- Lance's departure publishes the Dragonite model and prepared 2D trainer/
+-- flyer resources. Every image belongs to the effect bundle's texture root.
+---@param definition table<string, unknown>
+---@param kind string
+---@return boolean
+local function validLanceDepartureDefinition(definition, kind)
+  if type(definition) ~= "table" or type(definition.model) ~= "table" or type(definition.clipIds) ~= "table" then
+    return false
+  end
+  if #definition.clipIds == 0 or type(definition.trainer) ~= "table" or type(definition.trainer.frames) ~= "table" then
+    return false
+  end
+  if type(definition.trainerFrameDurations) ~= "table" or type(definition.flyer) ~= "table" then
+    return false
+  end
+  if #definition.trainer.frames == 0 or #definition.trainer.frames ~= #definition.trainerFrameDurations then
+    return false
+  end
+  local texturePath = "^assets/generated/field/effects/textures/([0-9a-f]+)%.png$"
+  local function validImage(image, duration)
+    return type(image) == "table"
+      and type(image.path) == "string"
+      and image.path:match(texturePath) ~= nil
+      and finiteNumber(image.width)
+      and image.width > 0
+      and finiteNumber(image.height)
+      and image.height > 0
+      and finiteNumber(image.offsetX)
+      and finiteNumber(image.offsetY)
+      and (duration == nil or (finiteNumber(duration) and duration >= 0 and duration % 1 == 0))
+  end
+  for index, frame in ipairs(definition.trainer.frames) do
+    if not validImage(frame, definition.trainerFrameDurations[index]) then
+      return false
+    end
+  end
+  for _, id in ipairs(definition.clipIds) do
+    if type(id) ~= "string" or id == "" then
+      return false
+    end
+  end
+  assert(kind ~= nil, "Lance departure validation names its kind")
+  return validImage(definition.flyer, nil)
 end
 
 -- The Arceus montage: the source's closed timeline, its own layers and one
@@ -931,6 +987,7 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "sinjoh_stage", entryKind = "scene", validator = validLegendSceneDefinition(3) },
   { key = "sinjoh_unown", entryKind = "scene", validator = validLegendSceneDefinition(3) },
   { key = "sinjoh_egg", entryKind = "scene", validator = validLegendSceneDefinition(3) },
+  { key = "lance_departure", entryKind = "lance_departure", validator = validLanceDepartureDefinition },
   { key = "arceus_cinematic", entryKind = "montage", validator = validArceusCinematicDefinition },
 }
 for selector = 1, 14 do
@@ -1201,6 +1258,16 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
         if not cacheFs:exists(path) then
           return false
         end
+      end
+    end
+    if kind == "lance_departure" then
+      for _, frame in ipairs(definition.trainer.frames) do
+        if not cacheFs:exists(frame.path) then
+          return false
+        end
+      end
+      if not cacheFs:exists(definition.flyer.path) then
+        return false
       end
     end
     if kind == "ho_oh_appearance" and definition.leaves ~= nil then

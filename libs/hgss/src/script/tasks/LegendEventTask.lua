@@ -64,10 +64,13 @@ local function startChild(state, ctx)
   local scene = requireScene(ctx)
   local scriptId = scene:childScriptId()
   if scriptId == nil then
-    -- A map without a resolved script bank cannot name the child; the scene
-    -- then finishes its own loop instead of blocking forever.
-    state.phase = "wait"
-    return { complete = false, state = state }
+    -- A missing bank identity is a mandatory story child the map must name;
+    -- failing loudly keeps the omission from silently skipping the script.
+    Errors.raise(
+      ScriptErrors.SCRIPT_CALL_TARGET_MISSING,
+      "the wing effect's map child has no source bank",
+      { scriptId = ctx.instance.scriptId }
+    )
   end
   local composed = ctx.scheduler:resolveComposition(scriptId)
   if composed == nil then

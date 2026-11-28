@@ -103,6 +103,16 @@ function AnimationPlayer:updateFixed()
   self.frameFx = frameFx
 end
 
+-- Stop an unbounded loop after its current iteration. The player keeps
+-- its present frame and completes at this channel's own next checked terminal.
+function AnimationPlayer:finishCurrentLoop()
+  if self.completed then
+    return
+  end
+  assert(self.loopMode == "loop", "only a looping player can finish its current loop")
+  self.loopCount = self.loopsDone + 1
+end
+
 function AnimationPlayer:isComplete()
   return self.completed
 end

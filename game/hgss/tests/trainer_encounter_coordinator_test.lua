@@ -455,6 +455,63 @@ function T.approach_walks_the_distance_minus_one_and_reports_its_source_progress
   Assert.equal(h.coordinator:stepApproach(0), 1, "a completed approach keeps answering the source true")
 end
 
+-- A five-tile approach walks four tiles with one 30-tick pre-approach wait,
+-- never a fresh wait after every tile. Independently derived from the source
+-- WAIT -> CHECK_DISTANCE loop: WAIT_STEP returns to CHECK_DISTANCE.
+function T.a_distant_approach_waits_once_before_walking()
+  local h = harness()
+  -- Actor at (11,19), player five tiles south at (11,24): distance 5, four steps.
+  h.actor.fieldX, h.actor.fieldZ = 11, 15
+  h.player.fieldX, h.player.fieldZ = 11, 20
+  h.player.facing = "south"
+  h.actor.sourceEvent.trainer.sightRange = 6
+  Assert.isTrue(h.coordinator:tryEngage())
+  h.coordinator:startApproach(0)
+  local stepTicks = {}
+  local lastZ = h.actor.fieldZ
+  local doneTick = nil
+  for tick = 1, 600 do
+    h.coordinator:updateFixed()
+    if h.actor.fieldZ ~= lastZ then
+      stepTicks[#stepTicks + 1] = tick
+      lastZ = h.actor.fieldZ
+    end
+    if h.coordinator:stepApproach(0) == 1 then
+      doneTick = tick
+      break
+    end
+  end
+  Assert.equal(#stepTicks, 4, "a distance-5 trainer walks four tiles")
+  Assert.notNil(doneTick, "the distant approach completes")
+  for index = 2, #stepTicks do
+    local gap = stepTicks[index] - stepTicks[index - 1]
+    Assert.isTrue(gap < 30, "steps never pause a fresh 30-tick wait (gap " .. gap .. ")")
+  end
+  Assert.equal(h.actor.fieldZ, 19, "the trainer stops one tile from the player")
+end
+
+-- The player turn holds its own yield boundary: facing updates on one tick
+-- and the approach resets on a later tick, matching the source WAIT_PLAYER_TURN.
+function T.the_player_turn_holds_its_completion_boundary()
+  local h = harness()
+  Assert.isTrue(h.coordinator:tryEngage())
+  h.coordinator:startApproach(0)
+  local turnedTick, doneTick = nil, nil
+  for tick = 1, 400 do
+    h.coordinator:updateFixed()
+    if h.player.turned ~= nil and turnedTick == nil then
+      turnedTick = tick
+    end
+    if h.coordinator:stepApproach(0) == 1 then
+      doneTick = tick
+      break
+    end
+  end
+  Assert.notNil(turnedTick, "the player turns toward the arrived trainer")
+  Assert.notNil(doneTick, "the approach completes")
+  Assert.isTrue(doneTick > turnedTick, "reset follows the turn on a later tick")
+end
+
 -- The whole engagement ends with its script environment; a cancelled scene
 -- clears both the slots and any motion they own.
 function T.engagement_clears_when_its_script_environment_ends()

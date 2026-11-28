@@ -31,6 +31,7 @@ local Matrix4 = require("libs.math.src.Matrix4")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local NitroModelFixture = require("tests.support.NitroModelFixture")
+local AnimationClip = require("libs.assets.src.model.AnimationClip")
 local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
 local MapPropsModule = require("libs.hgss.src.world.MapProps")
 
@@ -906,6 +907,46 @@ function T.update_fixed_only_advances_the_active_role_and_stops_at_completion()
   Assert.isFalse(door:isFinished(), "the close role has its own, longer generated duration")
   props:updateFixed()
   Assert.isTrue(door:isFinished(), "the close role finishes at its own generated duration")
+end
+
+-- SceneProp.playAll is the whole-record playback route: it must interpret
+-- one-shot policy exactly like ModelInstance:play, and stopAll must remove
+-- attachments even when source names are ambiguous.
+function T.play_all_uses_real_attachment_policy_and_stop_all_handles_ambiguous_names()
+  local function materialClip(id, kind)
+    return AnimationClip.new({
+      id = id,
+      name = "shared_record",
+      category = "material",
+      kind = kind,
+      frameCount = 3,
+      tracks = { { target = "wall" } },
+      compiled = {},
+    })
+  end
+  local instance = ModelInstance.new(NitroModelFixture.doorDefinition({
+    materialClip("record.srt", "texsrt"),
+    materialClip("record.color", "color"),
+  }))
+  local props = MapProps.new({
+    placements = { placement(0, "fixture:shared-record", 0, 0) },
+    instances = { [0] = instance },
+    doorTiles = {},
+  })
+  local prop = assert(props:prop(0))
+  local handles = prop:playAll("shared_record", { loopMode = "once" })
+  Assert.equal(#handles, 2, "the whole source record plays")
+  for _, handle in ipairs(handles) do
+    Assert.equal(handle.player.loopMode, "once", "playAll honors the real one-shot policy")
+  end
+  for _ = 1, 3 do
+    instance:updateFixed()
+  end
+  for _, handle in ipairs(handles) do
+    Assert.isTrue(handle.player:isComplete(), "each bounded channel reaches its own terminal")
+  end
+  Assert.equal(prop:stopAll(), 2, "stopAll removes both live attachments")
+  Assert.equal(#instance.animationState:attachments("material"), 0)
 end
 
 return { tests = T }

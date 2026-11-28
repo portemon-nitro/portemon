@@ -230,6 +230,68 @@ function T.gym_init_installs_the_kind_and_leaves_the_runtime_place_alone()
   Assert.isFalse(host.state:violetRaised(), "a fresh violet union starts on the lower floor")
 end
 
+-- Normal entry initializes the union only after the destination environment is
+-- bound. The gym override must install at that boundary, survive Continue, and
+-- never leak into the next map's own environment.
+function T.ecruteak_environment_installs_on_normal_init_and_restores_on_exit()
+  local EcruteakGym = require("libs.hgss.src.field.gymmick.EcruteakGym")
+  local host = newHost({ union = union("none", {}) })
+  local baseFog = { enabled = false, color = 7 }
+  local gymMap = {
+    mapId = 80,
+    renderEnvironment = {
+      baseFog = baseFog,
+      fog = baseFog,
+      actorFogEnabled = nil,
+      billboardDepthOffsetTiles = 0.5,
+    },
+  }
+  host.mechanism:bindMap(gymMap)
+  host.mechanism:initialize("ecruteak")
+  Assert.equal(gymMap.renderEnvironment.fog, EcruteakGym.FOG, "normal init installs the gym fog")
+  Assert.isFalse(gymMap.renderEnvironment.actorFogEnabled, "active gym actors bypass fog at draw time")
+  Assert.near(gymMap.renderEnvironment.billboardDepthOffsetTiles, 0.0625, 1e-9, "the source projection offset is one model unit")
+
+  host.mechanism:bindMap(gymMap)
+  Assert.equal(gymMap.renderEnvironment.fog, EcruteakGym.FOG, "Continue restores the same gym environment")
+
+  local destinationFog = { enabled = true, color = 3 }
+  local destination = {
+    mapId = 136,
+    renderEnvironment = {
+      baseFog = destinationFog,
+      fog = destinationFog,
+      actorFogEnabled = nil,
+      billboardDepthOffsetTiles = 0.5,
+    },
+  }
+  host.mechanism:enterMap(destination)
+  Assert.equal(destination.renderEnvironment.fog, destinationFog, "the destination keeps its own fog")
+  Assert.isNil(destination.renderEnvironment.actorFogEnabled, "no gym override leaks a fog exemption")
+  Assert.near(destination.renderEnvironment.billboardDepthOffsetTiles, 0.5, 1e-9, "the destination keeps its own projection offset")
+end
+
+-- Ordinary weather keeps its own effective preset: the gym seam never
+-- rewrites live fog or invents a per-actor exemption outside Ecruteak.
+function T.non_gym_maps_keep_effective_fog_and_source_actor_flags()
+  local host = newHost({ union = union("none", {}) })
+  local baseFog = { enabled = false, color = 7 }
+  local effectiveFog = { enabled = true, color = 3 }
+  local ordinary = {
+    mapId = 136,
+    renderEnvironment = {
+      baseFog = baseFog,
+      fog = effectiveFog,
+      actorFogEnabled = nil,
+      billboardDepthOffsetTiles = 0.5,
+    },
+  }
+  host.mechanism:bindMap(ordinary)
+  Assert.equal(ordinary.renderEnvironment.fog, effectiveFog, "ordinary maps preserve effective weather fog")
+  Assert.isNil(ordinary.renderEnvironment.actorFogEnabled, "ordinary maps keep the source polygon flag")
+  Assert.near(ordinary.renderEnvironment.billboardDepthOffsetTiles, 0.5, 1e-9, "ordinary maps keep their own projection offset")
+end
+
 -- A non-connection entry clears the union and rebinds the destination map; a
 -- connection (a rebind with no entry) keeps it, which is the whole difference
 -- between the two source paths.
@@ -412,7 +474,7 @@ function T.the_blackthorn_union_presents_its_three_platforms()
   Assert.equal(#placements, 3, "the union presents all three platforms")
   Assert.deepEqual({ placements[1].slot, placements[2].slot, placements[3].slot }, { 1, 2, 3 })
   Assert.equal(placements[1].rotationDegrees, 0, "the first platform stands unrotated")
-  Assert.equal(placements[2].rotationDegrees, -4, "the second platform stands one source quarter turned")
+  Assert.equal(placements[2].rotationDegrees, -90, "the second platform stands one source quarter turned")
   Assert.equal(placements[1].y, 0, "a platform stands on the settled gym floor")
   Assert.notNil(host.geometry._blackthorn, "the union projects its floors onto the map")
 
@@ -706,8 +768,8 @@ function T.the_winch_command_answers_the_source_boolean()
     assert(ticks < 500, "the cutscene never released the field")
   end
   Assert.equal(#camera.translations, 2, "the accepted turn pans out and back")
-  Assert.deepEqual(camera.translations[1], { x = 50, z = 58, ticks = 24 })
-  Assert.deepEqual(camera.translations[2], { x = -50, z = -58, ticks = 24 })
+  Assert.deepEqual(camera.translations[1], { x = 50 / 16, z = 58 / 16, ticks = 24 })
+  Assert.deepEqual(camera.translations[2], { x = -50 / 16, z = -58 / 16, ticks = 24 })
 
   host.mechanism:begin("winch")
   Assert.equal(host.mechanism:takeResult(), 0, "an already raised winch answers the source false")
@@ -720,34 +782,68 @@ end
 function T.a_loaded_union_restores_the_gyms_own_map_state()
   local fog = { enabled = true }
   local ecruteak = newHost({ union = union("ecruteak", { candles = { true, false, false, false } }) })
-  ecruteak.player.currentMap.renderEnvironment = { fog = fog }
+  ecruteak.player.currentMap.renderEnvironment = { baseFog = fog, fog = fog }
   ecruteak.mechanism:bindMap(ecruteak.player.currentMap)
   Assert.equal(ecruteak.player.currentMap.renderEnvironment.fog, require("libs.hgss.src.field.gymmick.EcruteakGym").FOG)
 
   local cianwood = newHost({ union = union("cianwood", { winchRaised = true }) })
-  local rested = {}
+  local played = {}
+  local function winchProp(animations)
+    return {
+      instance = { definition = { animations = animations } },
+      stopAll = function()
+        return 1
+      end,
+      play = function(_, name, opts)
+        played[#played + 1] = name
+        local AnimationPlayer = require("libs.hgss.src.presentation.AnimationPlayer")
+        local clip = nil
+        for _, candidate in ipairs(animations) do
+          if candidate.id == name or candidate.name == name then
+            clip = candidate
+            break
+          end
+        end
+        assert(clip, "the settled prop owns the requested clip")
+        local player = opts and opts.player or AnimationPlayer.new(clip)
+        return { { clip = clip, player = player } }
+      end,
+    }
+  end
+  local waterAnims = {
+    { id = "water_own", name = "water_own", frameCount = 9, category = "material", kind = "texsrt" },
+    { id = "cianwood.water.1.fall_a", name = "fall_a", frameCount = 7, category = "material", kind = "texsrt" },
+    { id = "cianwood.water.2.fall_b", name = "fall_b", frameCount = 5, category = "material", kind = "pattern" },
+  }
+  local winchAnims = {
+    { id = "cianwood.winch.0.winch0", name = "winch0", frameCount = 4, category = "material", kind = "texsrt" },
+  }
+  local propsByIndex = {
+    [1] = winchProp(winchAnims),
+    [2] = winchProp(waterAnims),
+  }
   cianwood.player.currentMap.mapProps = {
     placements = {
       { placementIndex = 1, modelKey = "indoor:175:abfb66ef8784" },
       { placementIndex = 2, modelKey = "indoor:173:3e8deabe626a" },
     },
     prop = function(_, placementIndex)
-      return {
-        instance = {},
-        restAtEnd = function()
-          rested[#rested + 1] = placementIndex
-        end,
-      }
+      return propsByIndex[placementIndex]
     end,
   }
   cianwood.mechanism:bindMap(cianwood.player.currentMap)
-  table.sort(rested)
-  Assert.deepEqual(rested, { 1, 2 }, "a raised winch restores both settled records")
+  table.sort(played)
+  Assert.deepEqual(played, {
+    "cianwood.water.1.fall_a",
+    "cianwood.water.2.fall_b",
+    "cianwood.winch.0.winch0",
+  }, "a raised winch restores the bound waterfall records and winch record 0")
 
   local lowered = newHost({ union = union("cianwood", { winchRaised = false }) })
   lowered.player.currentMap.mapProps = cianwood.player.currentMap.mapProps
+  local playedBefore = #played
   lowered.mechanism:bindMap(lowered.player.currentMap)
-  Assert.deepEqual(rested, { 1, 2 }, "a lowered winch restores nothing")
+  Assert.equal(#played, playedBefore, "a lowered winch restores nothing")
 end
 
 -- The running winch resolves the live camera per activation: a world swap

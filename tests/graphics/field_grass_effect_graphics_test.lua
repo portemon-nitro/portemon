@@ -46,7 +46,7 @@ local function runVersion(scope, versionId)
     assets.effects[kind] = assert(cache:loadLua(index.effects[kind].path))
   end
 
-  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v17")
+  Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v18")
   -- The session image owner borrows the selected CPU pair: one worker and one
   -- decoded budget for the test lifetime, released after the pool.
   local imagePoolRuntime = SelectedAssetRuntimeFixture.new(cache, scope)

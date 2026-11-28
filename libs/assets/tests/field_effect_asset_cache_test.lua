@@ -7,8 +7,7 @@ local HoOhCinematicParts = require("libs.assets.src.field.HoOhCinematicParts")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
-local EXPECTED_MARKER = "field-effect-cache-v17:rom:dep"
-local EXPECTED_MARKER = "field-effect-cache-v17:rom:dep"
+local EXPECTED_MARKER = "field-effect-cache-v18:rom:dep"
 
 local function validModel()
   return {
@@ -366,7 +365,7 @@ local function validLegendSceneDefinition(partCount)
     model.key = "field-effect:legend-part-" .. index
     parts[index] = {
       model = model,
-      clips = { joint = { ids = { "joint.trs" }, frames = 3 } },
+      clips = { joint = { ids = { "joint.trs" }, frames = 3, frameCounts = { ["joint.trs"] = 3 } } },
     }
   end
   return { parts = parts }
@@ -422,10 +421,25 @@ local function hallOfFameDefinition()
   }
 end
 
+local function lanceDepartureDefinition()
+  local model = validDynamicModel()
+  model.key = "field-effect:lance-departure"
+  model.animations[1].id = "lance.departure.joint"
+  model.animations[1].name = "lance.departure.joint"
+  local frame = { path = MONTAGE_TEXTURE, width = 64, height = 64, offsetX = -32, offsetY = -64, duration = 1 }
+  return {
+    model = model,
+    clipIds = { "lance.departure.joint" },
+    trainer = { frames = { frame } },
+    trainerFrameDurations = { 1 },
+    flyer = { path = MONTAGE_TEXTURE, width = 64, height = 64, offsetX = -32, offsetY = -32 },
+  }
+end
+
 local function cache(model, present, marker, omitLifecycle, omitPlacement, extra)
   extra = extra or {}
   local index = {
-    schema = extra.indexSchema or "g4-field-effect-index-v4",
+    schema = extra.indexSchema or "g4-field-effect-index-v5",
     effects = {},
   }
   for _, kind in ipairs({
@@ -437,6 +451,7 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "follower_transition",
     "pokemon_center_heal",
     "hall_of_fame_machine",
+    "lance_departure",
     "violet_gym_car",
     "azalea_gym_spinarak",
     "blackthorn_gym_platform_wide",
@@ -460,6 +475,7 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
         or kind == "follower_transition" and "transition"
         or kind == "pokemon_center_heal" and "healing"
         or kind == "hall_of_fame_machine" and "hall_of_fame"
+        or kind == "lance_departure" and "lance_departure"
         or kind == "rocket_alarm_overlay" and "overlay"
         or (kind == "celebi_time_travel" or kind == "ho_oh_appearance" or kind == "lugia_appearance") and "cinematic"
         or kind == "arceus_cinematic" and "montage"
@@ -600,7 +616,13 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
         return extra.lugiaDefinition or validLugiaDefinition()
       end
       if kind == "legend_wing" or kind == "sinjoh_stage" or kind == "sinjoh_unown" or kind == "sinjoh_egg" then
+        if kind == "legend_wing" and extra.legendDefinition ~= nil then
+          return extra.legendDefinition
+        end
         return legendSceneDefinition(kind)
+      end
+      if kind == "lance_departure" then
+        return extra.lanceDefinition or lanceDepartureDefinition()
       end
       if kind == "arceus_cinematic" then
         return validArceusDefinition()
@@ -794,6 +816,26 @@ T.tests["rejects a missing referenced asset"] = function()
   Assert.isFalse(ready)
 end
 
+T.tests["requires each legendary channel's own duration"] = function()
+  local definition = legendSceneDefinition("legend_wing")
+  definition.parts[1].clips.joint.frameCounts = nil
+  local present = { ["mesh-a"] = true, ["texture-a"] = true, ["texture-variant"] = true, ["grass.mesh"] = true }
+  Assert.isTrue(
+    FieldEffectAssetCache.isReady(
+      cache(validModel(), present, EXPECTED_MARKER, nil, nil, { legendDefinition = legendSceneDefinition("legend_wing") }),
+      EXPECTED_MARKER
+    ),
+    "the complete fixture is ready before the channel duration is removed"
+  )
+  Assert.isFalse(
+    FieldEffectAssetCache.isReady(
+      cache(validModel(), present, EXPECTED_MARKER, nil, nil, { legendDefinition = definition }),
+      EXPECTED_MARKER
+    ),
+    "a scene without per-channel durations cannot drive independent loop completion"
+  )
+end
+
 T.tests["requires static mechanism props without a source clip"] = function()
   local present = {
     ["mesh-a"] = true,
@@ -961,9 +1003,8 @@ T.tests["rejects trainer reveal with missing or malformed placement"] = function
   Assert.isFalse(malformed, "trainer reveal with non-finite placement must not be ready")
 end
 
-local SURF_MARKER = "field-effect-cache-v17:rom:dep"
-local SURF_MARKER = "field-effect-cache-v17:rom:dep"
-local SURF_INDEX_SCHEMA = "g4-field-effect-index-v4"
+local SURF_MARKER = "field-effect-cache-v18:rom:dep"
+local SURF_INDEX_SCHEMA = "g4-field-effect-index-v5"
 T.tests["requires the complete generated Pokémon Center healing definition"] = function()
   local present = {
     ["mesh-a"] = true,
@@ -1147,6 +1188,11 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "sinjoh_egg",
         path = FieldEffectAssetCache.definitionPath("sinjoh_egg"),
       },
+      lance_departure = {
+        kind = "lance_departure",
+        definition = "lance_departure",
+        path = FieldEffectAssetCache.definitionPath("lance_departure"),
+      },
       arceus_cinematic = {
         kind = "montage",
         definition = "arceus_cinematic",
@@ -1194,6 +1240,9 @@ local function surfCache(surfDefinition, mutateIndex)
       end
       if kind == "legend_wing" or kind == "sinjoh_stage" or kind == "sinjoh_unown" or kind == "sinjoh_egg" then
         return legendSceneDefinition(kind)
+      end
+      if kind == "lance_departure" then
+        return lanceDepartureDefinition()
       end
       if kind == "arceus_cinematic" then
         return validArceusDefinition()

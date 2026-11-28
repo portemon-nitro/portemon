@@ -149,6 +149,28 @@ function T.projection_caches_refresh_in_place_after_aspect_and_zoom_invalidation
   )
 end
 
+-- Ecruteak's source projZOffset is one model unit (0.0625 tiles), versus
+-- the ordinary field billboard pull of eight (0.5 tiles). Only the Z-row
+-- translation changes; screen position and scale remain the world projection's.
+function T.map_projection_offset_changes_only_the_billboard_depth_translation()
+  local p = profile()
+  local camera = FieldCamera.new(p, { initialTarget = { x = 0, y = 0, z = 0 } })
+  local world = camera:projection()
+  local ordinary = camera:billboardProjection()
+  local gym = camera:billboardProjection(0.0625)
+  local cosine = math.cos(angleIndexToRadians(p.angleXRaw))
+  Assert.near(ordinary[15], world[15] + world[11] * 0.5 * cosine, 1e-9)
+  Assert.near(gym[15], world[15] + world[11] * 0.0625 * cosine, 1e-9, "the gym uses one model unit")
+  for index = 1, 14 do
+    Assert.equal(gym[index], world[index], "only the projection Z translation changes")
+  end
+  Assert.equal(gym[16], world[16], "the projection W row is unchanged")
+  Assert.isFalse(gym == ordinary, "the map-specific projection has its own camera-owned array")
+  camera:setZoom(0.75)
+  local zoomed = camera:billboardProjection(0.0625)
+  Assert.near(zoomed[15], world[15] + world[11] * 0.0625 * cosine, 1e-9, "custom offsets still follow zoom invalidation")
+end
+
 -- Repeated warmed `view` calls must reuse one live array: the identity never
 -- changes, only its 16 contents, and the contents match an independently
 -- interpolated look-at at each sampled alpha.

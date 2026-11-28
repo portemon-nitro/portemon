@@ -73,7 +73,6 @@ local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local AnimationClip = require("libs.assets.src.model.AnimationClip")
-local AnimationPlayer = require("libs.hgss.src.presentation.AnimationPlayer")
 local DoorSound = require("libs.hgss.src.transition.DoorSound")
 
 local ANIMATION_CATEGORIES = { AnimationClip.CATEGORIES.joint, AnimationClip.CATEGORIES.material }
@@ -561,8 +560,10 @@ function SceneProp:stopAll()
     return 0
   end
   local removed = 0
-  for _, clip in ipairs(self.instance.definition.animations or {}) do
-    removed = removed + self.instance:stop(clip.name)
+  for _, category in ipairs(ANIMATION_CATEGORIES) do
+    for _, attachment in ipairs(self.instance.animationState:attachments(category)) do
+      removed = removed + self.instance:stop(attachment)
+    end
   end
   return removed
 end
@@ -583,7 +584,7 @@ function SceneProp:playAll(name, opts)
   local handles = {}
   for _, clip in ipairs(definition.animations or {}) do
     if clip.name == name then
-      handles[#handles + 1] = self.instance.animationState:attach(clip, opts)
+      handles[#handles + 1] = self.instance:play(clip.id, opts)
     end
   end
   if #handles == 0 then
@@ -604,22 +605,6 @@ function SceneProp:arePlaysFinished(handles)
     end
   end
   return true
-end
-
--- Put the prop's whole animation record on its last frame, paused there: the
--- source's MapPropAnimationData_GoToLastAnimationFrame applied to a settled map
--- prop. The live instances' own poses stay where that frame leaves them.
----@return table<string, unknown>[] handles
-function SceneProp:restAtEnd()
-  self:stopAll()
-  if not self.instance then
-    return {}
-  end
-  local handles = {}
-  for _, clip in ipairs(self.instance.definition.animations or {}) do
-    handles[#handles + 1] = self.instance.animationState:attach(clip, { player = AnimationPlayer.atEnd(clip) })
-  end
-  return handles
 end
 
 -- The player's single checked-advance completion for the prop's play of

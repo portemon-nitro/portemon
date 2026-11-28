@@ -56,6 +56,8 @@ local FIELD_BILLBOARD_DEPTH_OFFSET_TILES = 0.5
 ---@field _viewBuffer Matrix4.Buffer
 ---@field _projectionBuffer Matrix4.Buffer
 ---@field _billboardProjectionBuffer Matrix4.Buffer
+---@field _offsetBillboardProjectionBuffer Matrix4.Buffer
+---@field _offsetBillboardProjectionArray number[]
 ---@field _viewArray number[]
 ---@field _projectionArray number[]
 ---@field _billboardProjectionArray number[]
@@ -166,9 +168,11 @@ function FieldCamera.new(profile, options)
   local viewBuffer = Matrix4.newBuffer()
   local projectionBuffer = Matrix4.newBuffer()
   local billboardProjectionBuffer = Matrix4.newBuffer()
+  local offsetBillboardProjectionBuffer = Matrix4.newBuffer()
   local viewArray = freshUploadArray()
   local projectionArray = freshUploadArray()
   local billboardProjectionArray = freshUploadArray()
+  local offsetBillboardProjectionArray = freshUploadArray()
   return setmetatable({
     profile = profile,
     projectionType = profile.projectionType,
@@ -201,6 +205,8 @@ function FieldCamera.new(profile, options)
     _viewBuffer = viewBuffer,
     _projectionBuffer = projectionBuffer,
     _billboardProjectionBuffer = billboardProjectionBuffer,
+    _offsetBillboardProjectionBuffer = offsetBillboardProjectionBuffer,
+    _offsetBillboardProjectionArray = offsetBillboardProjectionArray,
     _viewArray = viewArray,
     _projectionArray = projectionArray,
     _billboardProjectionArray = billboardProjectionArray,
@@ -622,12 +628,24 @@ end
 -- The projection field billboards draw through: the normal projection with the
 -- DS's fixed depth pull added to the Z-row translation. Cos is even, so
 -- cos(-angleX) and cos(angleX) agree and the profile's raw pitch is enough.
+-- A map mechanism may supply the source's different projZOffset (Ecruteak uses
+-- one model unit instead of the field default eight).
 -- The returned matrix is persistent camera-owned state. Callers must treat it
--- as immutable and read-only until the next projection invalidation.
+-- as immutable and read-only until the next projection call.
+---@param offsetTiles number? source projZOffset in tiles; nil uses the field default
 ---@return number[] billboard projection matrix
-function FieldCamera:billboardProjection()
+function FieldCamera:billboardProjection(offsetTiles)
   self:_refreshProjectionCache()
-  return self._billboardProjectionCache
+  if offsetTiles == nil or offsetTiles == FIELD_BILLBOARD_DEPTH_OFFSET_TILES then
+    return self._billboardProjectionCache
+  end
+  assert(type(offsetTiles) == "number" and offsetTiles >= 0, "billboard projection offset must be non-negative")
+  Matrix4.copyInto(self._offsetBillboardProjectionBuffer, self._projectionBuffer)
+  local projection = self._offsetBillboardProjectionBuffer.m
+  local depthOffset = self._billboardDepthOffset * (offsetTiles / FIELD_BILLBOARD_DEPTH_OFFSET_TILES)
+  projection[14] = projection[14] + projection[10] * depthOffset
+  Matrix4.toArrayBufferInto(self._offsetBillboardProjectionArray, self._offsetBillboardProjectionBuffer)
+  return self._offsetBillboardProjectionArray
 end
 
 function FieldCamera:canonicalProjection()

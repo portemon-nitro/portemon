@@ -302,9 +302,14 @@ function FieldActorPresentation:drawItems(alpha)
       end
     end
   end
+  local environment = self.runtime.runtimeMap.renderEnvironment
+  local options
+  if environment ~= nil and environment.actorFogEnabled ~= nil then
+    options = { fogEnabled = environment.actorFogEnabled }
+  end
   return FieldActorDraw.itemsInto(records, function(spriteId)
     return self:_assetLookup(spriteId)
-  end, storage)
+  end, storage, options)
 end
 
 ---@return table[]

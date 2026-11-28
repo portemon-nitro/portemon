@@ -1265,7 +1265,7 @@ local function publishEffectFamily(cache)
     for index = 1, scene.parts do
       parts[index] = {
         model = dynamicModel("field-effect:" .. scene.kind .. ":part-" .. index),
-        clips = { joint = { ids = { "joint.trs" }, frames = 4 } },
+        clips = { joint = { ids = { "joint.trs" }, frames = 4, frameCounts = { ["joint.trs"] = 4 } } },
       }
     end
     bundle.effects[scene.kind] = { parts = parts }
@@ -1280,6 +1280,22 @@ local function publishEffectFamily(cache)
     timeline = { { 12 }, { 6, 0, 58 }, { 0, 2 }, { 19 } },
     layers = { [58] = { path = EffectCache.imagePath("a1a1a1"), width = 256, height = 256 } },
     sprite = { path = EffectCache.imagePath("a1a1a1"), width = 64, height = 64 },
+  }
+  bundle.index.effects.lance_departure = {
+    path = EffectCache.definitionPath("lance_departure"),
+    definition = "lance_departure",
+    kind = "lance_departure",
+  }
+  bundle.effects.lance_departure = {
+    model = dynamicModel("field-effect:lance-departure"),
+    clipIds = { "lance.departure.joint" },
+    trainer = {
+      frames = {
+        { path = EffectCache.imagePath("a1a1a1"), width = 64, height = 64, offsetX = -32, offsetY = -64, duration = 1 },
+      },
+    },
+    trainerFrameDurations = { 1 },
+    flyer = { path = EffectCache.imagePath("a1a1a1"), width = 64, height = 64, offsetX = -32, offsetY = -32 },
   }
   bundle.textures["a1a1a1"] = { data = PngEncoder.encode(8, 8, string.rep("\0", 8 * 8 * 4)) }
   local ok, err = pcall(ResidentArtifactFixture.publish, cache, "field-effects", "global", function(artifact)
