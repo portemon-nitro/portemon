@@ -3553,11 +3553,11 @@ function T.page_turn_animates_before_committing_the_destination()
   local turning = controller:view()
   Assert.equal(turning.visual.transition.phase, "turn", "the page key starts a turn")
   Assert.equal(turning.grid.page, 0, "the old page stays committed during the turn")
-  Assert.equal(turning.grid.turn.offset, 8, "the first turn update scrolls eight pixels")
+  Assert.equal(turning.grid.turn.offset, 0, "the turn starts undisplaced on its first frame")
   Assert.equal(#turning.grid.buffers, 2, "the turn publishes both incoming and outgoing buffers")
   idle(controller, 14)
   Assert.equal(controller:view().grid.page, 0, "the destination page waits for the full turn")
-  Assert.equal(controller:view().grid.turn.offset, 120, "the icons reach their final scroll offset")
+  Assert.equal(controller:view().grid.turn.offset, 112, "the icons approach their final scroll offset")
   idle(controller, 1)
   local settled = controller:view()
   Assert.equal(settled.grid.page, 1, "the turn commits its destination page")
@@ -3642,6 +3642,247 @@ function T.successful_search_move_projects_the_information_clip()
   Assert.isTrue(
     landed.visual == nil or landed.visual.informationClip ~= true,
     "the settled result grid clears the clip"
+  )
+  controller:dispose()
+end
+
+-- The native grid turn moves every visible row vertically with wrapped
+-- rows and canonical first-seen icon keys: thirty source slots ride the
+-- native 48+40col/24+40row lattice, each accepted step shifts every slot
+-- exactly 8 pixels along Y while X never moves, rows leaving the pane
+-- wrap at -16/224 and rebind, and every seen entry carries the icon
+-- identity resolved from its first observed physical form (including the
+-- spiky-eared Pichu and alternate Wormadam mappings). The scrollbar
+-- travels with the accepted steps instead of jumping at commit.
+function T.grid_page_turn_steps_vertically_with_wrapped_rows_and_first_seen_icon_keys()
+  local PokedexController = requirePresent("vertical page turn with wrapped rows and canonical icon keys")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  -- First-seen alternates land before the bulk observations so the turn
+  -- must carry their canonical icon identities, never base art.
+  observe(owner, monCatalog, { species = "PICHU", personality = 0, form = 1 }, "caught")
+  observe(owner, monCatalog, { species = "WORMADAM", personality = 0, form = 2 }, "seen")
+  for _, key in ipairs(PokedexDexFixture.DISPLAY_ORDER) do
+    observe(owner, monCatalog, { species = key, personality = 0 })
+  end
+  -- The expected canonical key per species comes from the knowledge
+  -- owner and the catalog form policy, never from the browser itself.
+  local expectedKeys = {}
+  for _, key in ipairs(PokedexDexFixture.DISPLAY_ORDER) do
+    local policy = assert(catalog.species[key], "the catalog carries " .. key).formPolicy
+    local observed = owner:observedVariants(key)
+    local id = policy.defaultVariant
+    if type(observed) == "table" and type(observed[1]) == "number" then
+      id = observed[1]
+    end
+    local form = 0
+    for _, variant in ipairs(assert(policy.variants, "the policy carries variants for " .. key)) do
+      if variant.id == id and type(variant.form) == "number" then
+        form = variant.form
+      end
+    end
+    expectedKeys[key] = key .. "/f" .. form
+  end
+  Assert.equal(expectedKeys.PICHU, "PICHU/f1", "the spiky-eared first sighting resolves to icon one")
+  Assert.equal(expectedKeys.WORMADAM, "WORMADAM/f2", "the first-seen alternate wormadam resolves to icon two")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  Assert.equal(controller:view().page, "grid", "the turn starts settled on the grid")
+  Assert.equal(controller:view().grid.lastPage, 1, "the observed history spans two pages")
+  press(controller, { { type = "r" } })
+  local frames = {}
+  for _ = 1, 20 do
+    frames[#frames + 1] = controller:view()
+    if controller:view().page ~= "grid" then
+      break
+    end
+    tick(controller, {})
+  end
+  local settled = controller:view()
+  Assert.equal(settled.page, "grid", "the turn stays on the grid family")
+  Assert.equal(settled.grid.page, 1, "the turn commits the next page")
+  local steps = {}
+  for _, frame in ipairs(frames) do
+    if frame.grid.page == 0 and frame.grid.turn ~= nil then
+      steps[#steps + 1] = frame
+    end
+  end
+  Assert.isTrue(#steps >= 2, "the turn exposes consecutive mid-turn projections")
+  local function sortedValues(records, field)
+    local values = {}
+    for _, record in ipairs(records) do
+      values[#values + 1] = assert(record[field], "native slots carry " .. field)
+    end
+    table.sort(values)
+    return values
+  end
+  local function sameMultiset(left, right)
+    if #left ~= #right then
+      return false
+    end
+    for index, value in ipairs(left) do
+      if right[index] ~= value then
+        return false
+      end
+    end
+    return true
+  end
+  -- Forward travel wraps leaving rows from -16 back to 224 before the
+  -- step displacement applies, matching the retail sprite wrap.
+  local function shiftForward(y)
+    return ((y - 8 + 16) % 240) - 16
+  end
+  local previousSlots = nil
+  local seenKeys = {}
+  for _, frame in ipairs(steps) do
+    local slots = assert(frame.grid.nativeSlots, "the turn projects its thirty native slots")
+    Assert.equal(#slots, 30, "every turn step projects all thirty source slots")
+    local xs = sortedValues(slots, "x")
+    local expectedXs = {}
+    for _ = 1, 6 do
+      for column = 0, 4 do
+        expectedXs[#expectedXs + 1] = 48 + 40 * column
+      end
+    end
+    table.sort(expectedXs)
+    Assert.isTrue(sameMultiset(xs, expectedXs), "turn steps never drift along X")
+    if previousSlots ~= nil then
+      local before = sortedValues(previousSlots, "y")
+      local after = sortedValues(slots, "y")
+      local expected = {}
+      for _, y in ipairs(before) do
+        expected[#expected + 1] = shiftForward(y)
+      end
+      table.sort(expected)
+      Assert.isTrue(
+        sameMultiset(after, expected),
+        "consecutive turn steps shift every row exactly 8 pixels up with source wrap"
+      )
+    end
+    previousSlots = slots
+    for _, slot in ipairs(slots) do
+      local entry = assert(slot.entry, "native slots carry their semantic entry")
+      if entry.seen == true then
+        Assert.notNil(entry.iconKey, "seen turn entries carry their canonical icon key")
+        seenKeys[entry.iconKey] = entry.species
+      end
+    end
+  end
+  for species, key in pairs(expectedKeys) do
+    Assert.equal(seenKeys[key], species, "the turn carries the first-seen icon key for " .. species)
+  end
+  controller:dispose()
+end
+
+-- The browser names the detail variant behind every list selection and
+-- hides protected art off the native entry: foreign-language selections
+-- resolve the foreign background without the native-only type, footprint
+-- and caught-mark art, while the native selection keeps them. The search
+-- return slot resolves the summary variant with its own layer order.
+function T.browser_publishes_entry_detail_variant_and_hides_protected_art_off_native()
+  local PokedexController = requirePresent("entry detail variant with native-only protected art")
+  local monCatalog, catalog = catalogs()
+  local owner =
+    ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true, enabledInternational = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31, language = "french" }, "caught")
+  observe(owner, monCatalog, { species = "EEVEE", personality = 32, language = "german" }, "caught")
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  local function findObject(objects, subject)
+    for _, intent in ipairs(objects or {}) do
+      if intent.subject == subject then
+        return intent
+      end
+    end
+    return nil
+  end
+  for _ = 1, 40 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  press(controller, { { type = "select" } })
+  Assert.equal(controller:view().selection.language, "french", "select cycles to the acquired foreign language")
+  local foreign = controller:view()
+  Assert.equal(foreign.selection.detailVariant, "foreign", "the foreign selection names its detail variant")
+  Assert.isNil(findObject(foreign.objects, "type-1"), "foreign entries hide their first type icon")
+  Assert.isNil(findObject(foreign.objects, "footprint"), "foreign entries hide their footprint")
+  Assert.isNil(findObject(foreign.objects, "caught-mark"), "foreign entries hide their caught mark")
+  press(controller, { { type = "select" } })
+  press(controller, { { type = "select" } })
+  local native = controller:view()
+  Assert.equal(native.selection.language, "english", "the cycle returns to the native language")
+  Assert.equal(native.selection.detailVariant, "native", "the native selection names its detail variant")
+  Assert.notNil(findObject(native.objects, "type-1"), "native entries keep their first type icon")
+  Assert.notNil(findObject(native.objects, "footprint"), "native entries keep their footprint")
+  controller:dispose()
+end
+
+-- Pressed feedback drives source background cells with palette-flash
+-- state: the successful search retracts its summary cells one tile row
+-- per source update while the temporary information clip stays active,
+-- then settles the cells and clears the clip at commit. Flashes hold
+-- their pressed target for four ticks before restoring.
+function T.pressed_feedback_publishes_source_cell_motion_and_palette_flash_state()
+  local PokedexController = requirePresent("source cell motion with palette flash state")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  for _, key in ipairs(PokedexDexFixture.DISPLAY_ORDER) do
+    observe(owner, monCatalog, { species = key, personality = 0 })
+    if key == "ROTOM" then
+      break
+    end
+  end
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "activate", action = "search-run" } })
+  local flash = controller:view().visual.flash
+  Assert.isTrue(flash.active, "the pressed search control raises its flash")
+  Assert.equal(flash.target, "search-run", "the flash names its pressed control")
+  idle(controller, 4)
+  Assert.isFalse(controller:view().visual.flash.active, "the palette flash restores after its four source ticks")
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "start" } })
+  local cells = {}
+  local clipped = 0
+  local total = 0
+  for _ = 1, 400 do
+    tick(controller, {})
+    local view = controller:view()
+    if view.page == "results" then
+      break
+    end
+    if view.page == "search" and view.search ~= nil and view.search.feedback ~= nil then
+      if view.search.feedback.phase == "move" then
+        total = total + 1
+        local bgCells = assert(view.visual.bgCells, "the summary move projects its source cells")
+        cells[#cells + 1] = bgCells
+        if view.visual.informationClip == true then
+          clipped = clipped + 1
+        end
+      end
+    end
+  end
+  Assert.equal(total, 24, "the successful summary retracts for exactly twenty-four source steps")
+  Assert.equal(clipped, 24, "the temporary clip covers the whole retract interval")
+  Assert.isTrue(#cells > 1, "the retract exposes consecutive cell projections")
+  local moved = false
+  for index = 2, #cells do
+    for id, cell in pairs(cells[index]) do
+      local before = cells[index - 1][id]
+      if before ~= nil and (cell.x ~= before.x or cell.y ~= before.y) then
+        moved = true
+      end
+    end
+  end
+  Assert.isTrue(moved, "summary cells travel one tile row per source update")
+  local landed = controller:view()
+  Assert.equal(landed.page, "results", "the retract commits the result grid")
+  Assert.isTrue(
+    landed.visual == nil or landed.visual.informationClip ~= true,
+    "committing the summary clears the temporary clip"
   )
   controller:dispose()
 end

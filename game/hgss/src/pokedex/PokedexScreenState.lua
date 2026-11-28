@@ -97,41 +97,55 @@ local function pageRoleFor(view)
   return "grid"
 end
 
+-- Collects the finite icon closure from the entries themselves: every
+-- distinct canonical key across the current and entering buffers plus
+-- the selected fallback rides one generation with no silent cap, so the
+-- first visible movement already owns the art it is about to show.
 ---@param view table<string, unknown> detached browser projection
----@return table<string, unknown> immutable semantic demand for the lease
-local function buildDemand(view)
-  local grid = view.grid
+---@return string[] distinct canonical icon keys behind the finite closure
+---@return table<string, boolean> already staged icon keys behind the closure
+local function closureIconKeys(view)
   local iconKeys, seenIcons = {}, {}
+  local function want(key)
+    if type(key) == "string" and key ~= "" and not seenIcons[key] then
+      seenIcons[key] = true
+      iconKeys[#iconKeys + 1] = key
+    end
+  end
+  local grid = view.grid
   if type(grid) == "table" and type(grid.buffers) == "table" then
     for _, buffer in ipairs(grid.buffers) do
       if type(buffer) == "table" and type(buffer.entries) == "table" then
         for _, entry in ipairs(buffer.entries) do
-          if type(entry) == "table" and entry.seen == true and type(entry.species) == "string" then
-            local key = entry.species .. "/f0"
-            if not seenIcons[key] and #iconKeys < 30 then
-              seenIcons[key] = true
-              iconKeys[#iconKeys + 1] = key
+          if type(entry) == "table" and entry.seen == true then
+            if type(entry.iconKey) == "string" then
+              want(entry.iconKey)
+            elseif type(entry.species) == "string" then
+              want(entry.species .. "/f0")
             end
           end
         end
-      end
-      if #iconKeys >= 30 then
-        break
       end
     end
   end
   -- The compact portrait falls back to the selected species icon when the
   -- bundle carries no entry picture, so the selection icon stays wanted
   -- even when the selection stages off the visible buffer or the page
-  -- stages no grid at all.
+  -- stages no grid at all. The first-seen form rides the canonical key.
   if type(view.selection) == "table" and type(view.selection.species) == "string" then
-    local form = type(view.selection.form) == "number" and math.floor(view.selection.form) or 0
-    local key = view.selection.species .. "/f" .. form
-    if not seenIcons[key] and #iconKeys < 30 then
-      seenIcons[key] = true
-      iconKeys[#iconKeys + 1] = key
+    local form = 0
+    if type(view.selection.form) == "number" then
+      form = math.floor(view.selection.form)
     end
+    want(view.selection.species .. "/f" .. form)
   end
+  return iconKeys, seenIcons
+end
+
+---@param view table<string, unknown> detached browser projection
+---@return table<string, unknown> immutable semantic demand for the lease
+local function buildDemand(view)
+  local iconKeys, seenIcons = closureIconKeys(view)
   -- Forms and compare pages stage their per-variant mon icons beside
   -- the rows: the six list rows around the cursor (the same
   -- cursor - 1 .. cursor + 4 window the plan lists) and the compared
@@ -157,7 +171,7 @@ local function buildDemand(view)
           return
         end
         local key = species .. "/f" .. math.floor(form)
-        if not seenIcons[key] and #iconKeys < 38 then
+        if not seenIcons[key] then
           seenIcons[key] = true
           iconKeys[#iconKeys + 1] = key
         end

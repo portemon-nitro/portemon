@@ -596,6 +596,13 @@ function PokedexController:_firstSeenVariant(speciesKey)
 end
 
 ---@param speciesKey string
+---@return string canonical first-seen icon key behind list and portrait art
+function PokedexController:_iconKey(speciesKey)
+  local form = self:_firstSeenVariant(speciesKey).form
+  return speciesKey .. "/f" .. math.floor(form)
+end
+
+---@param speciesKey string
 ---@return integer first observed physical form for cries
 function PokedexController:_cryForm(speciesKey)
   return self:_firstSeenVariant(speciesKey).form
@@ -618,6 +625,7 @@ function PokedexController:_gridBufferAt(pageIndex)
         seen = true,
         caught = tryDex(self._dex, "isCaught", key) == true,
         returnToSearch = false,
+        iconKey = self:_iconKey(key),
       }
     elseif type(key) == "string" then
       entries[#entries + 1] =
@@ -653,6 +661,7 @@ function PokedexController:_resultsBufferAt(pageIndex)
           seen = true,
           caught = tryDex(self._dex, "isCaught", key) == true,
           returnToSearch = false,
+          iconKey = self:_iconKey(key),
         }
       else
         entries[#entries + 1] = { index = global, seen = false, caught = false, returnToSearch = false }
@@ -1587,8 +1596,8 @@ function PokedexController:_beginPageTurn(kind, targetPage, targetCursor)
   local direction = targetPage > self._pageIndex and 1 or -1
   self._transition = {
     phase = "turn",
-    tick = 1,
-    ticks = 16,
+    tick = 0,
+    ticks = 15,
     kind = kind,
     direction = direction,
     targetPage = targetPage,
@@ -3565,11 +3574,12 @@ function PokedexController:_textSlots()
   return slots
 end
 
----@return { species: string?, dexNumber: integer?, form: integer?, gender: string?, seen: boolean, caught: boolean, language: string } detached selection snapshot
+---@return { species: string?, dexNumber: integer?, form: integer?, gender: string?, seen: boolean, caught: boolean, language: string, detailVariant: string } detached selection snapshot
 function PokedexController:_selectionView()
   local selection = self._selection
+  local detailVariant = self:_detailVariant(selection)
   if selection.species == nil then
-    return { seen = false, caught = false, language = self._nativeLanguage }
+    return { seen = false, caught = false, language = self._nativeLanguage, detailVariant = detailVariant }
   end
   local first = self:_firstSeenVariant(selection.species)
   return {
@@ -3580,6 +3590,7 @@ function PokedexController:_selectionView()
     seen = selection.seen == true,
     caught = selection.caught == true,
     language = selection.language,
+    detailVariant = detailVariant,
   }
 end
 
@@ -3923,7 +3934,11 @@ local function projectGridObjects(self, objects, pageKey)
       emitIntent(objects, "intl-pair", "right", "controls", 184, 136, ageOf("intl-pair-right", "right"))
     end
   end
-  if selection.caught == true and type(selection.species) == "string" then
+  -- Type, footprint and caught-mark art is native-language only: an
+  -- acquired foreign language shows its own detail state without the
+  -- native-only protected sprites.
+  local nativeDetail = selection.language == self._nativeLanguage
+  if selection.caught == true and nativeDetail and type(selection.species) == "string" then
     local species = selection.species
     local types = self:_selectionTypes(species)
     if type(types) == "table" and type(types[1]) == "string" then
@@ -4355,12 +4370,80 @@ local function projectEntryObjects(self, objects, pageKey)
   end
 end
 
----@return { key: integer, mode: string, page: string, origin: string, selection: { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string }, counts: { seen: integer, caught: integer }, visual: { coverOffset: integer, barOffset: integer, paletteFades: table[], blend: table<string, unknown>, flash: table<string, unknown>, transition: table<string, unknown>, spriteTick: integer }, areaPan: { region: integer, offset: integer }, pictures: table[], text: table[], controls: table<string, unknown>, objects: table[]?, grid: table<string, unknown>?, search: table<string, unknown>?, area: table<string, unknown>?, size: table<string, unknown>?, forms: table<string, unknown>?, returnPanel: table<string, unknown>? } detached semantic snapshot for presentation
+---@param buffer table<string, unknown>? staged grid or results buffer with thirty entries
+---@param tick integer? accepted turn steps behind the projection, nil while settled
+---@param direction integer? turn direction, 1 for the next page, -1 for the previous
+---@return { x: integer, y: integer, entry: table<string, unknown>? }[] thirty native slot records
+function PokedexController:_nativeSlots(buffer, tick, direction)
+  local entries = {}
+  if type(buffer) == "table" and type(buffer.entries) == "table" then
+    entries = buffer.entries
+  end
+  local steps = 0
+  if type(tick) == "number" and tick > 0 then
+    steps = math.floor(tick)
+  end
+  local backward = direction == -1
+  local slots = {}
+  for index = 1, 30 do
+    local column = (index - 1) % 5
+    local row = math.floor((index - 1) / 5)
+    local x = 48 + 40 * column
+    local y = 24 + 40 * row
+    for _ = 1, steps do
+      if backward then
+        y = ((y + 8 + 16) % 240) - 16
+      else
+        y = ((y - 8 + 16) % 240) - 16
+      end
+    end
+    slots[index] = { x = x, y = y, entry = entries[index] }
+  end
+  return slots
+end
+
+---@param selection table<string, unknown> detached selection snapshot
+---@return string semantic detail state behind background and sprite selection
+function PokedexController:_detailVariant(selection)
+  if self._page == "results" and self._pageIndex == 0 and self._cursor == 0 then
+    return "summary"
+  end
+  if type(selection.species) ~= "string" then
+    return "empty"
+  end
+  if selection.language ~= self._nativeLanguage then
+    return "foreign"
+  end
+  return "native"
+end
+
+---@return { key: integer, mode: string, page: string, origin: string, selection: { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string, detailVariant: string }, counts: { seen: integer, caught: integer }, visual: { coverOffset: integer, barOffset: integer, paletteFades: table[], blend: table<string, unknown>, flash: table<string, unknown>, transition: table<string, unknown>, spriteTick: integer }, areaPan: { region: integer, offset: integer }, pictures: table[], text: table[], controls: table<string, unknown>, objects: table[]?, grid: table<string, unknown>?, search: table<string, unknown>?, area: table<string, unknown>?, size: table<string, unknown>?, forms: table<string, unknown>?, returnPanel: table<string, unknown>? } detached semantic snapshot for presentation
 function PokedexController:view()
   local seen = tryDex(self._dex, "countSeen", self._mode)
   local caught = tryDex(self._dex, "countCaught", self._mode)
   local feedback = self._feedback
   local informationClip = type(feedback) == "table" and feedback.phase == "move" or false
+  -- The successful search retract carries the source summary cells one
+  -- tile row per accepted update: a finite semantic cell state the
+  -- renderer consumes, never a whole-pane translation.
+  local bgCells = nil
+  if type(feedback) == "table" and feedback.phase == "move" then
+    bgCells = {}
+    for _, id in ipairs({ "summary-9", "summary-10", "summary-11", "summary-12" }) do
+      bgCells[id] = { visible = true, x = 0, y = -8 * feedback.tick, variant = "normal" }
+    end
+  end
+  -- The results priority switch follows the same slot state: the search
+  -- summary parks SUB2 behind the summary text, the entry detail parks
+  -- SUB3 behind it. Every other page keeps the base priority vector.
+  local priorityVariant = nil
+  if self._page == "results" then
+    if self._pageIndex == 0 and self._cursor == 0 then
+      priorityVariant = "summary"
+    else
+      priorityVariant = "detail"
+    end
+  end
   local snapshot = {
     key = self._key,
     mode = self._mode,
@@ -4377,6 +4460,8 @@ function PokedexController:view()
       barOffset = 0,
       paletteFades = self:_paletteFades(),
       informationClip = informationClip,
+      bgCells = bgCells,
+      priorityVariant = priorityVariant,
       blend = self:_blendView(),
       flash = self:_flashView(),
       transition = { phase = self._transition.phase, tick = self._transition.tick },
@@ -4387,7 +4472,10 @@ function PokedexController:view()
     controls = {},
   }
   local turn = nil
+  local turnTick, turnDirection = nil, nil
   if self._transition.phase == "turn" then
+    turnTick = self._transition.tick
+    turnDirection = self._transition.direction
     turn = {
       offset = 8 * self._transition.tick,
       direction = self._transition.direction,
@@ -4403,6 +4491,7 @@ function PokedexController:view()
       lastPage = self:_gridLastPage(),
       cursor = self._cursor,
       buffers = buffers,
+      nativeSlots = self:_nativeSlots(buffers[1], turnTick, turnDirection),
       scrollbar = self:_scrollbar(self:_sparseLength(), self:_gridLastPage(), self._pageIndex),
       turn = turn,
     }
@@ -4445,6 +4534,7 @@ function PokedexController:view()
       lastPage = self:_resultsLastPage(),
       cursor = self._cursor,
       buffers = buffers,
+      nativeSlots = self:_nativeSlots(buffers[1], turnTick, turnDirection),
       scrollbar = self:_scrollbar(#self._results + 1, self:_resultsLastPage(), self._pageIndex),
       turn = turn,
     }

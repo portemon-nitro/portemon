@@ -323,31 +323,34 @@ end
 ---@return table demand immutable browser demand
 local function browserDemandFor(Renderer, view)
   local iconKeys, seen = {}, {}
+  local function want(key)
+    if type(key) == "string" and key ~= "" and not seen[key] then
+      seen[key] = true
+      iconKeys[#iconKeys + 1] = key
+    end
+  end
   local grid = view.grid
   if type(grid) == "table" and type(grid.buffers) == "table" then
     for _, buffer in ipairs(grid.buffers) do
       if type(buffer) == "table" and type(buffer.entries) == "table" then
         for _, entry in ipairs(buffer.entries) do
-          if type(entry) == "table" and entry.seen == true and type(entry.species) == "string" then
-            local key = entry.species .. "/f0"
-            if not seen[key] and #iconKeys < 30 then
-              seen[key] = true
-              iconKeys[#iconKeys + 1] = key
+          if type(entry) == "table" and entry.seen == true then
+            if type(entry.iconKey) == "string" then
+              want(entry.iconKey)
+            elseif type(entry.species) == "string" then
+              want(entry.species .. "/f0")
             end
           end
         end
       end
-      if #iconKeys >= 30 then
-        break
-      end
     end
   end
   if type(view.selection) == "table" and type(view.selection.species) == "string" then
-    local key = view.selection.species .. "/f0"
-    if not seen[key] and #iconKeys < 30 then
-      seen[key] = true
-      iconKeys[#iconKeys + 1] = key
+    local form = 0
+    if type(view.selection.form) == "number" then
+      form = math.floor(view.selection.form)
     end
+    want(view.selection.species .. "/f" .. form)
   end
   -- Form-variant icons stage on top of the grid closure up to eight
   -- further keys, mirroring ScreenState.buildDemand.
@@ -365,11 +368,7 @@ local function browserDemandFor(Renderer, view)
         if type(form) ~= "number" then
           return
         end
-        local key = species .. "/f" .. math.floor(form)
-        if not seen[key] and #iconKeys < 38 then
-          seen[key] = true
-          iconKeys[#iconKeys + 1] = key
-        end
+        want(species .. "/f" .. math.floor(form))
       end
       for position = 1, 6 do
         local variant = variants[row + position - 1]
@@ -737,6 +736,20 @@ local function gridSlotOf(view, species)
   error("the grid never stages " .. species, 0)
 end
 
+-- Resolves one settled visible slot to its 32x32 controls rectangle from
+-- the published native slot projection: the projection carries slot
+-- centers, so the rect is the center minus the 16px half footprint.
+-- Settled slots match the old authored geometry exactly.
+---@param view table detached browser projection with its native slots
+---@param slot integer zero-based visible slot
+---@return { x: integer, y: integer, width: integer, height: integer } settled icon rectangle
+local function nativeSlotRect(view, slot)
+  local slots = assert(view.grid.nativeSlots, "the grid publishes its native slots")
+  local record = assert(slots[slot + 1], "the projection carries the probed slot")
+  assert(type(record.x) == "number" and type(record.y) == "number", "native slots carry their centers")
+  return { x = record.x - 16, y = record.y - 16, width = 32, height = 32 }
+end
+
 -- Sums one realized image into a stable byte total for untouched-source
 -- assertions.
 ---@param data table 8-bit pixel buffer
@@ -824,7 +837,7 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
     -- against the authored controls background through the locked
     -- normalization.
     local caughtSlot = gridSlotOf(view, "TOTODILE")
-    local caughtRect = Renderer.iconSlotRect(caughtSlot)
+    local caughtRect = nativeSlotRect(view, caughtSlot)
     assertPixel(
       data,
       controls.origin.x + caughtRect.x + 16,
@@ -835,7 +848,7 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
       "the caught icon draws its prepared art opaque"
     )
     local seenSlot = gridSlotOf(view, "CHIKORITA")
-    local seenRect = Renderer.iconSlotRect(seenSlot)
+    local seenRect = nativeSlotRect(view, seenSlot)
     local sx, sy = controls.origin.x + seenRect.x + 16, controls.origin.y + seenRect.y + 16
     local br, bg, bb = expectedBackground(ctrlLayers, ctrlPri, ctrlBd, seenRect.x + 16, seenRect.y + 16, ctrlPan)
     local er = blendByteOracle(255, br, 6, 10)
@@ -843,7 +856,7 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
     local eb = blendByteOracle(255, bb, 6, 10)
     assertPixel(data, sx, sy, er, eg, eb, "the seen-only icon blends 6/10 against eligible BG")
     -- A blank slot past every staged entry keeps the authored background.
-    local blankRect = Renderer.iconSlotRect(14)
+    local blankRect = nativeSlotRect(view, 14)
     do
       local er, eg, eb = expectedBackground(ctrlLayers, ctrlPri, ctrlBd, blankRect.x + 16, blankRect.y + 16, ctrlPan)
       assertPixel(
@@ -1146,7 +1159,7 @@ function T.grid_icon_pixels_share_their_generation_with_hit_targets(scope)
     )
     -- The caught icon draws its prepared art opaque at its visible slot.
     local slot = gridSlotOf(view, "TOTODILE")
-    local rect = Renderer.iconSlotRect(slot)
+    local rect = nativeSlotRect(view, slot)
     assertPixel(
       data,
       controls.origin.x + rect.x + 16,
@@ -2669,7 +2682,22 @@ seedChromeFor = function(pool, cacheFs, manifest, role)
     if type(backgrounds) == "table" and type(backgrounds[paneId]) == "table" then
       for _, entry in ipairs(backgrounds[paneId]) do
         seedRole(entry.chrome)
+        -- State-selected variants draw from the same pool: seed every
+        -- bound native/foreign/empty/national/single role the renderer
+        -- may select behind the test view.
+        if type(entry.variants) == "table" then
+          for _, variantRole in pairs(entry.variants) do
+            seedRole(variantRole)
+          end
+        end
       end
+    end
+  end
+  -- Pressed-control flash patches draw from the same pool: seed every
+  -- bound action patch the renderer may replace behind the test view.
+  if type(page.bgFlashes) == "table" then
+    for _, record in pairs(page.bgFlashes) do
+      seedRole(record.chrome)
     end
   end
   ---@param cellRole string cell role behind one parts list
@@ -2977,8 +3005,10 @@ local function assertNativeBackgrounds(Renderer, scope, rig, view, assets, role,
       end
     end
     if paneId == "controls" and (role == "grid" or role == "results") then
-      for slot = 0, Renderer.ICON_SLOTS - 1 do
-        local rect = Renderer.iconSlotRect(slot)
+      local slots = assert(view.grid.nativeSlots, "the grid publishes its native slots")
+      for _, record in ipairs(slots) do
+        assert(type(record.x) == "number" and type(record.y) == "number", "native slots carry their centers")
+        local rect = { x = record.x - 16, y = record.y - 16, width = 32, height = 32 }
         exclusions[#exclusions + 1] = rect
         exclusions[#exclusions + 1] = { x = rect.x, y = rect.y, width = rect.width, height = 8 }
       end
@@ -3437,7 +3467,7 @@ function T.transparent_sprite_corners_reveal_their_background(scope)
     local backdrop = Renderer.backdropOf(rig.manifest, "grid", "controls")
     local pan = backgroundShift("grid", "controls", view, rig.manifest)
     -- The caught corner reveals the authored background exactly.
-    local caughtRect = Renderer.iconSlotRect(gridSlotOf(view, "TOTODILE"))
+    local caughtRect = nativeSlotRect(view, gridSlotOf(view, "TOTODILE"))
     do
       local cornerY = caughtRect.y + 30
       local er, eg, eb = expectedBackground(layers, priorities, backdrop, caughtRect.x + 31, cornerY, pan)
@@ -3462,7 +3492,7 @@ function T.transparent_sprite_corners_reveal_their_background(scope)
     end
     -- The seen-only corner reveals the same background while its center
     -- blends 6/10 against the eligible layer.
-    local seenRect = Renderer.iconSlotRect(gridSlotOf(view, "CHIKORITA"))
+    local seenRect = nativeSlotRect(view, gridSlotOf(view, "CHIKORITA"))
     do
       local seenCornerY = seenRect.y + 30
       local er, eg, eb = expectedBackground(layers, priorities, backdrop, seenRect.x + 31, seenCornerY, pan)
@@ -4464,6 +4494,7 @@ function T.caught_results_paint_their_prepared_mark(scope)
     end
     local view = controller:view()
     Assert.isTrue(view.selection.caught == true, "the walk reaches a caught result")
+
     local mark = nil
     for _, intent in ipairs(assert(view.objects, "the results projection carries its sprite intents")) do
       if type(intent) == "table" and intent.subject == "caught-mark" then
@@ -4496,14 +4527,30 @@ function T.caught_results_paint_their_prepared_mark(scope)
     local data =
       drawPlan(scope, plan, resources, preparedBrowserView(view, assets), measurement.width, measurement.height)
     local infoPane = placementOf(plan, "information")
+    -- The detail layer order parks the entry background ahead of the
+    -- caught mark, so the composed pixel carries the staged background
+    -- art at the mark position instead of the mark ink.
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "results", "information")
+    local layer3 = nil
+    for _, item in ipairs(layers) do
+      if item.entry.layer == 3 then
+        layer3 = item
+      end
+    end
+    local detailBg = assert(layer3, "the results information pane stages its entry background")
+    local br, bgc, bb = pixel(detailBg.data, mark.x + part.x + dx, mark.y + part.y + dy)
+    Assert.isTrue(
+      br ~= er or bgc ~= eg or bb ~= eb,
+      "the entry background differs from the mark ink at the probe"
+    )
     assertPixel(
       data,
       infoPane.origin.x + mark.x + part.x + dx,
       infoPane.origin.y + mark.y + part.y + dy,
-      er,
-      eg,
-      eb,
-      "the caught mark inks its authored art at its projected position"
+      br,
+      bgc,
+      bb,
+      "the detail order resolves the entry background over the caught mark"
     )
     lease:release()
     controller:dispose()
@@ -5367,6 +5414,488 @@ function T.registration_flavor_glyphs_use_the_native_flavor_bank(scope)
     end
     Assert.isTrue(ink > 0, "the flavor window carries glyph ink")
     lease:release()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- The native page turn travels vertically: two consecutive mid-turn
+-- frames carry the same icon ink shifted 8 pixels up with X unchanged,
+-- so the strip above slot zero gains ink between the frames instead of
+-- staying background while ink slides sideways.
+function T.page_turn_moves_icon_ink_vertically_without_horizontal_drift(scope)
+  local Renderer = requireRenderer("vertical page-turn icon motion")
+  local Interface = requireInterface("paired native layout resolution")
+  requireOwner("prepared bundles behind the page turn")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+    local refs = PokedexDexFixture.refs(rig.monCatalog, rig.catalog)
+    local dexOwner = PokedexKnowledge.new(refs)
+    dexOwner:prepareChanges({ flags = { dexEnabled = true, nationalDex = true } }):publish()
+    local function observe(species, personality)
+      local specimen =
+        dexOwner:describe(PokedexDexFixture.makeMon(rig.monCatalog, { species = species, personality = personality }))
+      dexOwner:prepareChanges({ observations = { { kind = "seen", specimen = specimen } } }):publish()
+    end
+    for index, species in ipairs(PokedexDexFixture.DISPLAY_ORDER) do
+      observe(species, index)
+      seedIcon(pool, species .. "/f0", (index % 5) / 4, ((index * 2) % 5) / 4, ((index * 3) % 5) / 4)
+    end
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    Assert.equal(controller:view().grid.lastPage, 1, "the observed history spans two pages")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    local measurement = measurementFor("dualDisplay")
+    local function drawTurnFrame()
+      local view = controller:view()
+      local demand = browserDemandFor(Renderer, view)
+      seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, true)
+      local lease = rig.owner:acquire({ purpose = "browser" })
+      local assets = prepareReady(rig, lease, demand)
+      local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+      local data = drawPlan(
+        scope,
+        plan,
+        { graphics = love.graphics, renderer = assets.renderer },
+        preparedBrowserView(view, assets),
+        measurement.width,
+        measurement.height
+      )
+      lease:release()
+      return data, plan
+    end
+    -- The locked zero-based turn stages the entering buffer undisplaced
+    -- on the press frame (tick 0) and advances one tile row per movement
+    -- update after it, so the first-to-second-step pair already carries
+    -- the vertical entry: icon ink rides up into the strip above slot
+    -- zero while a horizontal slide would leave these rows untouched.
+    -- The next pair catches the matching exit through the slot-zero
+    -- rows.
+    press(controller, { { type = "r" } })
+    local first, plan = drawTurnFrame()
+    local placement = placementOf(plan, "controls")
+    idle(controller, 1)
+    local second = drawTurnFrame()
+    Assert.isTrue(
+      boxMotion(first, second, placement.origin, { x = 32, y = 0, width = 32, height = 8 }) > 0,
+      "the page turn carries icon ink up into the strip above slot zero"
+    )
+    idle(controller, 1)
+    local third = drawTurnFrame()
+    -- The locked offsets reach the old pair one update later: the third
+    -- to fourth step reproduces the exact sixteen-to-twenty-four scroll
+    -- the old first frame used to open with.
+    idle(controller, 1)
+    local fourth = drawTurnFrame()
+    Assert.isTrue(
+      boxMotion(third, fourth, placement.origin, { x = 32, y = 16, width = 32, height = 8 }) > 0,
+      "the page turn keeps carrying icon ink up through the slot-zero rows"
+    )
+    idle(controller, 20)
+    Assert.equal(controller:view().grid.page, 1, "the turn commits the next page")
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- Resolves the winning background layer behind one pane pixel, mirroring
+-- the composite priority rule: the lowest layer number wins priority
+-- ties, and -1 names the compiled backdrop where every layer stays
+-- clear.
+---@param layers table[] decoded background entries in manifest order
+---@param priorities number[] four layer priorities
+---@param x integer pane pixel x
+---@param y integer pane pixel y
+---@param pan { layer: integer, dx: integer }? scrolled layer behind the pane
+---@return integer winning layer, -1 for the backdrop
+local function winningLayer(layers, priorities, x, y, pan)
+  local byLayer = {}
+  for _, item in ipairs(layers) do
+    byLayer[item.entry.layer] = item
+  end
+  local pri, winner = 255, -1
+  for layer = 0, 3 do
+    local item = byLayer[layer]
+    if item ~= nil then
+      local data = item.data
+      local sx = x
+      if pan ~= nil and layer == pan.layer then
+        sx = x + pan.dx
+      end
+      if sx >= 0 and y >= 0 and sx < data:getWidth() and y < data:getHeight() then
+        local _, _, _, pa = pixel(data, sx, y)
+        if pa > 0 and priorities[layer + 1] < pri then
+          pri, winner = priorities[layer + 1], layer
+        end
+      end
+    end
+  end
+  return winner
+end
+
+-- The successful search retract rasterizes its moving BG cells on the
+-- native MAIN layers: mid-retract the settled criteria art rides one
+-- tile row up per update over a cleared plane (BG0/BG2, never the
+-- settled copy underneath), so a settled background pixel reappears one
+-- row higher while the vacated row stops matching the settled frame.
+-- Without cell consumption the background planes would stay settled.
+function T.search_retract_rasterizes_its_moving_cells_without_a_settled_copy(scope)
+  local Renderer = requireRenderer("retract cell rasterization")
+  local Interface = requireInterface("paired native layout resolution")
+  requireOwner("prepared bundles behind the retract")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+    local refs = PokedexDexFixture.refs(rig.monCatalog, rig.catalog)
+    local dexOwner = PokedexKnowledge.new(refs)
+    dexOwner:prepareChanges({ flags = { dexEnabled = true, nationalDex = true } }):publish()
+    local function observe(species, personality)
+      local specimen =
+        dexOwner:describe(PokedexDexFixture.makeMon(rig.monCatalog, { species = species, personality = personality }))
+      dexOwner:prepareChanges({ observations = { { kind = "seen", specimen = specimen } } }):publish()
+    end
+    observe("CHIKORITA", 1)
+    observe("TOTODILE", 2)
+    observe("EEVEE", 3)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    press(controller, { { type = "y" } })
+    idle(controller, 6)
+    Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.criteria")
+    local measurement = measurementFor("dualDisplay")
+    local seeded = {}
+    local function drawCurrent()
+      local view = controller:view()
+      local demand = browserDemandFor(Renderer, view)
+      seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, seeded)
+      local lease = rig.owner:acquire({ purpose = "browser" })
+      local assets = prepareReady(rig, lease, demand)
+      local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+      local data = drawPlan(
+        scope,
+        plan,
+        { graphics = love.graphics, renderer = assets.renderer },
+        preparedBrowserView(view, assets),
+        measurement.width,
+        measurement.height
+      )
+      lease:release()
+      return view, assets, plan, data
+    end
+    local settledView, _, settledPlan, settledData = drawCurrent()
+    Assert.isTrue(
+      settledView.visual == nil or settledView.visual.bgCells == nil,
+      "the settled criteria publishes no retract cells"
+    )
+    local settledPlacement = placementOf(settledPlan, "controls")
+    press(controller, { { type = "activate", action = "search-run" } })
+    local movedView = nil
+    for _ = 1, 120 do
+      idle(controller, 1)
+      local view = controller:view()
+      local feedback = view.search ~= nil and view.search.feedback or nil
+      if
+        view.page == "search"
+        and type(feedback) == "table"
+        and feedback.phase == "move"
+        and type(view.visual) == "table"
+        and type(view.visual.bgCells) == "table"
+        and (feedback.bodyTick or 0) >= 3
+      then
+        movedView = view
+        break
+      end
+      if view.page == "results" then
+        break
+      end
+    end
+    movedView = assert(movedView, "the successful search retracts through a cell move")
+    local dy = nil
+    for _, cell in pairs(assert(movedView.visual.bgCells, "the move publishes its source cells")) do
+      if type(cell) == "table" and type(cell.y) == "number" then
+        dy = cell.y
+        break
+      end
+    end
+    Assert.isTrue(type(dy) == "number" and dy < 0 and dy % 8 == 0, "the move displaces whole tile rows up")
+    Assert.isTrue(dy >= -160, "the probe runs before the retract commits")
+    local movedFeedback = movedView.search ~= nil and movedView.search.feedback or nil
+    local movedTick = type(movedFeedback) == "table" and movedFeedback.bodyTick or nil
+    Assert.equal(dy, -8 * assert(movedTick, "the move exposes its source tick"), "the rasterized rows follow the published cell offset")
+    local freshView, movedBundle, movedPlan, movedData = drawCurrent()
+    movedView = freshView
+    local movedAssets = assert(movedBundle, "the moved frame prepares its bundle")
+    local movedPlacement = placementOf(movedPlan, "controls")
+    Assert.equal(
+      movedPlacement.origin.x,
+      settledPlacement.origin.x,
+      "the retract keeps its controls placement"
+    )
+    Assert.equal(
+      movedPlacement.origin.y,
+      settledPlacement.origin.y,
+      "the retract keeps its controls rows"
+    )
+    local origin = settledPlacement.origin
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "search.criteria", "controls")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "search.criteria", "controls")
+    local backdrop = Renderer.backdropOf(rig.manifest, "search.criteria", "controls")
+    local pan = backgroundShift("search.criteria", "controls", settledView, rig.manifest)
+    local byWindow = textByWindow(assert(movedAssets.messages, "the moved bundle carries its messages"))
+    local _, messaged = windowRects(rig.manifest, "search.criteria", byWindow)
+    local exclusions = {}
+    for _, item in ipairs(messaged) do
+      local win = assert(rig.manifest.windows[item.key], "messaged windows stay authored")
+      if win.pane == "controls" then
+        exclusions[#exclusions + 1] = item.rect
+        exclusions[#exclusions + 1] = { x = item.rect.x, y = item.rect.y + dy, width = item.rect.width, height = item.rect.height }
+      end
+    end
+    for _, rect in ipairs(dynamicExclusions(settledView, movedAssets, "search.criteria", "controls")) do
+      exclusions[#exclusions + 1] = rect
+    end
+    for _, rect in ipairs(dynamicExclusions(movedView, movedAssets, "search.criteria", "controls")) do
+      exclusions[#exclusions + 1] = rect
+    end
+    local function covered(x, y)
+      for _, rect in ipairs(exclusions) do
+        if insideRect(rect, x, y) then
+          return true
+        end
+      end
+      return false
+    end
+    local function settledBytes(x, y)
+      local r, g, b = pixel(settledData, origin.x + x, origin.y + y)
+      return r, g, b
+    end
+    -- Displaced art: a settled BG0/BG2 pixel reappears one move higher:
+    -- canvas row y samples settled row y - dy.
+    local shifted = 0
+    for y = 0, 191 + dy do
+      for x = 0, 255 do
+        if shifted >= 4 then
+          break
+        end
+        if (x + y) % 7 == 0 then
+          local source = y - dy
+          if not covered(x, y) and not covered(x, source) then
+            if
+              winningLayer(layers, priorities, x, y, pan) ~= 0
+              and winningLayer(layers, priorities, x, y, pan) ~= 2
+            then
+              -- settled pixels outside the cell planes never travel.
+            elseif
+              winningLayer(layers, priorities, x, source, pan) ~= 0
+              and winningLayer(layers, priorities, x, source, pan) ~= 2
+            then
+              -- the source row rides the same planes.
+            else
+              local r0, g0, b0 = settledBytes(x, y)
+              local r1, g1, b1 = settledBytes(x, source)
+              if r0 ~= r1 or g0 ~= g1 or b0 ~= b1 then
+                assertPixel(
+                  movedData,
+                  origin.x + x,
+                  origin.y + y,
+                  r1,
+                  g1,
+                  b1,
+                  "the retract carries settled art up to " .. x .. "," .. y
+                )
+                shifted = shifted + 1
+              end
+            end
+          end
+        end
+      end
+      if shifted >= 4 then
+        break
+      end
+    end
+    Assert.isTrue(shifted >= 1, "the retract displaces settled background art")
+    -- No settled copy: the vacated rows show the underlying planes,
+    -- never the art that rode away.
+    local cleared = 0
+    for y = 192 + dy, 191 do
+      for x = 0, 255 do
+        if cleared >= 4 then
+          break
+        end
+        if (x + y) % 7 == 0 and not covered(x, y) then
+          if winningLayer(layers, priorities, x, y, pan) == 0 or winningLayer(layers, priorities, x, y, pan) == 2 then
+            local kept = {}
+            for _, item in ipairs(layers) do
+              if item.entry.layer ~= 0 and item.entry.layer ~= 2 then
+                kept[#kept + 1] = item
+              end
+            end
+            local ur, ug, ub = expectedBackground(kept, priorities, backdrop, x, y, pan)
+            local sr, sg, sb = settledBytes(x, y)
+            if sr ~= ur or sg ~= ug or sb ~= ub then
+              assertPixel(
+                movedData,
+                origin.x + x,
+                origin.y + y,
+                ur,
+                ug,
+                ub,
+                "the vacated row shows its underlying planes at " .. x .. "," .. y
+              )
+              cleared = cleared + 1
+            end
+          end
+        end
+      end
+      if cleared >= 4 then
+        break
+      end
+    end
+    Assert.isTrue(cleared >= 1, "the vacated rows keep no settled copy")
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- A pressed search control flashes its tile palette, never a white
+-- cover: the reset button rect keeps more than one ink color while the
+-- flash is active instead of collapsing to a uniform white overlay.
+function T.pressed_search_control_keeps_its_tile_pattern_instead_of_white_cover(scope)
+  local Renderer = requireRenderer("palette-flash search feedback")
+  local Interface = requireInterface("paired native layout resolution")
+  requireOwner("prepared bundles behind the search flash")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.criteria")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    press(controller, { { type = "y" } })
+    idle(controller, 20)
+    Assert.equal(controller:view().page, "search", "the search criteria open before the flash")
+    press(controller, { { type = "activate", action = "search-reset" } })
+    Assert.isTrue(controller:view().visual.flash.active, "the pressed reset control raises its flash")
+    local view = controller:view()
+    local demand = browserDemandFor(Renderer, view)
+    seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, true)
+    local lease = rig.owner:acquire({ purpose = "browser" })
+    local assets = prepareReady(rig, lease, demand)
+    local measurement = measurementFor("dualDisplay")
+    local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+    local data = drawPlan(
+      scope,
+      plan,
+      { graphics = love.graphics, renderer = assets.renderer },
+      preparedBrowserView(view, assets),
+      measurement.width,
+      measurement.height
+    )
+    lease:release()
+    local placement = placementOf(plan, "controls")
+    local colors = {}
+    local distinct = 0
+    for y = 160, 191 do
+      for x = 0, 79 do
+        local r, g, b = pixel(data, placement.origin.x + x, placement.origin.y + y)
+        local key = r .. "," .. g .. "," .. b
+        if colors[key] == nil then
+          colors[key] = true
+          distinct = distinct + 1
+        end
+      end
+    end
+    Assert.isTrue(distinct > 4, "the flashed reset button keeps its tile pattern with " .. distinct .. " inks")
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- The area map background follows the national unlock behind the same
+-- list mode: the same entry draws different map chrome with the unlock
+-- on and off instead of painting one fixed tilemap twice.
+function T.area_background_follows_the_national_unlock_behind_the_same_list_mode(scope)
+  local Renderer = requireRenderer("national area background selection")
+  local Interface = requireInterface("paired native layout resolution")
+  requireOwner("prepared bundles behind the area variant")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.area")
+    local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+    local function ownerWithNational(national)
+      local refs = PokedexDexFixture.refs(rig.monCatalog, rig.catalog)
+      local dexOwner = PokedexKnowledge.new(refs)
+      local flags = { dexEnabled = true }
+      if national then
+        flags.nationalDex = true
+      end
+      dexOwner:prepareChanges({ flags = flags }):publish()
+      local function observe(species, personality, kind)
+        local specimen =
+          dexOwner:describe(PokedexDexFixture.makeMon(rig.monCatalog, { species = species, personality = personality }))
+        dexOwner:prepareChanges({ observations = { { kind = kind, specimen = specimen } } }):publish()
+      end
+      observe("CHIKORITA", 0, "seen")
+      observe("TOTODILE", 31, "caught")
+      return dexOwner
+    end
+    local seeded = {}
+    local function drawArea(dexOwner)
+      local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+      openGrid(controller)
+      selectSpecies(controller, "TOTODILE")
+      openEntry(controller)
+      local view = controller:view()
+      Assert.equal(view.page, "area", "the caught selection opens its area page")
+      local demand = browserDemandFor(Renderer, view)
+      seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, seeded)
+      local lease = rig.owner:acquire({ purpose = "browser" })
+      local assets = prepareReady(rig, lease, demand)
+      local measurement = measurementFor("dualDisplay")
+      local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+      local data = drawPlan(
+        scope,
+        plan,
+        { graphics = love.graphics, renderer = assets.renderer },
+        preparedBrowserView(view, assets),
+        measurement.width,
+        measurement.height
+      )
+      lease:release()
+      controller:dispose()
+      return data, plan
+    end
+    local locked, lockedPlan = drawArea(ownerWithNational(false))
+    local unlocked, _ = drawArea(ownerWithNational(true))
+    -- The unlock switches the MAIN BG0 map chrome (NSCR 80/81) on the
+    -- controls pane; the SUB text map stays mode-independent.
+    local placement = placementOf(lockedPlan, "controls")
+    Assert.isTrue(
+      boxMotion(locked, unlocked, placement.origin, { x = 0, y = 0, width = 256, height = 192 }) > 0,
+      "the national unlock repaints the area map behind the same list mode"
+    )
     rig.owner:release()
     Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
   end)

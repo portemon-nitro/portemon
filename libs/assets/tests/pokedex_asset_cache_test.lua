@@ -232,7 +232,7 @@ local function fixtureManifest(catalog)
   local pictures = { backYOffset = {} }
   pictures.backYOffset[MonCache.portraitSelector("custom.alpha", 0, "male", false, "back")] = 4
   return {
-    schema = "g4-pokedex-assets-v4",
+    schema = "g4-pokedex-assets-v5",
     versionId = "heartgold",
     fonts = { body = 0, header = 4 },
     pages = pages,
@@ -381,7 +381,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   local PokedexCacheWriter, PokedexCache, DerivedAssetContract = requireProduction()
   Assert.deepEqual(
     DerivedAssetContract.pokedex,
-    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v4" },
+    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v5" },
     "the contract names the exact pokedex family identities"
   )
   Assert.equal(PokedexCache.dir(), "data/generated/pokedex", "the pokedex data directory is stable")
@@ -436,7 +436,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   )
   Assert.equal(
     PokedexCache.loadManifest(cacheFs).schema,
-    "g4-pokedex-assets-v4",
+    "g4-pokedex-assets-v5",
     "the loaded manifest keeps its schema identity"
   )
 end
@@ -796,6 +796,35 @@ function T.presentation_windows_keep_their_print_origin_inside_the_clip()
     PokedexAssetSchema.validateManifest(edge, catalog),
     "a right-anchored origin may address the right boundary"
   )
+end
+
+-- The browser-variant revision extends the presentation identity: the
+-- derived contract names the v5 presentation schema while keeping the
+-- cache and catalog identities, and a v5-stamped manifest validates
+-- structurally. The stale v4 generation no longer reads ready once the
+-- browser variants land.
+function T.presentation_schema_carries_the_browser_variant_revision()
+  local _, _, DerivedAssetContract = requireProduction()
+  Assert.equal(
+    DerivedAssetContract.pokedex.schema,
+    "g4-pokedex-assets-v5",
+    "the contract names the browser-variant presentation schema"
+  )
+  Assert.equal(
+    DerivedAssetContract.pokedex.cacheFormat,
+    "pokedex-cache-v1",
+    "the browser variants keep the presentation cache format"
+  )
+  Assert.equal(
+    DerivedAssetContract.pokedex.catalogSchema,
+    "g4-pokedex-catalog-v2",
+    "the browser variants keep the catalog schema"
+  )
+  local PokedexAssetSchema = assert(require("libs.assets.src.PokedexAssetSchema"))
+  local catalog = fixtureCatalog()
+  local manifest = fixtureManifest(catalog)
+  manifest.schema = "g4-pokedex-assets-v5"
+  Assert.notNil(PokedexAssetSchema.validateManifest(manifest, catalog), "a v5-stamped manifest validates structurally")
 end
 
 return { tests = T }

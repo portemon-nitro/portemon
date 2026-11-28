@@ -116,7 +116,7 @@ local function fixtureManifest(catalog)
   local pictures = { backYOffset = {} }
   pictures.backYOffset[MonCache.portraitSelector("custom.alpha", 0, "male", false, "back")] = 4
   return {
-    schema = "g4-pokedex-assets-v4",
+    schema = "g4-pokedex-assets-v5",
     versionId = "heartgold",
     fonts = { body = 0, header = 4 },
     pages = pages,
@@ -1538,6 +1538,85 @@ function T.manifest_windows_require_resolved_print_geometry()
     PokedexAssetSchema.validateManifest(blockCenter, catalog),
     "a window with resolved print geometry and block-center alignment validates"
   )
+end
+
+-- The list details background resolves by selected language against the
+-- native game language: 20 for the native entry, 21 for the acquired
+-- foreign entry, and 22 for the empty slot past the list length. The
+-- producer must bind all three tilemaps on the grid and results
+-- information layer 3 instead of selecting one by dump language.
+function T.producer_list_details_bind_native_foreign_and_empty_tilemaps()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  local function detailMembers(role)
+    local members = {}
+    for _, entry in ipairs(assert(PokedexSources.pageLayers[role], "the source map must bind " .. role)) do
+      if entry.pane == "information" and entry.layer == 3 then
+        for _, field in ipairs({ "screen", "screenJapanese", "screenForeign", "screenEmpty" }) do
+          if type(entry[field]) == "number" then
+            members[#members + 1] = entry[field]
+          end
+        end
+        if type(entry.variants) == "table" then
+          for _, member in pairs(entry.variants) do
+            if type(member) == "number" then
+              members[#members + 1] = member
+            end
+          end
+        end
+      end
+    end
+    return members
+  end
+  local function hasMember(members, member)
+    for _, bound in ipairs(members) do
+      if bound == member then
+        return true
+      end
+    end
+    return false
+  end
+  for _, role in ipairs({ "grid", "results" }) do
+    local members = detailMembers(role)
+    Assert.isTrue(hasMember(members, 20), role .. " binds the native details tilemap")
+    Assert.isTrue(hasMember(members, 21), role .. " binds the foreign details tilemap")
+    Assert.isTrue(hasMember(members, 22), role .. " binds the empty details tilemap")
+  end
+end
+
+-- The single observed form replaces the exact NSCR 100 tile block on the
+-- forms page: the producer must bind member 100 alongside the base
+-- 95/96/97 maps instead of staging only the multi-form art.
+function T.producer_forms_bind_the_single_observed_form_patch()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  local members = {}
+  for _, entry in ipairs(assert(PokedexSources.pageLayers["entry.forms"], "the source map must bind entry.forms")) do
+    for _, field in ipairs({ "screen", "screenPatch", "patch" }) do
+      if type(entry[field]) == "number" then
+        members[#members + 1] = entry[field]
+      end
+    end
+    if type(entry.variants) == "table" then
+      for _, member in pairs(entry.variants) do
+        if type(member) == "number" then
+          members[#members + 1] = member
+        end
+      end
+    end
+    if type(entry.patches) == "table" then
+      for _, patch in ipairs(entry.patches) do
+        if type(patch) == "table" and type(patch.screen) == "number" then
+          members[#members + 1] = patch.screen
+        end
+      end
+    end
+  end
+  local found = false
+  for _, member in ipairs(members) do
+    if member == 100 then
+      found = true
+    end
+  end
+  Assert.isTrue(found, "entry.forms binds the single-form member 100 patch")
 end
 
 return { tests = T }

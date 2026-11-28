@@ -901,7 +901,32 @@ local function requiredChromeRoles(manifest, pageRole)
           if failure ~= nil then
             return nil, failure
           end
+          -- State-selected variants ride the same closure as their base:
+          -- the lease stages every bound native/foreign/empty/national/
+          -- single role the renderer may select, never a subset.
+          if type(entry.variants) == "table" then
+            for _, variantRole in pairs(entry.variants) do
+              local variantFailure = add(variantRole)
+              if variantFailure ~= nil then
+                return nil, variantFailure
+              end
+            end
+          end
         end
+      end
+    end
+  end
+  -- Pressed-control flash patches ride the page closure beside the base
+  -- art so the active flash replaces its plane rect without a draw-time
+  -- request.
+  if type(page.bgFlashes) == "table" then
+    for action, record in pairs(page.bgFlashes) do
+      if type(record) ~= "table" then
+        return nil, "the " .. pageRole .. " page carries no flash patch behind " .. tostring(action)
+      end
+      local failure = add(record.chrome)
+      if failure ~= nil then
+        return nil, failure
       end
     end
   end

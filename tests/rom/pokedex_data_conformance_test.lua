@@ -1403,6 +1403,75 @@ end
 -- Native footprint geometry: every staged footprint carries the
 -- cell-derived anchor that centers the 16x16 assembly on the published
 -- specimen center instead of pinning its top-left there.
+-- The list details background is a language state, not a dump-language
+-- build flag: grid and results each bind distinct native, foreign, and
+-- empty roles on information layer 3, and the results page carries the
+-- summary/detail SUB2/SUB3 priority switch the retail pending-priority
+-- call applies.
+function T.details_backgrounds_bind_native_foreign_empty_and_summary_states(romFs, versionId)
+  local manifest = compiledChrome(romFs, versionId)
+  local function boundRoles(role, pane, layer)
+    local page = assert(manifest.pages[role], versionId .. " carries the " .. role .. " page")
+    local roles = {}
+    for _, background in ipairs(assert(page.backgrounds[pane], versionId .. " binds the " .. pane .. " pane")) do
+      if background.layer == layer then
+        roles[#roles + 1] = assert(background.chrome, versionId .. " names the bound chrome")
+        if type(background.variants) == "table" then
+          for _, chrome in pairs(background.variants) do
+            roles[#roles + 1] = chrome
+          end
+        end
+      end
+    end
+    return roles
+  end
+  local gridRoles = boundRoles("grid", "information", 3)
+  Assert.isTrue(
+    #gridRoles >= 3,
+    versionId .. " binds distinct native, foreign, and empty details roles, found " .. #gridRoles
+  )
+  local resultsRoles = boundRoles("results", "information", 3)
+  Assert.isTrue(#resultsRoles >= 3, versionId .. " binds distinct summary and detail roles, found " .. #resultsRoles)
+  local results = assert(manifest.pages.results, versionId .. " carries the results page")
+  local priorityVariants = assert(results.priorityVariants, versionId .. " carries the results priority variants")
+  local function informationVector(state)
+    local node = assert(priorityVariants[state], versionId .. " carries the " .. state .. " priorities")
+    if type(node) == "table" and type(node.information) == "table" then
+      return node.information
+    end
+    return node
+  end
+  local summary = informationVector("summary")
+  Assert.equal(#summary, 4, versionId .. " summary priorities cover all four layers")
+  Assert.equal(summary[3], 2, versionId .. " summary parks SUB2 behind the summary text")
+  Assert.equal(summary[4], 3, versionId .. " summary parks SUB3 behind the summary text")
+  local detail = informationVector("detail")
+  Assert.equal(#detail, 4, versionId .. " detail priorities cover all four layers")
+  Assert.equal(detail[3], 3, versionId .. " detail parks SUB2 behind the entry detail")
+  Assert.equal(detail[4], 2, versionId .. " detail parks SUB3 behind the entry detail")
+end
+
+-- The area map background follows the national unlock independently of
+-- the current list mode: entry.area binds the national variant role
+-- next to its johto base on information layer 0 instead of staging it
+-- as an unreferenced image.
+function T.area_background_follows_the_national_unlock(romFs, versionId)
+  local manifest = compiledChrome(romFs, versionId)
+  local page = assert(manifest.pages["entry.area"], versionId .. " carries the area page")
+  local roles = {}
+  for _, background in ipairs(assert(page.backgrounds.information, versionId .. " binds area backgrounds")) do
+    if background.layer == 0 then
+      roles[#roles + 1] = assert(background.chrome, versionId .. " names the bound area chrome")
+      if type(background.variants) == "table" then
+        for _, chrome in pairs(background.variants) do
+          roles[#roles + 1] = chrome
+        end
+      end
+    end
+  end
+  Assert.isTrue(#roles >= 2, versionId .. " binds the national area variant beside its johto base, found " .. #roles)
+end
+
 function T.presentation_footprints_anchor_the_native_center(romFs, versionId)
   local PokedexCatalogCompiler = requireProducer()
   void(PokedexCatalogCompiler)

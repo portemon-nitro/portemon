@@ -739,10 +739,16 @@ DerivedAssetContract.pokegear = {
 -- priorities, every window carries source-resolved print geometry and
 -- palette bytes, and every footprint carries its native center anchor,
 -- so a stale pre-change cache without those records must fail readiness.
+-- pokedex schema 5: every list page binds explicit native, foreign, and
+-- empty detail variants plus the results summary/detail priority switch,
+-- the area page binds the national-unlock variant, the forms page binds
+-- the single-observed-form patch, and pages may carry finite moving-cell
+-- (bgCells), palette-flash (bgFlashes), and priority-variant records, so
+-- a stale v4 cache without those records must fail readiness.
 DerivedAssetContract.pokedex = {
   cacheFormat = "pokedex-cache-v1",
   catalogSchema = "g4-pokedex-catalog-v2",
-  schema = "g4-pokedex-assets-v4",
+  schema = "g4-pokedex-assets-v5",
 }
 
 -- The Easy Chat family carries the semantic word data catalog (dictionary

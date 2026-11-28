@@ -468,6 +468,117 @@ function T.complete_browser_journey_through_every_page(context)
   end
 end
 
+-- The live browser publishes the native grid and detail contracts
+-- through production composition: the settled grid projects its thirty
+-- native slots on the retail lattice with canonical first-seen icon
+-- keys, and the caught entry names its native detail variant. Real
+-- field boot, real menu, and the real controller over the generated
+-- catalogs; only host boundaries are faked and no GPU may realize.
+local CONTRACT_SEEN = {
+  "CHIKORITA",
+  "BAYLEEF",
+  "MEGANIUM",
+  "CYNDAQUIL",
+  "QUILAVA",
+  "TYPHLOSION",
+  "TOTODILE",
+  "CROCONAW",
+  "FERALIGATR",
+  "SENTRET",
+  "FURRET",
+  "HOOTHOOT",
+  "NOCTOWL",
+  "LEDYBA",
+  "LEDIAN",
+  "SPINARAK",
+}
+
+function T.live_browser_publishes_native_grid_and_detail_contracts(context)
+  for _, versionId in ipairs(requireVersions(context)) do
+    requireComposition("live browser grid and detail contracts")
+    withGame(versionId, function(game)
+      local state = hostCallbacks(game)
+      game:setWorldState({ flag = FLAG_GOT_POKEDEX })
+      game:setWorldState({ flag = FieldScriptSymbols.flagsByName.FLAG_GOT_BAG })
+      local dex = assert(game.runtime.dexKnowledge, "field runtime owns the live dex knowledge")
+      dex
+        :prepareChanges({
+          flags = { dexEnabled = true },
+          seen = CONTRACT_SEEN,
+          caught = { "TOTODILE" },
+        })
+        :publish()
+      openPokedex(game, state)
+      local gate = assert(boundGate, "the journey binds the preparation gate")
+      gate.open = true
+      game:step()
+      game:step()
+      confirm(game, state)
+      game:advanceUntil("confirming the cover reaches the cursor entry", function()
+        local live = browserLeaf(game)
+        return (live.page or (live.view and live.view.page)) == "area"
+      end, 240)
+      cancel(game, state)
+      game:advanceUntil("entry cancel returns to the grid", function()
+        local live = browserLeaf(game)
+        return (live.page or (live.view and live.view.page)) == "grid"
+      end, 240)
+      local leaf = browserLeaf(game)
+      local projection = assert(leaf.view or leaf, "the live browser exposes its projection")
+      local grid = assert(projection.grid, "the settled grid publishes its slot projection")
+      local slots = assert(grid.nativeSlots, "the settled grid projects its thirty native slots")
+      Assert.equal(#slots, 30, "the live grid carries every source slot")
+      for index, slot in ipairs(slots) do
+        local column = (index - 1) % 5
+        local row = math.floor((index - 1) / 5)
+        Assert.equal(slot.x, 48 + 40 * column, "live slot " .. index .. " keeps its native column")
+        Assert.equal(slot.y, 24 + 40 * row, "live slot " .. index .. " keeps its native row")
+        local entry = assert(slot.entry, "live slot " .. index .. " carries its semantic entry")
+        if entry.seen == true then
+          Assert.notNil(entry.iconKey, "live seen entries carry their canonical icon key")
+        end
+      end
+      for _ = 1, 20 do
+        local live = browserLeaf(game)
+        local current = live.view or live
+        if current.selection ~= nil and current.selection.species == "TOTODILE" then
+          break
+        end
+        tapDirection(game, state, "d")
+      end
+      local cursor = browserLeaf(game)
+      local cursorView = cursor.view or cursor
+      Assert.equal(
+        cursorView.selection ~= nil and cursorView.selection.species,
+        "TOTODILE",
+        "the live cursor reaches the caught entry"
+      )
+      confirm(game, state)
+      game:advanceUntil("confirming the caught cursor opens its entry", function()
+        local live = browserLeaf(game)
+        return (live.page or (live.view and live.view.page)) == "area"
+      end, 240)
+      local entry = browserLeaf(game)
+      local entryView = entry.view or entry
+      Assert.equal(
+        entryView.selection ~= nil and entryView.selection.detailVariant,
+        "native",
+        "the live caught entry names its native detail variant"
+      )
+      cancel(game, state)
+      game:advanceUntil("entry cancel returns to the grid", function()
+        local live = browserLeaf(game)
+        return (live.page or (live.view and live.view.page)) == "grid"
+      end, 120)
+      closePokedex(game, state)
+      cancel(game, state)
+      game:advanceUntil("the contract journey closes back to the field", function(snapshot)
+        return hostPhase(game) == FieldApplicationHost.PHASES.closed and not snapshot.fieldLocked
+      end, 120)
+    end)
+  end
+end
+
 function T.modal_input_keeps_held_state_and_sibling_cadence(context)
   for _, versionId in ipairs(requireVersions(context)) do
     runModalInputJourney(versionId)
@@ -497,11 +608,25 @@ return {
     capabilities = { "rom_dump", "derived_assets" },
     derivedAssets = {
       "field-runtime",
-      "map:64",
-      "map-data:64",
+      "map:31",
+      "map-data:31",
+      "map:33",
+      "map-data:33",
+      "map:34",
+      "map-data:34",
+      "map:35",
+      "map-data:35",
+      "map:47",
+      "map-data:47",
+      "map:48",
+      "map-data:48",
+      "map:60",
+      "map-data:60",
       "trainers:global",
       "encounters:global",
       "audio-bank:702",
+      "audio-bank:709",
+      "audio-bank:728",
       "audio-bank:756",
       "pokedex-data:global",
     },

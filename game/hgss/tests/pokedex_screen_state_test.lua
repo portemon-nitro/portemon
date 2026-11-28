@@ -1212,6 +1212,118 @@ function T.forms_and_compare_demands_stage_their_variant_icon_keys()
   screen:dispose()
 end
 
+-- The turn demand stages the full finite icon closure from the entries
+-- themselves: every distinct canonical key across the current and
+-- entering buffers plus the selected fallback rides one generation with
+-- no silent cap and no base-form substitution, so the first visible
+-- movement already owns the art it is about to show.
+function T.turn_demand_stages_every_entering_icon_key_without_truncation()
+  local ScreenState = requirePresent("turn icon closure without truncation")
+  local function entries(prefix, first, count, formOf)
+    local list = {}
+    for index = 0, count - 1 do
+      local species = prefix .. (first + index)
+      list[#list + 1] = {
+        index = first + index,
+        dexNumber = first + index + 1,
+        species = species,
+        seen = true,
+        caught = true,
+        returnToSearch = false,
+        iconKey = species .. "/f" .. formOf(first + index),
+      }
+    end
+    return list
+  end
+  local current = entries("K", 1, 30, function(_)
+    return 0
+  end)
+  -- The entering page overlaps nothing and carries the two alternate
+  -- identities the grid must not flatten to base art.
+  local entering = entries("K", 31, 15, function(_)
+    return 0
+  end)
+  entering[1].species = "PICHU"
+  entering[1].iconKey = "PICHU/f1"
+  entering[2].species = "WORMADAM"
+  entering[2].iconKey = "WORMADAM/f2"
+  local view = {
+    key = 7,
+    mode = "national",
+    page = "grid",
+    selection = { species = "SEL", language = "english", seen = true, caught = true },
+    grid = {
+      page = 0,
+      lastPage = 1,
+      cursor = 0,
+      buffers = {
+        { firstIndex = 0, yOffset = 0, entries = current },
+        { firstIndex = 30, yOffset = 0, entries = entering },
+      },
+      scrollbar = { length = 30, position = 30, top = 0, bottom = 0 },
+      turn = { offset = 8, direction = 1 },
+    },
+    pictures = {},
+    text = {},
+  }
+  local controller = { views = { view } }
+  function controller:view()
+    return self.views[1]
+  end
+  function controller:updateFixed(_, _) end
+  function controller:takeResult()
+    return nil
+  end
+  function controller:dispose() end
+  local lease = { prepared = {}, released = 0 }
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    self.prepared[#self.prepared + 1] = demand
+    return { kind = "ready", key = demand.key, assets = {} }
+  end
+  function lease:release()
+    self.released = self.released + 1
+  end
+  local args = screenArgs({
+    controller = controller,
+    lease = lease,
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+  })
+  local screen = ScreenState.new(args)
+  Assert.equal(#lease.prepared, 1, "opening on the turn projection prepares exactly one demand")
+  local demand = assert(lease.prepared[1], "the turn demand is recorded")
+  local keys = assert(demand.iconKeys, "the demand carries its icon keys")
+  local wanted = {}
+  for _, entry in ipairs(current) do
+    wanted[entry.iconKey] = true
+  end
+  for _, entry in ipairs(entering) do
+    wanted[entry.iconKey] = true
+  end
+  wanted["SEL/f0"] = true
+  local found = {}
+  for _, key in ipairs(keys) do
+    found[key] = true
+  end
+  for _, key in ipairs({ "PICHU/f1", "WORMADAM/f2", "SEL/f0" }) do
+    Assert.isTrue(found[key] == true, "the turn closure stages " .. key)
+  end
+  for key in pairs(wanted) do
+    Assert.isTrue(found[key] == true, "the turn closure stages " .. key)
+  end
+  local count = 0
+  for _ in pairs(wanted) do
+    count = count + 1
+  end
+  Assert.equal(count, 46, "the turn union spans both buffers plus the selected fallback")
+  for _, key in ipairs(keys) do
+    Assert.isTrue(wanted[key] == true, "the demand stages no undeclared key: " .. key)
+  end
+  screen:dispose()
+end
+
 -- A ducked screen cannot leave the field music lowered when its host
 -- tears it down: the first update drains the queued duck, and a forced
 -- disposal balances exactly the acknowledged move, exactly once.

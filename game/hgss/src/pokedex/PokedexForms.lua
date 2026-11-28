@@ -343,7 +343,7 @@ function PokedexForms:scrollbarPosition()
   return minY + math.floor(step * self._row / 256)
 end
 
----@return { variants: table[], row: integer, scrollbar: { length: integer, position: integer, top: integer, bottom: integer }, scroll: { offset: integer, iconOffset: integer }?, comparison: { indices: integer[], activeSide: integer, facing: string }? } detached forms projection
+---@return { variants: table[], row: integer, scrollbar: { length: integer, position: integer, top: integer, bottom: integer }, scroll: { offset: integer, iconOffset: integer }?, comparison: { indices: integer[], activeSide: integer, facing: string }?, singleForm: boolean } detached forms projection
 function PokedexForms:view()
   local length = self:scrollbarLength()
   local half = math.floor(length / 2)
@@ -355,6 +355,7 @@ function PokedexForms:view()
     variants = self:variants(),
     row = self._row,
     scrollbar = { length = length, position = self:scrollbarPosition(), top = top, bottom = bottom },
+    singleForm = self:count() == 1,
   }
   local comparison = self:comparison()
   if comparison ~= nil then

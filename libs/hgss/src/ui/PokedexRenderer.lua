@@ -50,11 +50,6 @@ PokedexRenderer.FORMS_BACK_RECT = { x = 152, y = 80, width = 80, height = 80 }
 PokedexRenderer.COMPARE_LEFT_RECT = { x = 24, y = 80, width = 80, height = 80 }
 PokedexRenderer.COMPARE_RIGHT_RECT = { x = 152, y = 80, width = 80, height = 80 }
 PokedexRenderer.ICON_SLOT_SIZE = 32
-PokedexRenderer.ICON_GRID_ORIGIN = { x = 48, y = 24 }
-PokedexRenderer.ICON_GRID_STEP = { x = 40, y = 40 }
-PokedexRenderer.ICON_GRID_COLUMNS = 5
-PokedexRenderer.ICON_SLOTS = 15
-PokedexRenderer.CURSOR_SIZE = 48
 -- The locked source footer window on the information pane: BG stays
 -- allowed inside while OBJ is excluded inside; the right edge keeps its
 -- hardware inclusive convention and every other plane stays allowed
@@ -509,43 +504,6 @@ function PokedexRenderer.layerPrioritiesOf(manifest, role, paneId)
   return priorities
 end
 
--- Maps one icon slot to its authored 32x32 controls rectangle: slot order
--- runs left to right, top to bottom from the (48,24) center origin on the
--- 40px grid, and only the first fifteen slots are visible.
----@param slot integer zero-based icon slot
----@return { x: integer, y: integer, width: integer, height: integer } authored icon rectangle
-function PokedexRenderer.iconSlotRect(slot)
-  assert(type(slot) == "number" and slot % 1 == 0 and slot >= 0 and slot < 15, "icons draw their fifteen visible slots")
-  local column = slot % PokedexRenderer.ICON_GRID_COLUMNS
-  local row = math.floor(slot / PokedexRenderer.ICON_GRID_COLUMNS)
-  local centerX = PokedexRenderer.ICON_GRID_ORIGIN.x + PokedexRenderer.ICON_GRID_STEP.x * column
-  local centerY = PokedexRenderer.ICON_GRID_ORIGIN.y + PokedexRenderer.ICON_GRID_STEP.y * row
-  local half = PokedexRenderer.ICON_SLOT_SIZE / 2
-  return {
-    x = centerX - half,
-    y = centerY - half,
-    width = PokedexRenderer.ICON_SLOT_SIZE,
-    height = PokedexRenderer.ICON_SLOT_SIZE,
-  }
-end
-
--- Maps the grid cursor to its authored 48x48 controls rectangle around
--- the selected slot center.
----@param slot integer zero-based cursor slot
----@return { x: integer, y: integer, width: integer, height: integer } authored cursor rectangle
-function PokedexRenderer.cursorRectFor(slot)
-  local icon = PokedexRenderer.iconSlotRect(slot)
-  local centerX = icon.x + PokedexRenderer.ICON_SLOT_SIZE / 2
-  local centerY = icon.y + PokedexRenderer.ICON_SLOT_SIZE / 2
-  local half = PokedexRenderer.CURSOR_SIZE / 2
-  return {
-    x = centerX - half,
-    y = centerY - half,
-    width = PokedexRenderer.CURSOR_SIZE,
-    height = PokedexRenderer.CURSOR_SIZE,
-  }
-end
-
 -- Composes the authored Spinda spot runs from the compiled
 -- personalization: the four spot arrays union over the gender
 -- eligibility classes with the second-frame offset and portrait clipping.
@@ -970,13 +928,51 @@ end
 ---@param entry table<string, unknown> authored background record
 ---@param surfaces table[] six realized serial surfaces in compositor order
 ---@param dx number horizontal scroll-plane shift in native pixels
-local function drawBackgroundEntry(graphics, chrome, entry, surfaces, dx)
+---@param dy number? vertical cell displacement in native pixels (defaults to the settled plane)
+local function drawBackgroundEntry(graphics, chrome, entry, surfaces, dx, dy)
   assert(type(entry.layer) == "number", "background entries name their BG layer")
   local handle = assert(chrome[entry.chrome], "prepared bundles carry background chrome " .. tostring(entry.chrome))
   assert(type(handle) == "table", "prepared chrome handles stay records")
   local surface = assert(surfaces[entry.layer + 1], "background layers address their serial surface")
   graphics.setCanvas(surface.canvas)
-  drawSampled(graphics, handle, nil, (entry.x or 0) + (dx or 0), entry.y or 0)
+  drawSampled(graphics, handle, nil, (entry.x or 0) + (dx or 0), (entry.y or 0) + (dy or 0))
+end
+
+-- Selects the state-bound background variant behind one background
+-- entry: the area unlock, the single-observed-form patch, and the
+-- list detail state resolve through the producer-bound variant map.
+-- States without a bound role keep the base chrome; the summary state
+-- reads the base detail composition until its source screen is bound.
+---@param view table<string, unknown> detached projection carrying the published state
+---@param role string manifest page role behind the pane
+---@param entry table<string, unknown> authored background record
+---@return string? bound variant role, nil for the base chrome
+local function backgroundVariantFor(view, role, entry)
+  local variants = entry.variants
+  if type(variants) ~= "table" then
+    return nil
+  end
+  local pick = nil
+  if role == "entry.area" then
+    if view.nationalUnlocked == true then
+      pick = "national"
+    end
+  elseif role == "entry.forms" then
+    local forms = view.forms
+    if type(forms) == "table" and forms.singleForm == true then
+      pick = "single"
+    end
+  elseif role == "grid" or role == "results" then
+    local selection = view.selection
+    local detail = type(selection) == "table" and selection.detailVariant or nil
+    if detail == "native" or detail == "foreign" or detail == "empty" or detail == "summary" then
+      pick = detail
+    end
+  end
+  if type(pick) == "string" and type(variants[pick]) == "string" then
+    return variants[pick]
+  end
+  return nil
 end
 
 -- Paints every authored background of one pane onto its declared BG
@@ -1010,7 +1006,12 @@ local function drawPageBackgrounds(graphics, assets, view, role, paneId, surface
   for _, entry in ipairs(entries) do
     local layer = entry.layer
     assert(type(layer) == "number", "background entries name their BG layer")
-    drawBackgroundEntry(graphics, chrome, entry, surfaces, -bgScrollShift(view, entry))
+    local drawn = entry
+    local variant = backgroundVariantFor(view, role, entry)
+    if variant ~= nil then
+      drawn = { chrome = variant, layer = entry.layer, x = entry.x, y = entry.y }
+    end
+    drawBackgroundEntry(graphics, chrome, drawn, surfaces, -bgScrollShift(view, entry))
   end
 end
 
@@ -1264,11 +1265,13 @@ local function drawDexModeLabel(graphics, assets, view, role, paneId, surfaces)
 end
 
 -- Draws the runtime dex-number strip on the controls pane's BG3: the
--- caught marker plus three zero-padded digits per visible slot, sampled
--- from the compiled MAIN3 glyph roles.
+-- caught marker plus three zero-padded digits per native slot, sampled
+-- from the compiled MAIN3 glyph roles. Positions ride the published
+-- native slot projection, the single motion owner; the authored visible
+-- list band bounds the pass.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with chrome and the manifest
----@param view table<string, unknown> detached projection carrying the grid buffer
+---@param view table<string, unknown> detached projection carrying the native slots
 ---@param role string manifest page role behind the pane
 ---@param paneId string browser pane identity
 ---@param surfaces table[] six realized serial surfaces in compositor order
@@ -1277,14 +1280,10 @@ local function drawListNumbers(graphics, assets, view, role, paneId, surfaces)
     return
   end
   local grid = view.grid
-  if type(grid) ~= "table" or type(grid.buffers) ~= "table" then
+  if type(grid) ~= "table" or type(grid.nativeSlots) ~= "table" then
     return
   end
-  local buffers = grid.buffers
-  local first = buffers[1]
-  if type(first) ~= "table" or type(first.entries) ~= "table" then
-    return
-  end
+  local slots = grid.nativeSlots
   local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
   local atlas = assert(manifest.numberAtlas, "the manifest carries its number atlas")
   local chrome = assert(assets.chrome, "prepared bundles carry their chrome handles")
@@ -1295,40 +1294,33 @@ local function drawListNumbers(graphics, assets, view, role, paneId, surfaces)
     seenDigits[digit] = assert(chrome[atlas.seen[digit]], "prepared bundles carry seen digits")
   end
   local surface = assert(surfaces[4], "background number passes target BG3")
+  local half = PokedexRenderer.ICON_SLOT_SIZE / 2
   graphics.setCanvas(surface.canvas)
-  local function drawNumbers(buffer, dx)
-    if type(buffer) ~= "table" or type(buffer.entries) ~= "table" then
-      return
-    end
-    for slot = 0, PokedexRenderer.ICON_SLOTS - 1 do
-      local entry = buffer.entries[slot + 1]
-      if type(entry) == "table" and type(entry.dexNumber) == "number" then
-        local rect = PokedexRenderer.iconSlotRect(slot)
-        local x, y = rect.x + dx, rect.y
-        local caught = entry.caught == true
-        local row = caught and caughtDigits or seenDigits
-        if caught then
-          drawSampled(graphics, marker, nil, x, y)
-        end
-        local text = string.format("%03d", math.max(0, math.floor(entry.dexNumber)))
-        for position = 1, 3 do
-          local digit = tonumber(text:sub(position, position)) + 1
-          drawSampled(graphics, assert(row[digit], "the number row carries its digit"), nil, x + position * 8, y)
+  withClip(graphics, { x = 8, y = 0, width = 240, height = 132 }, function()
+    for _, record in ipairs(slots) do
+      if type(record) == "table" then
+        local entry = record.entry
+        if
+          type(entry) == "table"
+          and type(entry.dexNumber) == "number"
+          and type(record.x) == "number"
+          and type(record.y) == "number"
+        then
+          local x, y = record.x - half, record.y - half
+          local caught = entry.caught == true
+          local row = caught and caughtDigits or seenDigits
+          if caught then
+            drawSampled(graphics, marker, nil, x, y)
+          end
+          local text = string.format("%03d", math.max(0, math.floor(entry.dexNumber)))
+          for position = 1, 3 do
+            local digit = tonumber(text:sub(position, position)) + 1
+            drawSampled(graphics, assert(row[digit], "the number row carries its digit"), nil, x + position * 8, y)
+          end
         end
       end
     end
-  end
-  local turn = grid.turn
-  if type(turn) == "table" and type(buffers[2]) == "table" then
-    local direction = turn.direction == -1 and -1 or 1
-    local shift = turn.offset
-    withClip(graphics, { x = 8, y = 0, width = 240, height = 132 }, function()
-      drawNumbers(buffers[1], -shift * direction)
-      drawNumbers(buffers[2], (120 - shift) * direction)
-    end)
-    return
-  end
-  drawNumbers(buffers[1], 0)
+  end)
 end
 
 -- Collects the page-local placed sprites as OBJ commands: records
@@ -1638,53 +1630,73 @@ local function drawIconAt(icons, key, rect, caught, commands, priority, clip)
   })
 end
 
+-- Resolves the canonical icon key behind one staged grid entry: the
+-- controller-published first-seen identity, falling back to base art
+-- only for projections that predate the canonical key.
+---@param entry table<string, unknown> staged grid entry
+---@return string canonical icon key
+local function entryIconKey(entry)
+  if type(entry.iconKey) == "string" and entry.iconKey ~= "" then
+    return entry.iconKey
+  end
+  assert(type(entry.species) == "string", "icon entries name their species")
+  return entry.species .. "/f0"
+end
+
+-- Resolves the canonical icon key behind the current selection: the
+-- published first-seen form, defaulting to base art without one.
+---@param selection table<string, unknown>? detached selection snapshot
+---@return string? canonical icon key, nil without a selected species
+local function selectionIconKey(selection)
+  if type(selection) ~= "table" or type(selection.species) ~= "string" then
+    return nil
+  end
+  local form = 0
+  if type(selection.form) == "number" then
+    form = math.floor(selection.form)
+  end
+  return selection.species .. "/f" .. form
+end
+
 -- Collects the controls icon grid as OBJ commands: caught icons opaque,
 -- seen-only icons marked for the locked seen blend, blanks untouched.
--- Only the first fifteen staged slots are visible.
+-- Positions ride the published native slot projection, the single motion
+-- owner; the authored visible list band bounds every command.
 ---@param assets table<string, unknown> prepared bundle with the lease-owned icons
----@param grid table<string, unknown>? staged grid or results buffer behind the page
+---@param grid table<string, unknown>? staged grid or results projection behind the page
 ---@param commands table[] draw-local OBJ command buffer behind one pane
 local function drawControlIcons(assets, grid, commands)
   if type(grid) ~= "table" then
     return
   end
-  local buffers = grid.buffers
-  if type(buffers) ~= "table" then
+  local slots = grid.nativeSlots
+  if type(slots) ~= "table" then
     return
   end
   local icons = assets.icons
   assert(type(icons) == "table", "icon drawing borrows the lease-owned provider")
   assert(type(icons.handleFor) == "function", "icon drawing resolves prepared handles")
-  local turnClip = nil
-  local turn = grid.turn
-  if type(turn) == "table" and type(buffers[2]) == "table" then
-    turnClip = { x = 8, y = 0, width = 240, height = 132 }
-  end
-  local function drawBuffer(buffer, dx)
-    if type(buffer) ~= "table" or type(buffer.entries) ~= "table" then
-      return
-    end
-    for slot = 0, PokedexRenderer.ICON_SLOTS - 1 do
-      local entry = buffer.entries[slot + 1]
-      if type(entry) == "table" and entry.seen == true and type(entry.species) == "string" then
-        local rect = PokedexRenderer.iconSlotRect(slot)
-        drawIconAt(icons, entry.species .. "/f0", {
-          x = rect.x + dx,
-          y = rect.y,
-          width = rect.width,
-          height = rect.height,
-        }, entry.caught == true, commands, nil, turnClip)
+  local band = { x = 8, y = 0, width = 240, height = 132 }
+  local half = PokedexRenderer.ICON_SLOT_SIZE / 2
+  for _, record in ipairs(slots) do
+    if type(record) == "table" then
+      local entry = record.entry
+      if
+        type(entry) == "table"
+        and entry.seen == true
+        and type(entry.species) == "string"
+        and type(record.x) == "number"
+        and type(record.y) == "number"
+      then
+        drawIconAt(icons, entryIconKey(entry), {
+          x = record.x - half,
+          y = record.y - half,
+          width = PokedexRenderer.ICON_SLOT_SIZE,
+          height = PokedexRenderer.ICON_SLOT_SIZE,
+        }, entry.caught == true, commands, nil, band)
       end
     end
   end
-  if turnClip ~= nil then
-    local direction = turn.direction == -1 and -1 or 1
-    local shift = turn.offset
-    drawBuffer(buffers[1], -shift * direction)
-    drawBuffer(buffers[2], (120 - shift) * direction)
-    return
-  end
-  drawBuffer(buffers[1], 0)
 end
 
 -- Native form-list icon geometry (DrawFormListIcons stages six icons
@@ -2261,7 +2273,7 @@ local function drawCompactIcons(assets, grid, cursor, iconRects, cursorRects, co
     local entry = first.entries[slot + 1]
     if type(entry) == "table" and entry.seen == true and type(entry.species) == "string" then
       local rect = assert(iconRects[slot + 1], "the compact grid stages fifteen icon rectangles")
-      drawIconAt(icons, entry.species .. "/f0", rect, entry.caught == true, commands)
+      drawIconAt(icons, entryIconKey(entry), rect, entry.caught == true, commands)
     end
   end
   if type(cursor) == "number" then
@@ -2320,7 +2332,8 @@ local function drawCompactPortrait(assets, view, compact, commands)
   if type(icons) ~= "table" or type(icons.handleFor) ~= "function" then
     return
   end
-  local key = species .. "/f0"
+  local key = selectionIconKey(selection)
+  assert(type(key) == "string", "the compact portrait resolves its selected icon key")
   local handle = icons:handleFor(key)
   assert(type(handle) == "table", "prepared icon keys resolve their handle: " .. key)
   local quad = nil
@@ -2745,49 +2758,114 @@ local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, 
   end
 end
 
--- Pressed-control flash and entry fade drawing: the retail button
--- palettes swap normal->flash->normal over 4 ticks on the pressed rect,
--- and entry tab switches fade out/in on every plane. Flash rects are the
--- authored native controls-pane rectangles in half-open pane pixels;
--- controls without a painted rect still publish flash state and tick out.
-local FLASH_RECTS = {
-  ["entry-tab:area"] = { x = 7, y = 168, width = 51, height = 16 },
-  ["entry-tab:size"] = { x = 71, y = 168, width = 51, height = 16 },
-  ["entry-tab:forms"] = { x = 135, y = 168, width = 51, height = 16 },
-  ["entry-tab:return"] = { x = 199, y = 168, width = 51, height = 16 },
-  ["search-run"] = { x = 88, y = 160, width = 80, height = 32 },
-  ["search-reset"] = { x = 0, y = 160, width = 80, height = 32 },
-  ["search-back"] = { x = 176, y = 160, width = 80, height = 32 },
-  ["search-option:order"] = { x = 128, y = 8, width = 88, height = 16 },
-  ["search-option:letter"] = { x = 56, y = 32, width = 72, height = 16 },
-  ["search-option:type"] = { x = 56, y = 56, width = 128, height = 16 },
-  ["search-option:height"] = { x = 56, y = 80, width = 112, height = 16 },
-  ["search-option:weight"] = { x = 56, y = 104, width = 160, height = 16 },
-  ["search-option:area"] = { x = 56, y = 128, width = 56, height = 16 },
-  ["search-option:shape"] = { x = 208, y = 56, width = 32, height = 32 },
-  ["editor-ok"] = { x = 4, y = 164, width = 72, height = 24 },
-  ["editor-cancel"] = { x = 180, y = 164, width = 72, height = 24 },
-  ["size-restart"] = { x = 8, y = 8, width = 96, height = 24 },
-  ["compare"] = { x = 200, y = 8, width = 48, height = 24 },
-  ["compare-side:0"] = { x = 8, y = 140, width = 48, height = 24 },
-  ["compare-side:1"] = { x = 64, y = 140, width = 48, height = 24 },
-  ["compare-flip"] = { x = 120, y = 140, width = 48, height = 24 },
-  ["compare-back"] = { x = 176, y = 140, width = 48, height = 24 },
-}
+-- Native search-retract cell layers on the controls pane: the successful
+-- search snapshots MAIN BG0/BG2 into BgCellManager cells 9/10 and slides
+-- them up one tile row per accepted update over a cleared plane
+-- (erase-to-blank behind the moving cell, never the settled copy
+-- underneath). The SUB pair (cells 11/12) stays under the retract clip
+-- window, so only the MAIN pair replays here; the information clip
+-- already gates the top pane.
+local RETRACT_CELL_LAYERS = { 0, 2 }
 
--- Reads the painted flash rectangle behind one published flash target.
----@param flash table<string, unknown> published flash view
----@return { x: integer, y: integer, width: integer, height: integer }? painted rect, nil without authored geometry
-local function flashRectFor(flash)
-  if type(flash) ~= "table" or flash.active ~= true then
+-- Resolves the active retract displacement in native pixels: every
+-- published summary cell travels together, so the first visible one
+-- names the shared row offset behind the pass.
+---@param view table<string, unknown> detached projection carrying the published cells
+---@return integer? vertical displacement in native pixels, nil while settled
+local function retractCellOffset(view)
+  local visual = type(view) == "table" and view.visual or nil
+  if type(visual) ~= "table" then
     return nil
   end
-  local rect = FLASH_RECTS[flash.target]
-  if type(rect) ~= "table" then
+  local bgCells = visual.bgCells
+  if type(bgCells) ~= "table" then
     return nil
   end
-  return rect
+  for _, cell in pairs(bgCells) do
+    if type(cell) == "table" and cell.visible ~= false and type(cell.y) == "number" and cell.y % 1 == 0 then
+      return cell.y
+    end
+  end
+  return nil
 end
+
+-- Rasterizes the active retract cells on their native BG layers: clears
+-- the cell planes (no settled copy underneath), then replays the pane's
+-- own layer backgrounds and messaged windows displaced by the published
+-- row offset with replacement semantics under the native pane clip,
+-- mirroring the pressed-control flash patch path.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with chrome, fonts, messages, and the manifest
+---@param view table<string, unknown> detached projection carrying the published cells
+---@param role string manifest page role behind the pane
+---@param surfaces table[] six realized serial surfaces in compositor order
+---@param dy integer vertical retract displacement in native pixels
+local function drawRetractCells(graphics, assets, view, role, surfaces, dy)
+  local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
+  local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
+  local page = assert(pages[role], "the compiled manifest carries the drawn page role " .. tostring(role))
+  local chrome = assert(assets.chrome, "prepared bundles carry their chrome handles")
+  local inventory = assert(manifest.windows, "the compiled manifest carries its window inventory")
+  local messages = assert(assets.messages, "prepared bundles carry their messages")
+  assert(type(messages) == "table", "prepared messages stay records")
+  local byWindow = textByWindow(messages)
+  withClip(
+    graphics,
+    { x = 0, y = 0, width = PokedexRenderer.SURFACE_WIDTH, height = PokedexRenderer.SURFACE_HEIGHT },
+    function()
+      local previousMode = nil
+      if type(graphics.getBlendMode) == "function" then
+        previousMode = { graphics.getBlendMode() }
+      end
+      if type(graphics.setBlendMode) == "function" then
+        graphics.setBlendMode("replace")
+      end
+      for _, layer in ipairs(RETRACT_CELL_LAYERS) do
+        clearSurface(graphics, assert(surfaces[layer + 1], "retract cells address their serial surface"))
+      end
+      local backgrounds = page.backgrounds
+      local entries = type(backgrounds) == "table" and backgrounds.controls or nil
+      if type(entries) == "table" then
+        for _, entry in ipairs(entries) do
+          if entry.layer == 0 or entry.layer == 2 then
+            local drawn = entry
+            local variant = backgroundVariantFor(view, role, entry)
+            if variant ~= nil then
+              drawn = { chrome = variant, layer = entry.layer, x = entry.x, y = entry.y }
+            end
+            drawBackgroundEntry(graphics, chrome, drawn, surfaces, -bgScrollShift(view, entry), dy)
+          end
+        end
+      end
+      local keys = page.windows
+      if type(keys) == "table" then
+        -- The retract runs on the search pages, which carry no cover
+        -- offset; the displaced windows ride the published row offset
+        -- exactly like the row-scrolled entry windows do.
+        for _, key in ipairs(keys) do
+          local window = assert(inventory[key], "the window inventory carries " .. tostring(key))
+          if window.pane == "controls" and (window.layer == 0 or window.layer == 2) then
+            local text = byWindow[window.textRole or key]
+            if text ~= nil then
+              assert(type(text) == "string", "prepared window strings stay strings")
+              drawWindowText(graphics, assets, window, key, text, surfaces, dy, 0)
+            end
+          end
+        end
+      end
+      if type(graphics.setBlendMode) == "function" and previousMode ~= nil then
+        graphics.setBlendMode(previousMode[1], previousMode[2])
+      end
+    end
+  )
+end
+
+-- Pressed-control flash drawing: the retail button palettes swap
+-- normal->flash->normal over 4 ticks on the pressed rect. The published
+-- flash state names the pressed target for the bank-mutated tile patch;
+-- no opaque overlay may cover the pressed art, so the white OBJ rect
+-- path is retired. Rect geometry now lives with the producer flash
+-- records and the lease closure.
 
 -- Resolves the per-pane black fade behind one view: the published
 -- palette fades first, then the entry fade envelope, else no fade.
@@ -2836,24 +2914,6 @@ local function fadeForView(view, paneId)
   return noFade, noFade
 end
 
--- Collects one pressed-control flash as an opaque white OBJ command over
--- the pressed button, marked opaque so it composites above its
--- background.
----@param rect { x: integer, y: integer, width: integer, height: integer } painted flash rectangle
----@param commands table[] draw-local OBJ command buffer behind one pane
-local function drawFlashRect(rect, commands)
-  submitObjCommand(commands, {
-    kind = "fill",
-    color = { r = 255, g = 255, b = 255 },
-    x = rect.x,
-    y = rect.y,
-    width = rect.width,
-    height = rect.height,
-    blendClass = 0,
-    priority = 0,
-  })
-end
-
 -- Collects the serial passes for one pane on the identity transform:
 -- backgrounds, windows, and text paint immediately onto their BG planes
 -- while every OBJ contribution collects as a draw-local command for the
@@ -2887,6 +2947,9 @@ local function runSerialPasses(graphics, assets, view, role, paneId, surfaces, c
     drawDexModeLabel(graphics, assets, view, role, paneId, surfaces)
     drawPageWindowsAndText(graphics, assets, role, paneId, surfaces, view)
     drawListNumbers(graphics, assets, view, role, paneId, surfaces)
+    local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
+    local manifestPages = assert(manifest.pages, "the compiled manifest carries its page roles")
+    local page = assert(manifestPages[role], "the compiled manifest carries the drawn page role " .. tostring(role))
     if not hideSprites then
       drawPageSprites(assets, role, paneId, commands)
       drawDynamicSprites(assets, view, role, paneId, commands)
@@ -2896,12 +2959,29 @@ local function runSerialPasses(graphics, assets, view, role, paneId, surfaces, c
         drawControlIcons(assets, view.grid, commands)
         drawFormsIcons(assets, view, role, commands)
       end
+      -- Pressed-control feedback is a source palette-bank mutation on the
+      -- tile layer, never an opaque overlay: the producer stages the
+      -- bank-mutated patch beside the base art, and the active flash
+      -- replaces its plane rect through the native clip. Actions without
+      -- a bound patch keep their base art under the published state.
       local visual = view.visual
-      if type(visual) == "table" then
-        local rect = flashRectFor(visual.flash)
-        if rect ~= nil then
-          drawFlashRect(rect, commands)
+      if type(visual) == "table" and type(visual.flash) == "table" and visual.flash.active == true then
+        local flashes = page.bgFlashes
+        local record = type(flashes) == "table" and flashes[visual.flash.target] or nil
+        if type(record) == "table" then
+          local chrome = assert(assets.chrome, "prepared bundles carry their chrome handles")
+          withClip(graphics, { x = record.x, y = record.y, width = record.width, height = record.height }, function()
+            drawBackgroundEntry(graphics, chrome, record, surfaces, 0)
+          end)
         end
+      end
+      -- The successful search retract slides its snapshotted MAIN layers
+      -- up over a cleared plane: rasterize the published cells on their
+      -- native layers with replacement semantics once the base settled
+      -- pass is down, leaving no settled copy underneath.
+      local retractDy = retractCellOffset(view)
+      if retractDy ~= nil then
+        drawRetractCells(graphics, assets, view, role, surfaces, retractDy)
       end
     elseif paneId == "information" then
       if role == "entry.size" then
@@ -3061,6 +3141,33 @@ function PokedexRenderer:drawBrowser(prepared, plan)
         local visual = view.visual
         local windowActive = paneId == "information" and type(visual) == "table" and visual.informationClip == true
         local uniforms = compositeUniforms(manifest, role, paneId, blend, bgFade, objFade, windowActive)
+        -- The results summary/detail switch parks SUB2/SUB3 behind
+        -- different layers per the producer priority vectors; the base
+        -- vector stays for every other state.
+        local priorityVariant = type(visual) == "table" and visual.priorityVariant or nil
+        if type(priorityVariant) == "string" then
+          local pageRecord = manifest.pages[role]
+          local variantMap = type(pageRecord) == "table" and pageRecord.priorityVariants or nil
+          local node = type(variantMap) == "table" and variantMap[priorityVariant] or nil
+          if type(node) == "table" then
+            local vector = node[paneId]
+            if type(vector) ~= "table" then
+              vector = node
+            end
+            if type(vector) == "table" and #vector == 4 then
+              local valid = true
+              for layer = 1, 4 do
+                local priority = vector[layer]
+                if type(priority) ~= "number" or priority % 1 ~= 0 or priority < 0 or priority > 3 then
+                  valid = false
+                end
+              end
+              if valid then
+                uniforms.u_bgPriority = { vector[1], vector[2], vector[3], vector[4] }
+              end
+            end
+          end
+        end
         compositePane(self, graphics, manifest, placement, uniforms, surfaces)
       end
     end

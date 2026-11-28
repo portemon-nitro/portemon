@@ -1810,6 +1810,49 @@ local function checkPages(manifest)
             { role = role }
           )
         end
+        -- Browser-variant selection: an optional finite map of semantic
+        -- state keys to chrome roles (native, foreign, empty, summary,
+        -- national, single, ...). Every named role must resolve in the
+        -- chrome inventory; the base chrome stays required so an
+        -- unrecognized state never leaves the layer blank.
+        if background.variants ~= nil then
+          if type(background.variants) ~= "table" then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "page background variants stay a semantic map",
+              { role = role }
+            )
+          end
+          for state, chromeRole in pairs(background.variants) do
+            if type(state) ~= "string" or state == "" then
+              return fail(
+                PokedexAssetSchema.ERROR.SHAPE_INVALID,
+                "page background variant names no state",
+                { role = role }
+              )
+            end
+            if type(chromeRole) ~= "string" or manifest.chrome[chromeRole] == nil then
+              return fail(
+                PokedexAssetSchema.ERROR.DANGLING_REFERENCE,
+                "page background variant references unknown chrome",
+                { role = role, state = state }
+              )
+            end
+          end
+        end
+        -- Text-map repeat extents stay positive native dimensions owned
+        -- by actually repeating backgrounds; a wrap extent on any other
+        -- background is malformed.
+        for _, extent in ipairs({ "wrapWidth", "wrapHeight" }) do
+          local value = background[extent]
+          if value ~= nil and (not isInteger(value) or value <= 0) then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "page background carries an invalid wrap extent",
+              { role = role }
+            )
+          end
+        end
       end
     end
     local bannerFlash = page.bannerFlash
@@ -1835,6 +1878,153 @@ local function checkPages(manifest)
       end
       if bannerFlash.width <= 0 or bannerFlash.height <= 0 then
         return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page banner flash carries an empty rect", { role = role })
+      end
+    end
+    -- Finite browser-variant records stay strictly validated without
+    -- becoming mandatory: mutable BG cells name their unique cell, pane,
+    -- layer, chrome/variant refs and pixel rect; flash regions name
+    -- their action, pane, layer, exact rect and optional cell; priority
+    -- variants name their state with full dense per-pane 0..3 vectors.
+    -- Every chrome reference must resolve; registration keeps these
+    -- arrays empty.
+    if page.bgCells ~= nil then
+      if type(page.bgCells) ~= "table" then
+        return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCells stay an ordered list", { role = role })
+      end
+      local seenCell = {}
+      for _, cell in ipairs(page.bgCells) do
+        if type(cell) ~= "table" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCell is not a record", { role = role })
+        end
+        if type(cell.id) ~= "string" or cell.id == "" or seenCell[cell.id] then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCell names no unique id", { role = role })
+        end
+        seenCell[cell.id] = true
+        if cell.pane ~= "information" and cell.pane ~= "controls" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCell names an unknown pane", { role = role })
+        end
+        if not isInteger(cell.layer) or cell.layer < 0 or cell.layer > 3 then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCell names an invalid layer", { role = role })
+        end
+        if type(cell.chrome) ~= "string" or manifest.chrome[cell.chrome] == nil then
+          return fail(
+            PokedexAssetSchema.ERROR.DANGLING_REFERENCE,
+            "page bgCell references unknown chrome",
+            { role = role }
+          )
+        end
+        if cell.variants ~= nil then
+          if type(cell.variants) ~= "table" then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "page bgCell variants stay a semantic map",
+              { role = role }
+            )
+          end
+          for state, chromeRole in pairs(cell.variants) do
+            if type(state) ~= "string" or state == "" then
+              return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCell variant names no state", { role = role })
+            end
+            if type(chromeRole) ~= "string" or manifest.chrome[chromeRole] == nil then
+              return fail(
+                PokedexAssetSchema.ERROR.DANGLING_REFERENCE,
+                "page bgCell variant references unknown chrome",
+                { role = role, state = state }
+              )
+            end
+          end
+        end
+        for _, field in ipairs({ "x", "y", "width", "height" }) do
+          if not isInteger(cell[field]) then
+            return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCell carries invalid geometry", { role = role })
+          end
+        end
+        if cell.width <= 0 or cell.height <= 0 then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCell carries an empty rect", { role = role })
+        end
+        if cell.clip ~= nil and type(cell.clip) ~= "table" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgCell clip stays a record", { role = role })
+        end
+      end
+    end
+    if page.bgFlashes ~= nil then
+      if type(page.bgFlashes) ~= "table" then
+        return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgFlashes stay a semantic map", { role = role })
+      end
+      for action, flash in pairs(page.bgFlashes) do
+        if type(action) ~= "string" or action == "" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgFlash names no action", { role = role })
+        end
+        if type(flash) ~= "table" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgFlash is not a record", { role = role })
+        end
+        if flash.pane ~= "information" and flash.pane ~= "controls" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgFlash names an unknown pane", { role = role })
+        end
+        if not isInteger(flash.layer) or flash.layer < 0 or flash.layer > 3 then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgFlash names an invalid layer", { role = role })
+        end
+        if type(flash.chrome) ~= "string" or manifest.chrome[flash.chrome] == nil then
+          return fail(
+            PokedexAssetSchema.ERROR.DANGLING_REFERENCE,
+            "page bgFlash references unknown chrome",
+            { role = role, action = action }
+          )
+        end
+        if flash.cellId ~= nil and type(flash.cellId) ~= "string" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgFlash cell stays a cell id", { role = role })
+        end
+        for _, field in ipairs({ "x", "y", "width", "height" }) do
+          if not isInteger(flash[field]) then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "page bgFlash carries invalid geometry",
+              { role = role }
+            )
+          end
+        end
+        if flash.width <= 0 or flash.height <= 0 then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page bgFlash carries an empty rect", { role = role })
+        end
+      end
+    end
+    if page.priorityVariants ~= nil then
+      if type(page.priorityVariants) ~= "table" then
+        return fail(
+          PokedexAssetSchema.ERROR.SHAPE_INVALID,
+          "page priorityVariants stay a semantic map",
+          { role = role }
+        )
+      end
+      for state, node in pairs(page.priorityVariants) do
+        if type(state) ~= "string" or state == "" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page priority variant names no state", { role = role })
+        end
+        local vectors = node
+        if type(node) == "table" and (node.information ~= nil or node.controls ~= nil) then
+          vectors = { information = node.information, controls = node.controls }
+        else
+          vectors = { information = node, controls = node }
+        end
+        for _, pane in ipairs({ "information", "controls" }) do
+          local vector = vectors[pane]
+          if type(vector) ~= "table" or #vector ~= 4 then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "page priority variant carries no dense " .. pane .. " priorities",
+              { role = role, state = state }
+            )
+          end
+          for layer = 1, 4 do
+            if not isInteger(vector[layer]) or vector[layer] < 0 or vector[layer] > 3 then
+              return fail(
+                PokedexAssetSchema.ERROR.SHAPE_INVALID,
+                "page priority variant leaves the native 0..3 range",
+                { role = role, state = state }
+              )
+            end
+          end
+        end
       end
     end
     for _, field in ipairs({ "cells", "sprites", "windows" }) do

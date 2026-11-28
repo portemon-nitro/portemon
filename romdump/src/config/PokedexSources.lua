@@ -151,9 +151,14 @@ PokedexSources.pagePriorities = {
 -- public snapshot.
 --
 -- `screenJapanese` selects the foreign-language list variant (NSCR 21)
--- when the dump is not English; `screenNational` stages the
+-- when the dump is not English; `screenEmpty` selects the empty slot
+-- past the list length (NSCR 22). The runtime chooses among the bound
+-- native/foreign/empty roles by selected language and list position.
+-- `screenNational` stages the
 -- national-mode area variant (NSCR 81) as a separately selectable image
 -- while the default johto variant (NSCR 80) stays referenced.
+-- `screenPatch` stages the single-observed-form replacement tilemap
+-- (NSCR 100) beside the multi-form base art on the forms page.
 local numberStripCells = {
   { screen = 10, x = 0, y = 0 },
   { screen = 10, x = 0, y = 5 },
@@ -170,7 +175,7 @@ local function listLayers(buttonCells)
     { pane = "controls", layer = 2, char = 4, palette = 2, cells = buttonCells },
     { pane = "controls", layer = 3, char = 3, palette = 2, cells = numberStripCells },
     { pane = "information", layer = 0, char = 17, screen = 16, palette = 18, scroll = "cover" },
-    { pane = "information", layer = 3, char = 19, screen = 20, screenJapanese = 21, palette = 18 },
+    { pane = "information", layer = 3, char = 19, screen = 20, screenJapanese = 21, screenEmpty = 22, palette = 18 },
   }
 end
 
@@ -182,7 +187,7 @@ local searchBaseLayers = {
 }
 
 ---@param screenMember integer
----@return { pane: string, layer: integer, char: integer, screen: integer|nil, screenJapanese: integer|nil, screenNational: integer|nil, palette: integer }[]
+---@return { pane: string, layer: integer, char: integer, screen: integer|nil, screenJapanese: integer|nil, screenNational: integer|nil, screenEmpty: integer|nil, screenPatch: integer|nil, palette: integer }[]
 local function searchLayers(screenMember)
   local layers = {
     { pane = "controls", layer = 2, char = 58, screen = screenMember, palette = 2 },
@@ -209,7 +214,7 @@ PokedexSources.pageLayers = {
     { pane = "controls", layer = 0, char = 83, screen = 80, screenNational = 81, palette = 2 },
     { pane = "controls", layer = 1, char = 4, palette = 2 },
     { pane = "controls", layer = 3, char = 83, screen = 82, palette = 2 },
-    { pane = "information", layer = 0, char = 87, screen = 86, palette = 18, scroll = "areaPan" },
+    { pane = "information", layer = 0, char = 87, screen = 86, palette = 18, scroll = "areaPan", mirrorUnlock = true },
     { pane = "information", layer = 3, char = 85, screen = 84, palette = 18 },
   },
   ["entry.size"] = {
@@ -218,7 +223,7 @@ PokedexSources.pageLayers = {
     { pane = "information", layer = 2, char = 92, screen = 91, palette = 18 },
   },
   ["entry.forms"] = {
-    { pane = "controls", layer = 0, char = 93, screen = 95, palette = 2 },
+    { pane = "controls", layer = 0, char = 93, screen = 95, screenPatch = 100, palette = 2 },
     { pane = "controls", layer = 1, char = 4, palette = 2 },
     { pane = "controls", layer = 3, char = 93, screen = 96, palette = 2 },
     { pane = "information", layer = 3, char = 94, screen = 97, palette = 18 },
@@ -234,6 +239,62 @@ PokedexSources.pageLayers = {
   },
   registration = {
     { pane = "information", layer = 2, char = 19, screen = 20, palette = 18 },
+  },
+}
+
+-- Producer-only pressed-control flash patches: per-action tile-row
+-- palette-bank mutations on one BG layer. Each record names the flash
+-- action the controller publishes, the target pane/layer, the source
+-- triple to re-render, the native tile rows to mutate with the flash
+-- bank (tile IDs, flips, geometry and transparency preserved), and the
+-- plane rect the renderer replaces while the flash is active. The
+-- search bottom buttons flash the MAIN2 strip rows 19..23 from bank 0
+-- to bank 6 (FlashBottomButton); unmapped actions keep their base art
+-- with no overlay.
+PokedexSources.pageFlashes = {
+  ["search.criteria"] = {
+    {
+      action = "search-run",
+      pane = "controls",
+      layer = 2,
+      char = 58,
+      screen = 57,
+      palette = 2,
+      x = 88,
+      y = 152,
+      width = 80,
+      height = 40,
+      bankRows = { 19, 20, 21, 22, 23 },
+      flashBank = 6,
+    },
+    {
+      action = "search-reset",
+      pane = "controls",
+      layer = 2,
+      char = 58,
+      screen = 57,
+      palette = 2,
+      x = 0,
+      y = 152,
+      width = 80,
+      height = 40,
+      bankRows = { 19, 20, 21, 22, 23 },
+      flashBank = 6,
+    },
+    {
+      action = "search-back",
+      pane = "controls",
+      layer = 2,
+      char = 58,
+      screen = 57,
+      palette = 2,
+      x = 176,
+      y = 152,
+      width = 80,
+      height = 40,
+      bankRows = { 19, 20, 21, 22, 23 },
+      flashBank = 6,
+    },
   },
 }
 

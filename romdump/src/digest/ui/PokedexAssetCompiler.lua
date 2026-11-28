@@ -418,6 +418,29 @@ local function _compile(romFs, versionId, catalog, sink)
     return (pageRole:gsub("%.", "-"))
   end
 
+  -- Results summary/detail SUB priority switch behind the semantic
+  -- state names the renderer selects. The summary parks SUB2 (layer 2)
+  -- at priority 2 and SUB3 (layer 3) at 3; the entry detail swaps them.
+  -- Controls vectors stay at the page base in both states.
+  ---@param pageRole string generated page role under compilation
+  ---@param densePriorities fun(pane: string): integer[] base vectors behind the page
+  ---@return table<string, table<string, integer[]>> semantic state to per-pane vectors
+  local function pagePriorityVariants(pageRole, densePriorities)
+    if pageRole ~= "results" then
+      return {}
+    end
+    local information = densePriorities("information")
+    local controls = densePriorities("controls")
+    local function withSub(informationVector, sub2, sub3)
+      local swapped = { informationVector[1], informationVector[2], sub2, sub3 }
+      return swapped
+    end
+    return {
+      summary = { information = withSub(information, 2, 3), controls = controls },
+      detail = { information = withSub(information, 3, 2), controls = controls },
+    }
+  end
+
   local bgRoleByTriple = {}
   local fillRoleByPair = {}
 
@@ -427,12 +450,16 @@ local function _compile(romFs, versionId, catalog, sink)
   ---@param charMember integer
   ---@param screenMember integer
   ---@param paletteMember integer
+  ---@param nameTag string? variant tag keeping the staged name distinct when the default pane/layer name already stages another triple
   ---@return string
-  local function composedRole(pageRole, pane, layer, charMember, screenMember, paletteMember)
+  local function composedRole(pageRole, pane, layer, charMember, screenMember, paletteMember, nameTag)
     local key = charMember .. ":" .. screenMember .. ":" .. paletteMember
     local role = bgRoleByTriple[key]
     if role == nil then
       role = "bg-" .. pageSlug(pageRole) .. "-" .. pane .. "-l" .. layer
+      if nameTag ~= nil then
+        role = role .. "-" .. nameTag
+      end
       local charRecord = chars[charMember]
       if charRecord == nil then
         error("pokedex page references an unknown character member: " .. pageRole, 0)
@@ -936,7 +963,32 @@ local function _compile(romFs, versionId, catalog, sink)
         end
         chromeRole = composedRole(role, entry.pane, entry.layer, entry.char, screenMember, entry.palette)
       end
-      backgrounds[entry.pane][#backgrounds[entry.pane] + 1] = {
+      -- Semantic state variants share the base composition path: each
+      -- named state resolves to a staged role so the runtime selects by
+      -- language/list position/unlock/observed-form count without
+      -- source IDs. The base chrome keeps the historical dump-language
+      -- selection; the variants map carries every state the page binds.
+      local backgroundVariants = nil
+      local function bindVariant(state, variantRole)
+        if backgroundVariants == nil then
+          backgroundVariants = {}
+        end
+        backgroundVariants[state] = variantRole
+      end
+      if entry.screen ~= nil and entry.screenEmpty ~= nil then
+        bindVariant("native", composedRole(role, entry.pane, entry.layer, entry.char, entry.screen, entry.palette))
+        if entry.screenJapanese ~= nil then
+          bindVariant(
+            "foreign",
+            composedRole(role, entry.pane, entry.layer, entry.char, entry.screenJapanese, entry.palette, "foreign")
+          )
+        end
+        bindVariant(
+          "empty",
+          composedRole(role, entry.pane, entry.layer, entry.char, entry.screenEmpty, entry.palette, "empty")
+        )
+      end
+      local backgroundRecord = {
         chrome = chromeRole,
         layer = entry.layer,
         x = 0,
@@ -945,14 +997,96 @@ local function _compile(romFs, versionId, catalog, sink)
         paletteGroup = "chrome",
         scroll = entry.scroll,
       }
-      if entry.screen ~= nil and entry.screenNational ~= nil then
-        stageVariantImage(
-          "bg-" .. pageSlug(role) .. "-" .. entry.pane .. "-l" .. entry.layer .. "-national",
-          entry.char,
-          entry.screenNational,
-          entry.palette
-        )
+      if backgroundVariants ~= nil then
+        backgroundRecord.variants = backgroundVariants
       end
+      backgrounds[entry.pane][#backgrounds[entry.pane] + 1] = backgroundRecord
+      if entry.screen ~= nil and entry.screenNational ~= nil then
+        local nationalRole = "bg-" .. pageSlug(role) .. "-" .. entry.pane .. "-l" .. entry.layer .. "-national"
+        stageVariantImage(nationalRole, entry.char, entry.screenNational, entry.palette)
+        backgroundRecord.variants = backgroundRecord.variants or {}
+        backgroundRecord.variants.national = nationalRole
+      end
+      -- Mode-independent layers behind a mode-selected page still bind
+      -- the unlock state name to their identical staged role: the SUB
+      -- area text plane is the same NSCR in both modes (the unlock moves
+      -- the viewed region, never the pixels), so state selection stays
+      -- total without inventing variant art.
+      if entry.mirrorUnlock == true then
+        backgroundRecord.variants = backgroundRecord.variants or {}
+        backgroundRecord.variants.national = chromeRole
+      end
+      if entry.screen ~= nil and entry.screenPatch ~= nil then
+        local patchRole = "bg-" .. pageSlug(role) .. "-" .. entry.pane .. "-l" .. entry.layer .. "-single"
+        stageVariantImage(patchRole, entry.char, entry.screenPatch, entry.palette)
+        backgroundRecord.variants = backgroundRecord.variants or {}
+        backgroundRecord.variants.single = patchRole
+      end
+    end
+    -- Pressed-control flash patches: re-render the source tilemap with
+    -- the flash bank forced over the native tile rows, preserving tile
+    -- IDs, flips, geometry and transparency. Actions sharing one triple
+    -- share one staged patch; each action keeps its own plane rect for
+    -- the renderer clip. Pages without mapped actions keep an empty map
+    -- and render their base art under the published flash state.
+    local bgFlashes = {}
+    local flashPatchRoles = {}
+    for _, spec in ipairs(PokedexSources.pageFlashes[role] or {}) do
+      if type(spec.action) ~= "string" or spec.action == "" then
+        error("pokedex flash patch names no action: " .. role, 0)
+      end
+      if spec.pane ~= "information" and spec.pane ~= "controls" then
+        error("pokedex flash patch names an unknown pane: " .. role, 0)
+      end
+      if type(spec.layer) ~= "number" or spec.layer < 0 or spec.layer > 3 then
+        error("pokedex flash patch names an invalid BG layer: " .. role, 0)
+      end
+      local patchKey = spec.char .. ":" .. spec.screen .. ":" .. spec.palette .. ":flash" .. tostring(spec.flashBank)
+      local patchRole = flashPatchRoles[patchKey]
+      if patchRole == nil then
+        patchRole = "bg-" .. pageSlug(role) .. "-" .. spec.pane .. "-l" .. spec.layer .. "-flash"
+        local flashChar = chars[spec.char]
+        if flashChar == nil or flashChar.depth ~= 3 then
+          error("pokedex flash patch references an unusable character member: " .. role, 0)
+        end
+        local flashScreen = screensByMember[spec.screen]
+        if flashScreen == nil then
+          error("pokedex flash patch references an unknown screen member: " .. role, 0)
+        end
+        local flashPalette = palettes[spec.palette]
+        if flashPalette == nil then
+          error("pokedex flash patch references an unknown palette member: " .. role, 0)
+        end
+        local rowPalette = {}
+        for _, tileRow in ipairs(spec.bankRows or {}) do
+          if type(tileRow) ~= "number" or tileRow < 0 or tileRow >= math.floor(flashScreen.height / 8) then
+            error("pokedex flash patch names a tile row outside its screen: " .. role, 0)
+          end
+          rowPalette[tileRow] = spec.flashBank
+        end
+        stageImage(
+          patchRole,
+          renderScreenMap(flashChar.tiles, flashChar.tileCount, flashPalette, flashScreen, patchRole, rowPalette)
+        )
+        flashPatchRoles[patchKey] = patchRole
+      end
+      for _, field in ipairs({ "x", "y", "width", "height" }) do
+        if type(spec[field]) ~= "number" or spec[field] % 1 ~= 0 then
+          error("pokedex flash patch carries invalid geometry: " .. role, 0)
+        end
+      end
+      if spec.width <= 0 or spec.height <= 0 then
+        error("pokedex flash patch carries an empty rect: " .. role, 0)
+      end
+      bgFlashes[spec.action] = {
+        pane = spec.pane,
+        layer = spec.layer,
+        chrome = patchRole,
+        x = spec.x,
+        y = spec.y,
+        width = spec.width,
+        height = spec.height,
+      }
     end
     local pageCells = {}
     local pageSprites = {}
@@ -1071,6 +1205,14 @@ local function _compile(romFs, versionId, catalog, sink)
         information = densePriorities("information"),
         controls = densePriorities("controls"),
       },
+      -- Results list/detail priority switch (PokedexApp_ApplyPendingSubBgPriority):
+      -- the summary parks SUB2 behind the summary text, the entry detail
+      -- parks SUB3 behind it. Other pages keep the empty map.
+      priorityVariants = pagePriorityVariants(role, densePriorities),
+      -- Browser state records land here only with producer-staged art;
+      -- the registration popup keeps them empty.
+      bgCells = {},
+      bgFlashes = bgFlashes,
       cells = pageCells,
       sprites = pageSprites,
       windows = pageWindows,
