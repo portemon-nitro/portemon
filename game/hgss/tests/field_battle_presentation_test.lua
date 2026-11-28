@@ -2028,22 +2028,22 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
     Assert.equal(#asked, 1, versionId .. " demands its scene through the borrowed host")
     Assert.equal(asked[1].key, sceneKey, versionId .. " demands exactly its launch scene")
     Assert.equal(asked[1].urgency, "required", versionId .. " demands its scene urgently")
-    answer.ready = true
-    revealed = true
-    imageStaged = true
-    local entered, enterFailure = services.prepare(demand())
-    Assert.isTrue(entered, versionId .. " enters once the staged scene validates: " .. tostring(enterFailure))
-    -- A ready worker answer with an emptied cache fails naming the
-    -- scene instead of polling forever: the trusted record load is the
+    -- A ready worker answer over an absent record fails naming the scene
+    -- instead of polling forever: the trusted record load is the
     -- attribution point, not a pixel existence census.
-    imageStaged = false
-    revealed = false
+    answer.ready = true
     local missing, missingErr = services.prepare(demand())
     Assert.isNil(missing, versionId .. " never reads ready with its staged scene absent")
     Assert.isTrue(
       type(missingErr) == "string" and missingErr:find(sceneKey, 1, true) ~= nil,
       versionId .. " names its absent scene: " .. tostring(missingErr)
     )
+    revealed = true
+    imageStaged = true
+    local entered, enterFailure = services.prepare(demand())
+    Assert.isTrue(entered, versionId .. " enters once the staged scene validates: " .. tostring(enterFailure))
+    imageStaged = false
+    revealed = false
     local hostless = FieldBattlePresentation.new({
       splRandomState = { state = 0 },
       cacheFs = view,

@@ -1239,6 +1239,9 @@ function BattlePresentationModel.packet(beforeView, frame, afterView, context)
   if context.inventory ~= nil then
     packet.inventory = copyValue(context.inventory)
   end
+  if context.preparation ~= nil then
+    packet.preparation = copyValue(context.preparation)
+  end
   BattleProtocol.validatePacket(packet)
   return packet
 end

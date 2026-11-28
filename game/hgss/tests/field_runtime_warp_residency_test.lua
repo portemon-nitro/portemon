@@ -176,6 +176,7 @@ local function fixture(options)
     actors = actors,
     mapLoader = loader,
     transition = {
+      beginHostUpdate = function() end,
       phase = "idle",
       fadeAlpha = 1,
       player = nil,
@@ -203,7 +204,11 @@ local function fixture(options)
       updateSourceFrame = function() end,
     },
     scripts = { onMapSwap = function() end },
-    playerAvatar = { durableState = function() return "walking" end },
+    playerAvatar = {
+      durableState = function()
+        return "walking"
+      end,
+    },
     zoneController = { currentMap = maps[10] },
     fieldTerrainEffectController = { clear = function() end },
     applicationHost = {

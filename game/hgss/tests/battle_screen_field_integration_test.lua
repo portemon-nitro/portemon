@@ -387,6 +387,8 @@ local function uploadCapableGraphics()
   function graphics.newImage(source)
     local handle = {}
     function handle.setFilter(...) end
+    function handle.setWrap(...) end
+    function handle.release() end
     -- Staged ImageData carries its exact extents, so the owned handle
     -- answers them verbatim for UV math; a foreign payload keeps a
     -- degenerate but well-formed size instead of failing the draw.

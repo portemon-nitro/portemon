@@ -114,6 +114,7 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field _accepted table<string, boolean>?
 ---@field _openRequest table<string, unknown>?
 ---@field _publishedRequest string?
+---@field _activeMoveSignature string? signature of the last active-move preparation fact published
 ---@field _packetId integer
 ---@field _lastView table<string, unknown>?
 ---@field _terminalSent boolean
@@ -494,6 +495,7 @@ function BattleRuntime.new(args)
     _accepted = {},
     _openRequest = nil,
     _publishedRequest = nil,
+    _activeMoveSignature = nil,
     _packetId = 0,
     _lastView = nil,
     _terminalSent = false,
@@ -632,6 +634,54 @@ local function exposedKey(exposed)
   return tostring(exposed.requestId) .. ":" .. tostring(exposed.epoch)
 end
 
+-- The canonical move identities the active combatants of both sides can
+-- select right now: moves with power points left, plus the kernel struggle
+-- fallback for an active combatant with none. A private preparation fact
+-- read from the live snapshot; it never reaches a public view, simulates no
+-- choice, and names no move a combatant cannot currently select.
+---@param snapshot table<string, unknown> detached live battle snapshot under projection
+---@return string[] sorted distinct move identities
+local function activeMoveKeys(snapshot)
+  local seen = {} ---@type table<string, boolean>
+  local keys = {} ---@type string[]
+  local function note(key)
+    if not seen[key] then
+      seen[key] = true
+      keys[#keys + 1] = key
+    end
+  end
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>?]]
+  local order = snapshot.combatantOrder --[[@as integer[]?]]
+  if type(combatants) == "table" and type(order) == "table" then
+    for _, id in ipairs(order) do
+      local combatant = combatants[id]
+      if type(combatant) == "table" and combatant.active ~= nil then
+        local mon = combatant.mon --[[@as table<string, unknown>]]
+        local usable = false
+        for _, entry in
+          ipairs((type(mon) == "table" and mon.moves or {}) --[[@as table<integer, table<string, unknown>>]])
+        do
+          if
+            type(entry) == "table"
+            and type(entry.move) == "string"
+            and entry.move ~= ""
+            and type(entry.pp) == "number"
+            and entry.pp > 0
+          then
+            usable = true
+            note(entry.move --[[@as string]])
+          end
+        end
+        if not usable then
+          note("STRUGGLE")
+        end
+      end
+    end
+  end
+  table.sort(keys)
+  return keys
+end
+
 -- Publishes one detached delivery packet for a mechanics result: the
 -- ordered events with their event-time checkpoints, the detached
 -- before/after views, and the newly exposed player request with its
@@ -666,6 +716,11 @@ function BattleRuntime:_publishFrame(frame, exposed)
   local snapshot = assert(self._session, "delivery packets read a live session"):capture()
   local afterView = BattlePresentationModel.view(snapshot, self._scenario, { catalog = self:_factCatalog() })
   local beforeView = self._lastView or afterView
+  -- The active roster's selectable moves ride privately beside the views
+  -- whenever they change, so the presentation stages those effects before
+  -- the next command is offered.
+  local moveKeys = activeMoveKeys(snapshot)
+  local moveSignature = table.concat(moveKeys, "\0")
   local context = {
     launchId = self._request.id,
     packetId = self._packetId,
@@ -726,6 +781,10 @@ function BattleRuntime:_publishFrame(frame, exposed)
       context.result.registration = copyValue(self._dexRegistration)
     end
     self._terminalSent = true
+  end
+  if moveSignature ~= self._activeMoveSignature then
+    context.preparation = { effects = moveKeys }
+    self._activeMoveSignature = moveSignature
   end
   local packet = BattlePresentationModel.packet(beforeView, { events = events }, afterView, context)
   self._lastView = afterView

@@ -116,6 +116,7 @@ function T.tests.apricorn_day_is_sampled_before_each_fixed_tick_and_only_advance
     runtime._refreshFieldTimeOfDay = function() end
     runtime.applicationHost = { error = function() end }
     runtime.transition = {
+      beginHostUpdate = function() end,
       error = false,
       updateSourceFrame = function() end,
       consumeCompleted = function() end,

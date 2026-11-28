@@ -79,7 +79,11 @@ local function runtimeForSwap(sourceCoverage)
       dispose = function() end,
     },
     scripts = { onMapSwap = function() end },
-    playerAvatar = { durableState = function() return "walking" end },
+    playerAvatar = {
+      durableState = function()
+        return "walking"
+      end,
+    },
   }, FieldRuntime)
   runtime.worldSwapCoordinator = FieldWorldSwapCoordinator.new(runtime)
   return runtime, sourceRuntimeMap
@@ -240,11 +244,7 @@ function T.a_same_window_covered_warp_stages_no_replacement()
   Assert.equal(calls.cellBuilds, 0, "no cell is realized twice for the same window")
   Assert.isFalse(stage:matches(7, 0, 0), "a reused window owns no stage to adopt")
 
-  local reused = runtime:_stagePhysicalCoverage(
-    outdoorMap(sourceCoverage),
-    { fieldX = 5, fieldZ = 11 },
-    7
-  )
+  local reused = runtime:_stagePhysicalCoverage(outdoorMap(sourceCoverage), { fieldX = 5, fieldZ = 11 }, 7)
   Assert.equal(reused.coverage, sourceCoverage, "the resolution keeps the live physical owner")
   Assert.isFalse(reused.replacement, "the swapped window is not replaced")
 end
@@ -301,11 +301,7 @@ function T.an_outdoor_covered_warp_stages_the_runtime_and_its_window_once()
 
   -- The transition owns the finished stage until the swap adopts it.
   runtime.transition.destinationStage = stage
-  local adoption = runtime:_stagePhysicalCoverage(
-    outdoorMap(sourceCoverage),
-    { fieldX = 37, fieldZ = 11 },
-    7
-  )
+  local adoption = runtime:_stagePhysicalCoverage(outdoorMap(sourceCoverage), { fieldX = 37, fieldZ = 11 }, 7)
   Assert.isTrue(adoption.replacement, "the resolution adopts the staged replacement")
   Assert.equal(calls.cellBuilds, 1, "adoption realizes no second window")
   Assert.equal(runtime.physicalCoverage, sourceCoverage, "the live window stays owned until the swap commits")

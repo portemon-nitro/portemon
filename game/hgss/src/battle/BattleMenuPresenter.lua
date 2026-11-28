@@ -89,12 +89,17 @@ function BattleMenuPresenter._drawLayer(graphics, assets, layout, view, entry)
   local art = assets:drawable("menu:" .. layout .. ":screen:" .. tostring(entry.index) .. touch)
   if art ~= nil then
     if layer.pulse == true and type(view.menuPulse) == "number" and view.menuPulse > 0 then
-      local mask = assert(assets:drawable("menu:pulse-mask"), "the battle backdrop pulse carries its index mask")
-      graphics.push("all")
-      drawArtwork(graphics, art, 0, 0)
-      graphics.setColor(PULSE_COLOR[1], PULSE_COLOR[2], PULSE_COLOR[3], view.menuPulse / 16)
-      drawArtwork(graphics, mask, 0, 0)
-      graphics.pop()
+      -- The pulsing screen paints only beside its index mask: while the
+      -- mask is pending the screen waits like any pending screen, and a
+      -- failed mask stays latched on the holder under its own key.
+      local mask = assets:drawable("menu:pulse-mask")
+      if mask ~= nil then
+        graphics.push("all")
+        drawArtwork(graphics, art, 0, 0)
+        graphics.setColor(PULSE_COLOR[1], PULSE_COLOR[2], PULSE_COLOR[3], view.menuPulse / 16)
+        drawArtwork(graphics, mask, 0, 0)
+        graphics.pop()
+      end
     else
       drawArtwork(graphics, art, 0, 0)
     end

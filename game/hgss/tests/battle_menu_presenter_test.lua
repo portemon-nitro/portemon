@@ -28,6 +28,30 @@ function T.draw_plane_renders_one_layer_without_owning_blend_state()
   Assert.equal(#graphics.shaders, 0, "a plane draw owns no blend shader")
 end
 
+-- A pulsing screen paints only beside its index mask: while the mask is
+-- still pending the screen waits instead of faulting, and once the mask
+-- resolves the same layer draws the screen under its tinted mask.
+function T.pulsing_layer_waits_for_its_pending_mask()
+  local maskReady = false
+  local assets = {}
+  function assets.drawable(_, key)
+    if key == "menu:pulse-mask" and not maskReady then
+      return nil
+    end
+    return { key = key }
+  end
+  local entry = { index = 1, layer = { plane = 2, priority = 3, pulse = true } }
+  local pending = FakeGraphics.new({})
+  BattleMenuPresenter.drawPlane(pending, assets, "command", { menuPulse = 6 }, entry)
+  Assert.equal(#pending.draws, 0, "a pulsing screen draws nothing while its mask is pending")
+  maskReady = true
+  local ready = FakeGraphics.new({})
+  BattleMenuPresenter.drawPlane(ready, assets, "command", { menuPulse = 6 }, entry)
+  Assert.equal(#ready.draws, 2, "the resolved mask draws over its screen")
+  Assert.equal(ready.draws[1].image.key, "menu:command:screen:1", "the screen draws first")
+  Assert.equal(ready.draws[2].image.key, "menu:pulse-mask", "the tinted mask draws over it")
+end
+
 -- Source lower planes ride fixed sub-engine roles: buttons on menu,
 -- panels on window, backdrop art on transition. Unknown planes fail
 -- instead of drawing on a guessed role.

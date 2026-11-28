@@ -292,7 +292,7 @@ function BattleProtocol.validatePacket(packet)
   if type(record.after) ~= "table" then
     error(BattleErrors.input("delivery packets must carry their after view", {}))
   end
-  for _, field in ipairs({ "request", "result", "party", "inventory" }) do
+  for _, field in ipairs({ "request", "result", "party", "inventory", "preparation" }) do
     if record[field] ~= nil and type(record[field]) ~= "table" then
       error(BattleErrors.input("delivery packet attachments must be records", { field = field }))
     end

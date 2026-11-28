@@ -1,14 +1,13 @@
--- Runs the authoritative field simulation on the fixed source tick (the
--- fixed-step accumulator is render-delta independent).
+-- Runs the authoritative field simulation on the fixed source tick; the host
+-- owns the render-delta accumulator and drives `updateFixed` once per tick.
 -- Player movement advances before the camera so both consume the same
 -- continuous XYZ. A modal dialogue owns the tick: once the fade/transition
 -- phase (which cannot be active while a dialogue is open) has advanced, the
 -- session steps the dialogue, advances the scene animation clock, and
 -- returns, so movement, warps, interactions, actor pose clocks, and the
 -- camera freeze until the dialogue closes.
--- Variable-delta `update(dt)` obtains a fresh input snapshot for every fixed
--- step it executes, so an edge can never be replayed across catch-up ticks;
--- `updateFixed(snapshot)` is the explicit deterministic unit-test API.
+-- Each fixed tick without an explicit snapshot samples fresh input, so an
+-- edge can never be replayed across catch-up ticks.
 --
 -- Step 6 is wired through the `interactions`
 -- service: `resolve(snapshot)` returns an immutable InteractionIntent for an
@@ -185,10 +184,6 @@ FieldSession.__index = fieldSessionIndex
 FieldSession.FIXED_HZ = SourceTick.HZ
 FieldSession.FIXED_DT = SourceTick.DT
 FieldSession.MAX_CATCH_UP_TICKS = 5
-
--- Float slack so a render delta that lands exactly on a tick boundary does
--- not leave a stale full tick in the accumulator.
-local ACCUMULATOR_EPSILON = 1e-12
 
 local DIRECTION_DELTAS = {
   north = { x = 0, z = -1 },
@@ -2031,30 +2026,9 @@ function FieldSession:updateFixed(inputSnapshot)
   self:_advanceTick()
 end
 
----@param dt number
----@param _ table<string, unknown>? legacy snapshot, intentionally ignored
----@return integer
-function FieldSession:update(dt, _)
-  assert(type(dt) == "number" and dt >= 0, "non-negative update dt required")
-  self.accumulator = self.accumulator + dt
-  local executed = 0
-  while
-    self.accumulator + ACCUMULATOR_EPSILON >= FieldSession.FIXED_DT and executed < FieldSession.MAX_CATCH_UP_TICKS
-  do
-    self.accumulator = self.accumulator - FieldSession.FIXED_DT
-    self:updateFixed()
-    executed = executed + 1
-  end
-  if self.accumulator + ACCUMULATOR_EPSILON >= FieldSession.FIXED_DT then
-    local discarded = math.floor((self.accumulator + ACCUMULATOR_EPSILON) / FieldSession.FIXED_DT)
-    self.accumulator = self.accumulator - discarded * FieldSession.FIXED_DT
-  end
-  return executed
-end
-
--- The render interpolation factor. The catch-up cap and the drop branch can
--- leave a small float residual outside the tick interval, so the factor is
--- clamped defensively into [0, 1] for presentation consumers.
+-- The render interpolation factor. The host's catch-up cap and drop branch
+-- can leave a small float residual outside the tick interval, so the factor
+-- is clamped defensively into [0, 1] for presentation consumers.
 function FieldSession:renderAlpha()
   local alpha = self.accumulator / FieldSession.FIXED_DT
   return math.min(1, math.max(0, alpha))

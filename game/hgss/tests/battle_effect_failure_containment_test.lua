@@ -272,6 +272,9 @@ local function failingScreenServices(staging)
   function services.releaseEffectResource(lease)
     return staging.services.releaseEffectResource(lease)
   end
+  services.effectSoundBanks = staging.services.effectSoundBanks
+  services.requireEffectBank = staging.services.requireEffectBank
+  services.releaseEffectBank = staging.services.releaseEffectBank
   return services
 end
 
@@ -1206,8 +1209,8 @@ end
 -- An admitted effect keeps its staged record and texture holds through
 -- playback: admission loads the validated record once, the admitted texture
 -- survives admission without an immediate probe release, an unexpected
--- called root stays pending instead of failing, and the retained hold
--- returns exactly once at disposal.
+-- called root stays pending instead of failing, and the admission hold
+-- returns exactly once when the occurrence retires.
 function T.admitted_effects_retain_staged_resources_through_playback()
   local EffectStagingFixture = require("tests.support.EffectStagingFixture")
   local Hashing = require("romdump.src.digest.Hashing")
@@ -1275,9 +1278,21 @@ function T.admitted_effects_retain_staged_resources_through_playback()
   end
   Assert.isTrue(settled, "the admitted occurrence runs to its checkpoint")
   Assert.equal(serviceLoads, 1, "playback never reacquires the staged record")
-  Assert.isNil(staging.drops["probe-spark"], "the retained admission hold survives until the run no longer needs it")
+  local retired = false
+  for _ = 1, 1200 do
+    if staging.refcounts["probe-spark"] == 0 then
+      retired = true
+      break
+    end
+    screen:updateFixed(1 / 30)
+    if screen:status().mode == "failed" then
+      break
+    end
+  end
+  Assert.isTrue(retired, "retiring the occurrence returns its admission hold instead of keeping it for the launch")
+  Assert.equal(staging.drops["probe-spark"], 1, "the occurrence's texture frees at its last return")
   screen:dispose()
-  Assert.equal(staging.drops["probe-spark"], 1, "disposal returns the retained admission hold exactly once")
+  Assert.equal(staging.drops["probe-spark"], 1, "disposal returns nothing a second time")
   Assert.equal(staging.refcounts["probe-spark"], 0, "no admitted reference lingers after disposal")
 end
 

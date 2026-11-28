@@ -2201,6 +2201,7 @@ function FieldRuntime:update(dt)
   end
 
   self.session.accumulator = self.session.accumulator + acceptedDt
+  self.transition:beginHostUpdate()
   -- Reconcile the battle input gate before any fixed tick can initiate
   -- player movement, interactions, or menu actions.
   self:_reconcileBattleGate()

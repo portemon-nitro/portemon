@@ -1,5 +1,5 @@
 -- Battle-private indexed drawable owner: one immutable source-index image
--- shared by every live generation of its source plus one tiny exact
+-- shared by every live generation of its source table plus one tiny exact
 -- palette per generation, sampled through the shared exact rule with an
 -- explicit coverage wrapper. Source bytes stay stable across palette
 -- changes; only the 256x1 palette re-uploads. Zero coverage returns
@@ -32,7 +32,7 @@ vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
 ]]
 
 ---@class BattleEncounterPaletteImage.Source
----@field id string stable source identity shared across its generations
+---@field id string diagnostic label; the source table itself is the identity shared across its generations
 ---@field width integer source width in pixels
 ---@field height integer source height in pixels
 ---@field pixels string packed index RGBA8 bytes (red slot, alpha coverage)
@@ -41,16 +41,17 @@ vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
 ---@field image table<string, unknown> shared source-index image behind the handle
 ---@field palette table<string, unknown> per-generation exact palette image
 ---@field kind string payload representation of the source image
+---@field coverage boolean true: the source alpha is coverage over the palette colors, never palette alpha
 ---@field width integer source width in pixels
 ---@field height integer source height in pixels
 ---@field _owner table<string, unknown> owning palette image owner
 ---@field _entry table<string, unknown> shared live source entry behind the handle
----@field _entryId string stable source identity behind the handle
+---@field _source BattleEncounterPaletteImage.Source source table keying the shared entry behind the handle
 ---@field _released boolean true once the handle returned its images
 
 ---@class BattleEncounterPaletteImage
 ---@field _graphics table<string, unknown> host graphics namespace behind uploads and draws
----@field _sources table<string, { image: table<string, unknown>?, width: integer, height: integer, pixels: string, refs: integer }> live source entries by stable identity
+---@field _sources table<BattleEncounterPaletteImage.Source, { image: table<string, unknown>?, refs: integer }> live source entries keyed by source table
 ---@field _shader table<string, unknown>? battle-local coverage sampler, built once per owner
 ---@field _disposed boolean true once the owner released its shader
 local BattleEncounterPaletteImage = {}
@@ -129,8 +130,11 @@ local function checkSource(source)
 end
 
 -- Acquires one sampler handle for the immutable source under its exact
--- palette: the source image uploads once per live identity and stays
+-- palette: the source image uploads once per live source table and stays
 -- shared across generations, while the palette uploads per generation.
+-- A different source table never aliases an existing entry even under the
+-- same label, so a replacement coexists with the live generation until it
+-- releases.
 -- Failed creations roll back everything staged in that call and publish
 -- nothing. An incomplete palette answers nil with its cause instead of
 -- raising so the caller keeps its prior published generation.
@@ -149,19 +153,10 @@ function BattleEncounterPaletteImage:acquire(source, paletteBytes)
         .. tostring(PALETTE_BYTES)
         .. " RGBA8 bytes"
   end
-  local entry = self._sources[source.id]
+  local entry = self._sources[source]
   local freshEntry = entry == nil
   if freshEntry then
-    entry = { image = nil, width = source.width, height = source.height, pixels = source.pixels, refs = 0 }
-  else
-    assert(
-      entry.width == source.width and entry.height == source.height,
-      "palette source identity keeps its raster dimensions: " .. tostring(source.id)
-    )
-    assert(
-      entry.pixels == source.pixels,
-      "palette source identity keeps its immutable indices: " .. tostring(source.id)
-    )
+    entry = { image = nil, refs = 0 }
   end
   -- The battle-local sampler builds on the first draw, not here: staging
   -- stays an image-only operation so upload doubles without shader
@@ -202,18 +197,19 @@ function BattleEncounterPaletteImage:acquire(source, paletteBytes)
   ---@cast paletteImage table<string, unknown>
   if freshEntry then
     entry.image = sourceImage
-    self._sources[source.id] = entry
+    self._sources[source] = entry
   end
   entry.refs = entry.refs + 1
   local handle = setmetatable({
     image = sourceImage,
     palette = paletteImage,
     kind = "r8",
+    coverage = true,
     width = source.width,
     height = source.height,
     _owner = self,
     _entry = entry,
-    _entryId = source.id,
+    _source = source,
     _released = false,
   }, Handle)
   return handle
@@ -228,12 +224,12 @@ function BattleEncounterPaletteImage:_releaseHandle(handle)
     palette:release()
   end
   handle.palette = nil
-  local entry = self._sources[handle._entryId]
+  local entry = self._sources[handle._source]
   if entry ~= nil then
     entry.refs = entry.refs - 1
     assert(entry.refs >= 0, "palette source references release exactly once")
     if entry.refs == 0 then
-      self._sources[handle._entryId] = nil
+      self._sources[handle._source] = nil
       local image = entry.image
       if image ~= nil and type(image.release) == "function" then
         image:release()

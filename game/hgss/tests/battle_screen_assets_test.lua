@@ -191,6 +191,38 @@ function T.palette_drawable_generations_publish_transactionally()
   Assert.equal(assets.released[replacementKey], 1, "disposal releases the replacement image")
 end
 
+-- A terminal upload failure ends staging: keys after the failing one never
+-- upload, the already staged replacements return exactly once, and the
+-- published set stays as it was.
+function T.palette_staging_stops_at_the_first_terminal_failure()
+  local assets = stubAssets({})
+  local uploaded = {}
+  function assets.paletteImage(key, source, palette)
+    uploaded[#uploaded + 1] = key
+    if key:find("scene:b", 1, true) ~= nil then
+      return nil, "probe upload failure"
+    end
+    return { handle = key, source = source, palette = palette }
+  end
+  local battle = holder(nil, assets)
+  local palette = probePalette("p")
+  local requests = {
+    a = { uploadKey = "battle-palette:scene:a", source = probeSource("probe-a", "a"), palette = palette },
+    b = { uploadKey = "battle-palette:scene:b", source = probeSource("probe-b", "b"), palette = palette },
+    c = { uploadKey = "battle-palette:scene:c", source = probeSource("probe-c", "c"), palette = palette },
+  }
+  local published, failure = battle:updatePaletteDrawables(requests)
+  Assert.isFalse(published, "a failing candidate rejects the batch")
+  Assert.isTrue(
+    type(failure) == "string" and failure:find("probe upload failure", 1, true) ~= nil,
+    "the first terminal failure keeps its cause"
+  )
+  Assert.equal(#uploaded, 2, "staging stops at the failing key without uploading later candidates")
+  Assert.equal(assets.released["battle-palette:scene:a:generation:1"], 1, "the staged replacement rolls back once")
+  Assert.isNil(battle:drawable("a"), "a rejected batch publishes nothing")
+  battle:dispose()
+end
+
 -- An identical palette batch republishes without touching the upload
 -- service or allocating a new generation: the published images and
 -- their ownership stay exactly as staged.
@@ -2301,7 +2333,7 @@ end
 -- launch, effect, and resource context: previously acquired handles
 -- release once, the failure replays identically instead of hanging as
 -- pending, and the failed upload is never retried.
-function T.effect_upload_failure_releases_acquired_handles_and_stays_failed()
+function T.effect_upload_failure_keeps_other_borrows_and_stays_failed()
   local EffectStagingFixture = require("tests.support.EffectStagingFixture")
   local Hashing = require("romdump.src.digest.Hashing")
   local staging = EffectStagingFixture.new({ launchId = "probe-upload-failure" })
@@ -2335,7 +2367,10 @@ function T.effect_upload_failure_releases_acquired_handles_and_stays_failed()
   Assert.equal(owned:demandEffect("TACKLE"), true, "both payloads staged, so the effect reads ready")
   local effect = owned:loadEffect("TACKLE")
   Assert.notNil(effect, "the ready effect loads before resolving")
-  Assert.notNil(owned:resolveEffectResource(effect, "probe-first"), "the first texture resolves")
+  local other = owned:resolveEffectResource(effect, "probe-first")
+  Assert.notNil(other, "another owner already borrows the first texture")
+  local first = owned:resolveEffectResource(effect, "probe-first")
+  Assert.notNil(first, "the failing attempt borrows the first texture")
   local lease, failure = owned:resolveEffectResource(effect, "probe-second")
   Assert.isNil(lease, "the failed upload hands out no image")
   Assert.isTrue(type(failure) == "string" and failure ~= "", "the failed upload is terminal with context")
@@ -2343,8 +2378,14 @@ function T.effect_upload_failure_releases_acquired_handles_and_stays_failed()
   Assert.isTrue(reason:find("probe-second", 1, true) ~= nil, "the failure names its resource: " .. reason)
   Assert.isTrue(reason:find("TACKLE", 1, true) ~= nil, "the failure names its effect: " .. reason)
   Assert.isTrue(reason:find("probe-upload-failure", 1, true) ~= nil, "the failure names its launch: " .. reason)
-  Assert.equal(staging.drops["probe-first"], 1, "handles acquired before the failure release once")
-  Assert.isNil(owned:drawable("probe-first"), "the rolled-back texture hands out nothing")
+  Assert.equal(staging.refcounts["probe-first"], 2, "the holder never returns borrows on the caller's behalf")
+  Assert.equal(owned:releaseEffectResource(first --[[@as table]]), true, "the attempt returns exactly its own borrow")
+  local repeated, repeatedErr = owned:releaseEffectResource(first --[[@as table]])
+  Assert.isNil(repeated, "a repeated return of the attempt's borrow is refused")
+  Assert.isTrue(type(repeatedErr) == "string" and repeatedErr:find("not held", 1, true) ~= nil, "the refusal says why")
+  Assert.equal(staging.refcounts["probe-first"], 1, "the other owner's borrow survives the failed attempt")
+  Assert.isNil(staging.drops["probe-first"], "the shared texture stays live for its other owner")
+  Assert.notNil(owned:drawable("probe-first"), "the other owner still draws the shared texture")
   local again, againErr = owned:demandEffect("TACKLE")
   Assert.isNil(again, "the failed effect never reads ready again")
   Assert.equal(againErr, reason, "the terminal failure replays identically instead of hanging pending")
@@ -2352,7 +2393,8 @@ function T.effect_upload_failure_releases_acquired_handles_and_stays_failed()
   Assert.isNil(third, "the failed effect stays failed across polls")
   Assert.equal(thirdErr, reason, "no held queue loops forever")
   owned:dispose()
-  Assert.equal(staging.drops["probe-first"], 1, "disposal never frees the rolled-back handle twice")
+  Assert.equal(staging.drops["probe-first"], 1, "disposal returns the other owner's borrow exactly once")
+  Assert.equal(staging.refcounts["probe-first"], 0, "no borrow lingers after disposal")
   Assert.isNil(staging.drops["probe-second"], "the never-uploaded texture never releases")
 end
 
@@ -2533,6 +2575,90 @@ function T.party_page_demand_names_the_retail_backgrounds()
     Assert.isTrue(found, "the launch demand stages " .. key)
   end
   battle:dispose()
+end
+
+-- Predicted effects stage their named sounds' banks through one launch
+-- union: roots sharing a bank keep it until the last interest returns, a
+-- retired prediction keeps its interests until the screen retires dropped
+-- predictions, a cancelled pending prediction returns what it enrolled, and
+-- a terminal bank failure stays scoped to the unused effect it names.
+function T.predicted_effect_sound_banks_share_one_launch_union()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local staging = EffectStagingFixture.new({ launchId = "probe-effect-banks" })
+  local function stage(key, symbols)
+    local record = EffectStagingFixture.effectRecord(key, {})
+    local instructions = {}
+    for _, symbol in ipairs(symbols) do
+      instructions[#instructions + 1] = { op = "play-sound", sound = symbol }
+    end
+    record.program = { entry = "main", instructions = instructions, subprograms = {}, taskKinds = {} }
+    staging:stageEffect(key, record, {})
+  end
+  stage("EMBER", { "SEQ_SE_PROBE_FIRE", "SEQ_SE_PROBE_HIT" })
+  stage("FLAME", { "SEQ_SE_PROBE_FIRE" })
+  stage("SPLASH", { "SEQ_SE_PROBE_WATER" })
+  stage("GUST", { "SEQ_SE_PROBE_WIND" })
+  stage("GROWL", {})
+  staging.soundBanks = { SEQ_SE_PROBE_FIRE = 4, SEQ_SE_PROBE_HIT = 5, SEQ_SE_PROBE_WATER = 6, SEQ_SE_PROBE_WIND = 7 }
+  staging.bankStates[6] = "pending"
+  staging.bankStates[7] = "probe sample read failed"
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-effect-banks",
+    sceneKey = "general/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  local function occurrences(list, value)
+    local count = 0
+    for _, entry in ipairs(list) do
+      if entry == value then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  local function released(bankId)
+    return occurrences(staging.bankReleases, bankId)
+  end
+  owned:setPredictedEffects({ "EMBER", "FLAME", "SPLASH", "GUST", "GROWL" })
+  -- One poll enrolls every known closure but realizes only one accepted
+  -- root; the rest realize on later polls without being requested again,
+  -- and a bank that already staged for a hold is not polled again.
+  owned:pollPredictedEffects()
+  Assert.equal(#staging.requests, 5, "every predicted closure enrolls on the first poll")
+  Assert.deepEqual(staging.bankRequests, { 4, 5 }, "only the first accepted root realizes on one poll")
+  for _ = 1, 5 do
+    owned:pollPredictedEffects()
+  end
+  Assert.equal(#staging.requests, 5, "an accepted closure is never requested again")
+  Assert.equal(occurrences(staging.bankRequests, 4), 2, "each sharer polls its staged bank once")
+  Assert.isTrue(occurrences(staging.bankRequests, 6) > 1, "a still-reading bank keeps polling")
+  Assert.isFalse(owned:predictedEffectsReady(), "a pending selected source keeps its prediction pending")
+  Assert.equal(owned:state() ~= "failed", true, "an unused bank failure never fails the launch")
+  local _, gustFailure = owned:demandEffect("GUST")
+  Assert.isTrue(
+    tostring(gustFailure):find("probe sample read failed", 1, true) ~= nil,
+    "the failed bank latches on its own effect with the original cause: " .. tostring(gustFailure)
+  )
+  Assert.equal(released(7), 1, "the failed prediction returns its own bank interest")
+
+  -- Dropping the pending prediction and a sharer keeps their interests until
+  -- the accepted delivery settles; returning them then releases only banks
+  -- nobody else needs.
+  owned:setPredictedEffects({ "EMBER", "GROWL" })
+  Assert.isTrue(owned:predictedEffectsReady(), "the remaining predictions are usable")
+  Assert.equal(released(6), 0, "a dropped prediction keeps its bank until its delivery settles")
+  owned:retireDroppedPredictions()
+  Assert.equal(released(6), 1, "the cancelled pending prediction returns its bank once")
+  Assert.equal(released(4), 0, "a bank another prediction still needs stays required")
+  owned:setPredictedEffects({ "GROWL" })
+  owned:retireDroppedPredictions()
+  Assert.equal(released(4), 1, "the shared bank returns once its last interest retires")
+  Assert.equal(released(5), 1, "the retired root's own bank returns")
+  owned:retireDroppedPredictions()
+  Assert.equal(#staging.bankReleases, 4, "retirement returns nothing twice")
+  owned:dispose()
+  Assert.equal(#staging.bankReleases, 4, "disposal returns nothing a retired interest already returned")
 end
 
 return { tests = T }

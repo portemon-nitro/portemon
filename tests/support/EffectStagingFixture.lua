@@ -1,10 +1,11 @@
 -- In-memory staged-effect service double for the lazy battle-effect
 -- acceptance coverage. A programmable staged store (effect records, markers,
 -- payloads) is served through the four selected-effect service callbacks plus
--- drawable registration with refcounted fake GPU handles. The double mirrors
--- the production holder contract without parsing source or touching the GPU:
--- false while pending, schema-valid records only after readiness, shared
--- immutable handles across duplicate resolves, exactly-once release, and
+-- drawable registration with refcounted fake GPU handles, plus the effect
+-- sound bank services. The double mirrors the production service contract
+-- without parsing source or touching the GPU: false while pending,
+-- schema-valid records only after readiness, shared immutable handles across
+-- distinct lease identities, exactly-once release by lease identity, and
 -- terminal contextual failures that never masquerade as pending. Fake GPU
 -- handles are plain records; only the graphics-layer suites prove real
 -- driver upload and native pixels.
@@ -83,7 +84,12 @@ function Fixture.new(opts)
     uploads = 0,
     handles = {},
     refcounts = {},
+    outstanding = {},
     drops = {},
+    soundBanks = {},
+    bankStates = {},
+    bankRequests = {},
+    bankReleases = {},
     imageErrors = {},
     failed = nil,
     disposed = false,
@@ -189,9 +195,9 @@ function Fixture.new(opts)
   -- Texture leases share one immutable fake GPU handle across duplicate
   -- resolves and validate exact dimension/byte-length/content identity;
   -- other kinds arrive as immutable decoded records beside their staged
-  -- path, mirroring the production holder contract. Upload failures
-  -- latch the selected effect failed and release nothing here: the
-  -- holder rolls back what it acquired through release.
+  -- path, mirroring the production service contract. Upload failures
+  -- stay scoped to the failing resolve and release nothing here: the
+  -- holder latches its effect and each caller returns its own borrows.
   function services.resolveEffectResource(effect, resourceKey)
     if self.disposed then
       return nil, "battle effect resources are released for launch " .. self.launchId
@@ -217,7 +223,7 @@ function Fixture.new(opts)
           .. self.launchId
     end
     if self.failUpload[resourceKey] ~= nil then
-      self.failed = "battle effect image "
+      local failure = "battle effect image "
         .. tostring(resourceKey)
         .. " failed for effect "
         .. tostring(effect.key)
@@ -225,17 +231,17 @@ function Fixture.new(opts)
         .. self.launchId
         .. ": "
         .. tostring(self.failUpload[resourceKey])
-      return nil, self.failed
+      return nil, failure
     end
     local payload = entry.payloads[descriptor.payload]
     if payload == nil then
-      self.failed = "battle effect resource "
+      local failure = "battle effect resource "
         .. tostring(resourceKey)
         .. " is not staged for effect "
         .. tostring(effect.key)
         .. " for launch "
         .. self.launchId
-      return nil, self.failed
+      return nil, failure
     end
     if descriptor.kind == "texture" then
       if
@@ -249,14 +255,14 @@ function Fixture.new(opts)
         or type(payload.rgba8888) ~= "string"
         or #payload.rgba8888 ~= payload.width * payload.height * 4
       then
-        self.failed = "battle effect image "
+        local failure = "battle effect image "
           .. tostring(resourceKey)
           .. " failed for effect "
           .. tostring(effect.key)
           .. " for launch "
           .. self.launchId
           .. ": staged texture has no exact dimensions and bytes"
-        return nil, self.failed
+        return nil, failure
       end
       if self.handles[resourceKey] == nil then
         self.uploads = self.uploads + 1
@@ -268,7 +274,7 @@ function Fixture.new(opts)
         self.handles[resourceKey] = handle
       end
       self.refcounts[resourceKey] = (self.refcounts[resourceKey] or 0) + 1
-      return {
+      local lease = {
         key = resourceKey,
         kind = "texture",
         width = payload.width,
@@ -278,27 +284,36 @@ function Fixture.new(opts)
         contentIdentity = descriptor.contentIdentity,
         handle = self.handles[resourceKey],
       }
+      self.outstanding[lease] = true
+      return lease
     end
-    return {
+    self.refcounts[resourceKey] = (self.refcounts[resourceKey] or 0) + 1
+    local lease = {
       key = resourceKey,
       kind = descriptor.kind,
       payloadPath = descriptor.payload,
       contentIdentity = descriptor.contentIdentity,
       data = payload,
     }
+    self.outstanding[lease] = true
+    return lease
   end
-  -- Returns one lease: texture refcounts drop the shared handle at the
-  -- last release, other kinds validate only. Drops are idempotent so a
-  -- holder that releases at last lease and again at dispose still frees
-  -- the GPU object exactly once.
+  -- Returns one lease by identity: the returned lease drops its payload
+  -- and handle references, the shared handle drops at the last return,
+  -- and a lease that is not outstanding (unknown or already returned) is
+  -- refused without touching another borrow's reference.
   function services.releaseEffectResource(lease)
     if type(lease) ~= "table" or type(lease.key) ~= "string" then
       return nil, "effect releases name their lease for launch " .. self.launchId
     end
-    local left = (self.refcounts[lease.key] or 0) - 1
-    if left < 0 then
-      return nil, "effect lease " .. tostring(lease.key) .. " is already released for launch " .. self.launchId
+    if not self.outstanding[lease] then
+      return nil, "effect lease " .. tostring(lease.key) .. " is not held for launch " .. self.launchId
     end
+    self.outstanding[lease] = nil
+    lease.handle = nil
+    lease.rgba8888 = nil
+    lease.data = nil
+    local left = self.refcounts[lease.key] - 1
     self.refcounts[lease.key] = left
     if left == 0 then
       dropHandle(lease.key)
@@ -320,9 +335,49 @@ function Fixture.new(opts)
     end
     return self.handles[key]
   end
-  -- Releases one owned handle exactly once; never touches unowned keys.
+  -- Releases one owned generic handle exactly once. A live effect resource
+  -- belongs to its leases: the generic path never frees it.
   function services.release(key)
+    assert((self.refcounts[key] or 0) == 0, "generic release never frees a live effect resource: " .. tostring(key))
     dropHandle(key)
+  end
+  -- Projects named sequence symbols onto their sound banks through the
+  -- programmable map (bank 1 unless mapped); a symbol mapped to false has no
+  -- staged bank and fails strictly.
+  function services.effectSoundBanks(effectKey, symbols)
+    local banks, seen = {}, {}
+    for _, symbol in ipairs(symbols) do
+      local bank = self.soundBanks[symbol]
+      if bank == nil then
+        bank = 1
+      end
+      if bank == false then
+        return nil, "battle effect " .. tostring(effectKey) .. " sound " .. tostring(symbol) .. " has no staged bank"
+      end
+      if not seen[bank] then
+        seen[bank] = true
+        banks[#banks + 1] = bank
+      end
+    end
+    table.sort(banks)
+    return banks
+  end
+  -- Stages one effect sound bank through its programmable state: ready by
+  -- default, "pending" while its selected sources read, any other string a
+  -- terminal cause.
+  function services.requireEffectBank(bankId)
+    self.bankRequests[#self.bankRequests + 1] = bankId
+    local state = self.bankStates[bankId]
+    if state == nil or state == "ready" then
+      return true
+    end
+    if state == "pending" then
+      return false
+    end
+    return nil, state
+  end
+  function services.releaseEffectBank(bankId)
+    self.bankReleases[#self.bankReleases + 1] = bankId
   end
   return self
 end

@@ -2261,6 +2261,7 @@ function T.direct_battle_blocks_the_first_tick_and_releases_the_next()
     },
     transition = {
       error = nil,
+      beginHostUpdate = function() end,
       updateSourceFrame = function() end,
       consumeCompleted = function()
         return nil
@@ -2556,6 +2557,7 @@ function T.field_tick_keeps_battle_gate_positions()
     },
     transition = {
       error = nil,
+      beginHostUpdate = function() end,
       updateSourceFrame = function() end,
       consumeCompleted = function()
         return nil

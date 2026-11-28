@@ -33,6 +33,7 @@ local function runtimeWithTransitionError(transitionError)
       end,
     },
     transition = {
+      beginHostUpdate = function() end,
       error = transitionError,
       phase = "idle",
       updateSourceFrame = function() end,

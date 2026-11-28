@@ -1038,6 +1038,10 @@ local SCENE_C_KEY = "general/sand/day"
 local function dualSceneCacheFs(recordA, recordB, recordC)
   local reads = {}
   local loadLuaCounts = {}
+  -- Paths a test withholds after their first read: a withheld load answers
+  -- a named miss, so a consumer that should already own the parsed value
+  -- fails visibly instead of silently re-reading it.
+  local withheld = {} ---@type table<string, boolean>
   local cacheFs = { versionId = "synthetic" }
   local records = {}
   for _, record in ipairs({ recordA, recordB, recordC }) do
@@ -1047,6 +1051,9 @@ local function dualSceneCacheFs(recordA, recordB, recordC)
   end
   function cacheFs:loadLua(path)
     loadLuaCounts[path] = (loadLuaCounts[path] or 0) + 1
+    if withheld[path] then
+      return nil, "withheld re-read of " .. path
+    end
     for _, record in pairs(records) do
       if path == BattlePresentationCache.scenePath(record.key) then
         return record
@@ -1112,6 +1119,7 @@ local function dualSceneCacheFs(recordA, recordB, recordC)
   end
   cacheFs.reads = reads
   cacheFs.loadLuaCounts = loadLuaCounts
+  cacheFs.withheld = withheld
   return cacheFs
 end
 
@@ -2478,14 +2486,16 @@ function T.preparation_waits_for_cry_and_music_banks_before_first_battle()
 end
 
 local MUSIC_ROLE = "SEQ_TEST_WILD"
+local EFFECT_SOUND = "SEQ_SE_PROBE_HIT"
 
--- Staged audio index mapping only the probe music role to its bank, so
--- admission and music-start demands resolve without the full catalog.
+-- Staged audio index mapping only the probe music role and one effect
+-- sound to their banks, so admission, music-start, and effect sound
+-- demands resolve without the full catalog.
 local function musicIndex()
   return {
     schema = AudioCache.INDEX_SCHEMA,
-    sequences = { [11] = { bankId = 7 } },
-    sequenceBySymbol = { [MUSIC_ROLE] = 11 },
+    sequences = { [11] = { bankId = 7 }, [12] = { bankId = 30 } },
+    sequenceBySymbol = { [MUSIC_ROLE] = 11, [EFFECT_SOUND] = 12 },
   }
 end
 
@@ -2735,6 +2745,32 @@ function T.battle_music_holds_for_demanded_cry_sample_sources()
   })
   host.bankReady = true
   bridge.staged[7] = true
+  -- A cry bank whose derived closure is not published holds the gate before
+  -- any of its selected sources is required: the source bridge never
+  -- reports a cold cry bank ready.
+  local requestBank = host.requestAudioBank
+  host.requestAudioBank = function(bankId, urgency)
+    if bankId == 16 and host.coldCryBank then
+      return nil
+    end
+    return requestBank(bankId, urgency)
+  end
+  host.coldCryBank = true
+  local coldStaged, coldFailure = envelope:_battleMusicStaged()
+  Assert.equal(coldStaged, false, "an unpublished cry bank closure holds the music voice")
+  Assert.isNil(coldFailure, "an unpublished cry bank closure is pending, not terminal")
+  Assert.isNil(
+    (function()
+      for _, bankId in ipairs(bridge.required) do
+        if bankId == 16 then
+          return bankId
+        end
+      end
+      return nil
+    end)(),
+    "no selected source is required before the cry bank closure is staged"
+  )
+  host.coldCryBank = nil
   local function requiredSet()
     local seen = {}
     for _, bankId in ipairs(bridge.required) do
@@ -2770,12 +2806,72 @@ function T.battle_music_holds_for_demanded_cry_sample_sources()
   envelope:_startBattleMusic()
   Assert.deepEqual(bridge.suspends, { "cry-hold" }, "the staged start suspends the field policy once")
   Assert.deepEqual(bridge.plays, { MUSIC_ROLE }, "the staged start voices its role once")
+  -- Effect sound banks stage through the same derived-closure and
+  -- selected-source bridge. Their projection is strict and parses the
+  -- immutable selected index once per envelope (a missing index fails with
+  -- its cause and is never memoized), a bank the music or cries also hold
+  -- stays retained for the launch, and outstanding effect banks return with
+  -- the launch exactly once.
+  local services = envelope._services
+  local stagedLoad = cacheFs.loadLua
+  function cacheFs:loadLua(path)
+    if path == AudioCache.indexPath() then
+      return nil, "probe index missing"
+    end
+    return stagedLoad(self, path)
+  end
+  local missing, missingErr = services.effectSoundBanks("PROBE", { MUSIC_ROLE })
+  Assert.isNil(missing, "a missing index projects no bank set")
+  Assert.isTrue(
+    tostring(missingErr):find("probe index missing", 1, true) ~= nil,
+    "the missing index keeps its cause: " .. tostring(missingErr)
+  )
+  cacheFs.loadLua = stagedLoad
+  Assert.deepEqual(services.effectSoundBanks("PROBE", { MUSIC_ROLE }), { 7 }, "named sounds project onto their banks")
+  function cacheFs:loadLua(path)
+    assert(path ~= AudioCache.indexPath(), "the immutable audio index is parsed again")
+    return stagedLoad(self, path)
+  end
+  Assert.deepEqual(
+    services.effectSoundBanks("PROBE_HIT", { EFFECT_SOUND, MUSIC_ROLE }),
+    { 7, 30 },
+    "another root projects through the same parsed index"
+  )
+  local unknown, unknownErr = services.effectSoundBanks("PROBE", { "SEQ_SE_PROBE_UNKNOWN" })
+  Assert.isNil(unknown, "an unresolvable named sound never reports an empty bank set")
+  Assert.isTrue(
+    tostring(unknownErr):find("SEQ_SE_PROBE_UNKNOWN", 1, true) ~= nil,
+    "the strict projection names its sound: " .. tostring(unknownErr)
+  )
+  cacheFs.loadLua = stagedLoad
+  Assert.equal(services.requireEffectBank(30), false, "a pending effect source holds its bank")
+  bridge.staged[30] = true
+  Assert.equal(services.requireEffectBank(30), true, "a retained effect source stages its bank")
+  bridge.failures[31] = "battle audio bank 31 sample se:probe is not staged: boom"
+  local failedBank, bankFailure = services.requireEffectBank(31)
+  Assert.isNil(failedBank, "a terminal effect source read fails its bank")
+  Assert.equal(bankFailure, "battle audio bank 31 sample se:probe is not staged: boom", "the original cause survives")
+  bridge.failures[31] = nil
+  bridge.staged[31] = true
+  Assert.equal(services.requireEffectBank(31), true, "a second effect bank stages")
+  Assert.equal(services.requireEffectBank(7), true, "a bank shared with the music stages")
+  local releasedBefore = #bridge.released
+  services.releaseEffectBank(7)
+  Assert.equal(#bridge.released, releasedBefore, "a bank the music still holds stays retained")
+  services.releaseEffectBank(30)
+  services.releaseEffectBank(30)
+  Assert.equal(bridge.released[#bridge.released], 30, "an unneeded effect bank returns")
+  Assert.equal(#bridge.released, releasedBefore + 1, "a repeated effect bank return releases nothing")
   envelope:_dropLaunch()
   local freed = {}
   for _, bankId in ipairs(bridge.released) do
     freed[bankId] = (freed[bankId] or 0) + 1
   end
-  Assert.deepEqual(freed, { [7] = 1, [152] = 1, [16] = 1 }, "the launch releases its music and cry holds once")
+  Assert.deepEqual(
+    freed,
+    { [7] = 1, [152] = 1, [16] = 1, [30] = 1, [31] = 1 },
+    "the launch releases its music, cry, and outstanding effect holds once"
+  )
   envelope:dispose()
 end
 
@@ -3113,6 +3209,14 @@ function T.pending_scene_keeps_predecessor_and_resumes_to_complete_group()
   local readyA, failureA = services.prepare(demand(SCENE_KEY, "pending-resume-predecessor"))
   Assert.isTrue(readyA, "the predecessor scene prepares: " .. tostring(failureA))
   local predecessor = assert(services.sceneLayer(), "the predecessor scene is published")
+  -- The published warm scene answers its repeat demand from its staged
+  -- layer: its scene record is never read again.
+  local scenePathA = BattlePresentationCache.scenePath(SCENE_KEY)
+  cacheFs.withheld[scenePathA] = true
+  local warmA, warmFailureA = services.prepare(demand(SCENE_KEY, "pending-resume-predecessor"))
+  Assert.isTrue(warmA, "the staged scene answers without its record: " .. tostring(warmFailureA))
+  Assert.equal(services.sceneLayer(), predecessor, "the staged scene keeps its published layer")
+  cacheFs.withheld[scenePathA] = nil
   for _, path in ipairs(sceneArtPaths(recordB)) do
     if path ~= recordB.terrainSprites.foe.image then
       pool.readyPaths[path] = true
@@ -3126,6 +3230,11 @@ function T.pending_scene_keeps_predecessor_and_resumes_to_complete_group()
     services.drawable("scene:" .. SCENE_KEY),
     "the ready predecessor stays usable while the successor waits"
   )
+  -- The pending candidate owns its validated record from here on: later
+  -- polls and the completion never read the successor's record again.
+  local scenePathB = BattlePresentationCache.scenePath(SCENE_B_KEY)
+  Assert.isTrue((cacheFs.loadLuaCounts[scenePathB] or 0) > 0, "the changed scene loads its own record")
+  cacheFs.withheld[scenePathB] = true
   local again, againFailure = services.prepare(demand(SCENE_B_KEY, "pending-resume-successor"))
   Assert.equal(again, false, "repeat polling still waits")
   Assert.isNil(againFailure, "repeat polling reports no failure")
@@ -3138,6 +3247,18 @@ function T.pending_scene_keeps_predecessor_and_resumes_to_complete_group()
   local introLease = assert(layer.introLayer.drawable, "the completed scene carries its intro drawable")
   local introPath = introLease.image ~= nil and introLease.image.path or nil
   Assert.equal(introPath, recordB.introLayer.image, "the completed scene uses its own intro art")
+  local publishedParticles = {}
+  for setIndex, set in ipairs(layer.encounterParticles) do
+    Assert.equal(set.startTick, recordB.encounterParticles[setIndex].startTick, "each set keeps its record timing")
+    for _, texture in ipairs(set.textures) do
+      publishedParticles[#publishedParticles + 1] = texture.drawable.image.path
+    end
+  end
+  Assert.deepEqual(
+    publishedParticles,
+    particlePaths(recordB),
+    "the completed scene publishes its own record's particle textures in set order"
+  )
   local abortCache = dualSceneCacheFs(recordA, recordB)
   local abortPool = scriptedPool(1000000, {})
   for _, path in ipairs(sceneArtPaths(recordB)) do
@@ -3151,6 +3272,10 @@ function T.pending_scene_keeps_predecessor_and_resumes_to_complete_group()
   Assert.equal(abortPending, false, "the abandoned attempt waits while its image decodes")
   Assert.isNil(abortFailure, "the abandoned attempt reports no failure while waiting")
   Assert.isNil(abortServices.sceneLayer(), "the abandoned attempt publishes nothing")
+  abortCache.withheld[scenePathB] = true
+  local abortAgain, abortAgainFailure = abortServices.prepare(demand(SCENE_B_KEY, "pending-resume-abort"))
+  Assert.equal(abortAgain, false, "the waiting attempt keeps waiting on its retained record")
+  Assert.isNil(abortAgainFailure, "the retained record needs no re-read: " .. tostring(abortAgainFailure))
   abortEnvelope:dispose()
   Assert.equal(next(abortPool.live), nil, "abandoning a waiting scene releases its tickets")
   envelope:dispose()
@@ -3266,6 +3391,98 @@ function T.superseding_scene_releases_the_abandoned_candidates_attempt_refs()
   Assert.equal(next(pool.live), nil, "teardown clears the abandoned wait")
 end
 
+-- A pending scene never holds back the uploads the demand already knows:
+-- party wrapper layers enroll in the same drive that waits on the scene art.
+function T.pending_scene_still_enrolls_known_party_layers()
+  local record = sceneRecord(SCENE_KEY)
+  local pool = scriptedPool(1000000, {})
+  local requested = {}
+  local baseRequest = pool.request
+  function pool:request(path, sampler, priority)
+    requested[path] = true
+    return baseRequest(self, path, sampler, priority)
+  end
+  local envelope = warmEnvelope(dualSceneCacheFs(record, nil), pool, nearHost({}, true))
+  envelope._manifest.party = {
+    pages = { { key = "party:page/mon-menu", layers = { { image = "party-a.png" }, { image = "party-b.png" } } } },
+  }
+  local ready, failure = envelope._services.prepare({
+    launchId = "pending-scene-enrollment",
+    scenes = { SCENE_KEY },
+    pages = {},
+    partyPages = { "party:page/mon-menu" },
+    trainerPictures = {},
+    battleBalls = {},
+    iconKeys = {},
+    audio = { roles = {}, banks = {}, cries = {} },
+  })
+  Assert.equal(ready, false, "the scene art still decodes")
+  Assert.isNil(failure, "waiting carries no failure")
+  Assert.isTrue(
+    requested["party-a.png"] and requested["party-b.png"],
+    "the known party layers enroll while the scene waits"
+  )
+  envelope:dispose()
+end
+
+-- A launch dropped while its scene is partly staged abandons the pending
+-- candidate: its attempt-owned borrows return exactly once, no attempt pin
+-- lingers in the idle envelope, and a later launch of the same scene stages
+-- a fresh attempt instead of resuming the abandoned one.
+function T.dropped_launch_abandons_its_pending_scene_candidate()
+  local record = sceneRecord(SCENE_KEY)
+  local pool = scriptedPool(1000000, {})
+  for _, path in ipairs(sceneArtPaths(record)) do
+    if path ~= record.terrainSprites.foe.image then
+      pool.readyPaths[path] = true
+    end
+  end
+  local envelope = warmEnvelope(dualSceneCacheFs(record, nil), pool, nearHost({}, true))
+  local services = envelope._services
+  local function demand(launchId)
+    return {
+      launchId = launchId,
+      scenes = { SCENE_KEY },
+      pages = {},
+      trainerPictures = {},
+      battleBalls = {},
+      iconKeys = {},
+      audio = { roles = {}, banks = {}, cries = {} },
+    }
+  end
+  Assert.equal((services.prepare(demand("dropped-launch"))), false, "the first launch waits on its foe terrain")
+  local abandoned = {}
+  for _, acquired in ipairs(pool.acquired) do
+    abandoned[#abandoned + 1] = acquired.lease
+  end
+  Assert.isTrue(#abandoned > 0, "the pending attempt holds its ready pieces")
+  local function releasedCount(lease)
+    local count = 0
+    for _, released in ipairs(pool.released) do
+      if released == lease then
+        count = count + 1
+      end
+    end
+    return count
+  end
+  envelope:_dropLaunch()
+  for _, lease in ipairs(abandoned) do
+    Assert.equal(releasedCount(lease), 1, "dropping the launch returns each attempt borrow once")
+  end
+  Assert.equal(next(envelope._warmPinned), nil, "the abandoned attempt leaves no pin in the idle envelope")
+
+  pool.readyPaths[record.terrainSprites.foe.image] = true
+  local acquiredBefore = #pool.acquired
+  local ready, failure = drivePrepare(services, demand("resumed-launch"))
+  Assert.isTrue(ready, "the next launch of the same scene completes: " .. tostring(failure))
+  Assert.isTrue(#pool.acquired > acquiredBefore, "the next launch stages a fresh attempt")
+  for _, lease in ipairs(abandoned) do
+    Assert.equal(releasedCount(lease), 1, "the abandoned borrows are never returned again")
+  end
+  envelope:dispose()
+  Assert.equal(next(pool.live), nil, "teardown clears every ticket")
+end
+
 -- A scene that waits and then fails terminally rolls back only its
 -- attempt-owned refs: the ready predecessor stays published with its
 -- leases, and the failure names its cause instead of hanging.
@@ -3349,6 +3566,83 @@ function T.pending_scene_then_terminal_failure_keeps_the_predecessor()
     Assert.equal(releasedCount(acquired.lease), 1, "disposal and rollback return every lease exactly once")
   end
   Assert.equal(next(pool.live), nil, "teardown clears the launch-scoped enrollment")
+end
+
+-- A two-layer party page borrows each staged layer once: while the second
+-- layer pends, retries resume the ready first layer instead of borrowing it
+-- again, and every borrow returns exactly once on release, on a terminal
+-- layer failure, and when the launch is dropped before the page publishes.
+function T.party_page_composite_returns_each_layer_borrow_exactly_once()
+  local pageKey = "party:page/mon-menu"
+  local function pagePool(statusByPath)
+    local pool = { acquired = {}, released = {} }
+    function pool:request(path)
+      return path
+    end
+    function pool:poll(token)
+      local status = statusByPath[token]
+      if status == "failed" then
+        return "failed", "probe-layer-failed"
+      end
+      return status, token
+    end
+    function pool:acquire(token)
+      local lease = { image = { path = token } }
+      self.acquired[#self.acquired + 1] = lease
+      return lease
+    end
+    function pool:release(lease)
+      self.released[#self.released + 1] = lease
+    end
+    return pool
+  end
+  local function pageEnvelope(statusByPath)
+    local pool = pagePool(statusByPath)
+    local envelope = newEnvelope(stagedCacheFs(sceneRecord(SCENE_KEY)), pool)
+    envelope._manifest.party = {
+      pages = { { key = pageKey, layers = { { image = "party-a.png" }, { image = "party-b.png" } } } },
+    }
+    return envelope, envelope:_preparationServices(), pool
+  end
+  local function exactlyOnce(pool, message)
+    Assert.deepEqual(leasePaths(pool.released), leasePaths(pool.acquired), message)
+    local seen = {}
+    for _, lease in ipairs(pool.released) do
+      Assert.isNil(seen[lease], message .. ": no lease returns twice")
+      seen[lease] = true
+    end
+  end
+
+  local status = { ["party-a.png"] = "ready", ["party-b.png"] = "pending" }
+  local envelope, services, pool = pageEnvelope(status)
+  for _ = 1, 4 do
+    Assert.isNil(services.drawable(pageKey), "a pending second layer keeps the page pending")
+  end
+  Assert.equal(#pool.acquired, 1, "retries resume the ready first layer instead of borrowing it again")
+  status["party-b.png"] = "ready"
+  Assert.notNil(services.drawable(pageKey), "both ready layers publish the page")
+  Assert.equal(#pool.acquired, 2, "each layer is borrowed once")
+  services.release(pageKey)
+  exactlyOnce(pool, "releasing the page returns both layers")
+  envelope:dispose()
+  Assert.equal(#pool.released, 2, "disposal returns nothing twice")
+
+  local failingStatus = { ["party-a.png"] = "ready", ["party-b.png"] = "failed" }
+  local failEnvelope, failServices, failPool = pageEnvelope(failingStatus)
+  local page, failure = failServices.drawable(pageKey)
+  Assert.isNil(page, "a failed second layer never publishes the page")
+  Assert.isTrue(type(failure) == "string" and failure:find("probe-layer-failed", 1, true) ~= nil, "the cause survives")
+  exactlyOnce(failPool, "a terminal layer failure returns the first layer at once")
+  failEnvelope:dispose()
+  Assert.equal(#failPool.released, 1, "disposal returns nothing twice")
+
+  local dropStatus = { ["party-a.png"] = "ready", ["party-b.png"] = "pending" }
+  local dropEnvelope, dropServices, dropPool = pageEnvelope(dropStatus)
+  Assert.isNil(dropServices.drawable(pageKey), "the page pends on its second layer")
+  dropEnvelope:_dropLaunch()
+  exactlyOnce(dropPool, "dropping the launch returns the pending page's first layer")
+  dropEnvelope:dispose()
+  Assert.equal(#dropPool.released, 1, "disposal returns nothing twice")
 end
 
 return { tests = T }

@@ -1318,6 +1318,231 @@ function T.background_upload_uses_packed_pixels_without_per_pixel_setpixel()
   end
 end
 
+-- Effect textures construct natively from their packed normalized bytes and
+-- live in one entry per resource key: a prediction hold and a later
+-- occurrence borrow share the same immutable payload and image under distinct
+-- lease identities without reading the payload again, a conflicting
+-- descriptor never shares the entry, invalid bytes or a failed configuration
+-- publish nothing, and the last return forgets the entry and releases its
+-- image exactly once.
+function T.effect_textures_build_from_packed_bytes_and_share_one_live_entry()
+  local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local FakeCache = require("tests.support.FakeCache")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local cache = CacheFs.forVersion("probe-effect-live-entry", FakeCache.new())
+  -- Opaque, zero-alpha with live RGB, partial alpha, and opaque texels.
+  local bytes = string.char(255, 0, 0, 255, 10, 20, 30, 0, 40, 80, 120, 128, 0, 255, 0, 255)
+  local identity = Hashing.sha1hex(bytes)
+  local function writeEffect(key, resources)
+    cache:writeLua(BattlePresentationCache.effectPath(key), EffectStagingFixture.effectRecord(key, resources))
+    cache:write(BattlePresentationCache.effectMarkerPath(key), "probe-marker")
+  end
+  writeEffect("SPARK_A", {
+    { key = "probe:spark", kind = "texture", payload = "effects/spark.lua", contentIdentity = identity },
+    { key = "probe:data", kind = "palette", payload = "effects/data.lua", contentIdentity = identity },
+  })
+  writeEffect("SPARK_B", {
+    { key = "probe:spark", kind = "texture", payload = "effects/spark.lua", contentIdentity = string.rep("0", 40) },
+  })
+  writeEffect("MIRROR", {
+    { key = "probe:mirror", kind = "texture", payload = "effects/mirror.lua", contentIdentity = identity },
+  })
+  writeEffect("BROKEN", {
+    { key = "probe:broken", kind = "texture", payload = "effects/broken.lua", contentIdentity = identity },
+  })
+  cache:writeLua("effects/spark.lua", { width = 2, height = 2, rgba8888 = bytes })
+  cache:writeLua("effects/mirror.lua", {
+    width = 2,
+    height = 2,
+    rgba8888 = bytes,
+    sampler = { wrapX = "mirroredrepeat", wrapY = "clamp" },
+  })
+  cache:writeLua("effects/broken.lua", { width = 2, height = 2, rgba8888 = bytes:sub(1, 12) })
+  cache:writeLua("effects/data.lua", { frames = { 1, 2 } })
+  local reads, refused = {}, {}
+  local reader = setmetatable({}, {
+    __index = function(_, name)
+      local member = cache[name]
+      if type(member) ~= "function" then
+        return member
+      end
+      return function(_, ...)
+        return member(cache, ...)
+      end
+    end,
+  })
+  function reader.loadLua(_, path)
+    reads[path] = (reads[path] or 0) + 1
+    assert(not refused[path], "a live effect payload is read again: " .. path)
+    return cache:loadLua(path)
+  end
+  local function openHolder(graphics, launchId)
+    local text = {}
+    function text.measure(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end
+    local envelope = FieldBattlePresentation.new({
+      splRandomState = { state = 0 },
+      cacheFs = reader,
+      graphics = graphics,
+      windows = {},
+      text = text,
+      measureDisplay = compactMeasurement,
+    })
+    local owned = BattlePresentationAssets.new({
+      assets = envelope:_preparationServices(),
+      launchId = launchId,
+      sceneKey = "general/plain/day",
+      shadowRegions = {},
+    })
+    return envelope, owned
+  end
+  local function loaded(owned, key)
+    Assert.equal(owned:demandEffect(key), true, key .. " reads ready")
+    return assert(owned:loadEffect(key), key .. " loads")
+  end
+
+  local envelope, owned = openHolder(love.graphics, "probe-effect-live-entry")
+  local hold = owned:openEffectHold("SPARK_A")
+  Assert.equal(owned:advanceEffectHold(hold), true, "the prediction hold becomes usable")
+  Assert.equal(reads["effects/spark.lua"], 1, "the hold reads its texture payload once")
+  refused["effects/spark.lua"] = true
+  local record = loaded(owned, "SPARK_A")
+  local held = hold.leases[1]
+  local borrow = owned:resolveEffectResource(record, "probe:spark")
+  Assert.notNil(borrow, "the occurrence borrows the live texture without reading it again")
+  Assert.isTrue(borrow ~= held, "each borrow is its own lease identity")
+  Assert.equal(borrow.handle, held.handle, "both borrows share one uploaded image")
+  Assert.equal(borrow.rgba8888, bytes, "both borrows share the immutable staged bytes")
+  local firstData = owned:resolveEffectResource(record, "probe:data")
+  refused["effects/data.lua"] = true
+  local secondData = owned:resolveEffectResource(record, "probe:data")
+  Assert.notNil(secondData, "a live non-texture record borrows without reading again")
+  Assert.isTrue(firstData ~= secondData, "non-texture borrows stay distinct leases")
+  Assert.equal(secondData.data, firstData.data, "non-texture borrows share one normalized record")
+
+  local image = borrow.handle
+  local minFilter, magFilter = image:getFilter()
+  Assert.equal(minFilter, "nearest", "effect textures sample nearest when minified")
+  Assert.equal(magFilter, "nearest", "effect textures sample nearest when magnified")
+  local wrapX, wrapY = image:getWrap()
+  Assert.equal(wrapX, "repeat", "a payload without a sampler keeps the repeat wrap horizontally")
+  Assert.equal(wrapY, "repeat", "a payload without a sampler keeps the repeat wrap vertically")
+  local canvas = love.graphics.newCanvas(2, 2)
+  love.graphics.push("all")
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setBlendMode("replace", "premultiplied")
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(image, 0, 0)
+  love.graphics.pop()
+  Assert.equal(canvas:newImageData():getString(), bytes, "the image carries the exact straight RGBA bytes")
+  canvas:release()
+
+  local mirror = owned:resolveEffectResource(loaded(owned, "MIRROR"), "probe:mirror")
+  local mirrorX, mirrorY = mirror.handle:getWrap()
+  Assert.equal(mirrorX, "mirroredrepeat", "the staged sampler mirrors horizontally")
+  Assert.equal(mirrorY, "clamp", "the staged sampler clamps vertically")
+
+  local conflict, conflictErr = owned:resolveEffectResource(loaded(owned, "SPARK_B"), "probe:spark")
+  Assert.isNil(conflict, "a conflicting descriptor never shares the live image")
+  Assert.isTrue(
+    tostring(conflictErr):find("conflicts", 1, true) ~= nil,
+    "the conflict names itself: " .. tostring(conflictErr)
+  )
+  Assert.equal(owned:drawable("probe:spark"), image, "the live image stays drawable for its owners")
+
+  local broken, brokenErr = owned:resolveEffectResource(loaded(owned, "BROKEN"), "probe:broken")
+  Assert.isNil(broken, "an inexact payload publishes nothing")
+  Assert.isTrue(tostring(brokenErr):find("effects/broken.lua", 1, true) ~= nil, "the failure names its path")
+  Assert.isNil(owned:drawable("probe:broken"), "no half-created texture is drawable")
+
+  Assert.equal(owned:releaseEffectResource(borrow), true, "the occurrence returns its borrow")
+  Assert.equal(borrow.key, "probe:spark", "a returned borrow keeps its identity")
+  Assert.isNil(borrow.handle, "a returned borrow drops its image reference")
+  Assert.isNil(borrow.rgba8888, "a returned borrow drops its staged bytes")
+  Assert.equal(owned:drawable("probe:spark"), image, "the prediction's hold keeps the image live")
+  Assert.equal(owned:closeEffectHold(hold), true, "the prediction returns its hold")
+  Assert.isNil(owned:drawable("probe:spark"), "the last return forgets the live image")
+  Assert.isFalse(image:release(), "the last return already released the live image")
+  refused["effects/spark.lua"] = nil
+  local again = owned:resolveEffectResource(record, "probe:spark")
+  Assert.equal(reads["effects/spark.lua"], 2, "no idle texture survives its last return")
+  Assert.isTrue(again.handle ~= image, "a later borrow acquires a fresh image")
+  owned:dispose()
+  envelope:dispose()
+
+  -- The live entry alone releases its image: a live sibling keeps it, a
+  -- refused repeated return releases nothing, the last return releases it
+  -- exactly once, and a later disposal never releases it again, while an
+  -- outstanding borrow returns through disposal once.
+  local counted = {}
+  local counting = setmetatable({}, { __index = love.graphics })
+  function counting.newImage(data)
+    local real = love.graphics.newImage(data)
+    local proxy = { releases = 0 }
+    function proxy.setFilter(_, min, mag)
+      real:setFilter(min, mag)
+    end
+    function proxy.setWrap(_, x, y)
+      real:setWrap(x, y)
+    end
+    function proxy.release()
+      proxy.releases = proxy.releases + 1
+      real:release()
+    end
+    counted[#counted + 1] = proxy
+    return proxy
+  end
+  local countingEnvelope, countingOwned = openHolder(counting, "probe-effect-last-return")
+  local countingRecord = loaded(countingOwned, "SPARK_A")
+  local first = assert(countingOwned:resolveEffectResource(countingRecord, "probe:spark"))
+  local sibling = assert(countingOwned:resolveEffectResource(countingRecord, "probe:spark"))
+  Assert.equal(#counted, 1, "sibling borrows share one image")
+  Assert.equal(countingOwned:releaseEffectResource(first), true, "the first borrow returns")
+  Assert.equal(counted[1].releases, 0, "a live sibling keeps the image")
+  Assert.isNil((countingOwned:releaseEffectResource(first)), "a repeated return is refused")
+  Assert.equal(counted[1].releases, 0, "a refused return releases nothing")
+  Assert.equal(countingOwned:releaseEffectResource(sibling), true, "the last borrow returns")
+  Assert.equal(counted[1].releases, 1, "the last return releases the image exactly once")
+  assert(countingOwned:resolveEffectResource(countingRecord, "probe:spark"))
+  Assert.equal(#counted, 2, "a borrow after the last return uploads a fresh image")
+  countingOwned:dispose()
+  countingEnvelope:dispose()
+  Assert.equal(counted[1].releases, 1, "disposal never releases a returned image again")
+  Assert.equal(counted[2].releases, 1, "disposal returns the outstanding borrow's image once")
+
+  -- A created image whose configuration fails is released once and never
+  -- published.
+  local created = {}
+  local failing = setmetatable({}, { __index = love.graphics })
+  function failing.newImage(data)
+    local real = love.graphics.newImage(data)
+    local proxy = { released = 0 }
+    function proxy.setFilter() end
+    function proxy.setWrap()
+      error("probe wrap failure")
+    end
+    function proxy.release()
+      proxy.released = proxy.released + 1
+      real:release()
+    end
+    created[#created + 1] = proxy
+    return proxy
+  end
+  local failingEnvelope, failingOwned = openHolder(failing, "probe-effect-config-failure")
+  local failed, failedErr = failingOwned:resolveEffectResource(loaded(failingOwned, "MIRROR"), "probe:mirror")
+  Assert.isNil(failed, "a failed configuration publishes no lease")
+  Assert.isTrue(tostring(failedErr):find("probe wrap failure", 1, true) ~= nil, "the original cause survives")
+  Assert.equal(#created, 1, "exactly one candidate image was created")
+  Assert.equal(created[1].released, 1, "the unpublished candidate is released exactly once")
+  Assert.isNil(failingOwned:drawable("probe:mirror"), "the failed candidate is never drawable")
+  failingOwned:dispose()
+  failingEnvelope:dispose()
+  Assert.equal(created[1].released, 1, "disposal never releases the candidate again")
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {

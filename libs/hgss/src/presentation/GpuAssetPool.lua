@@ -63,7 +63,6 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@field _queue table<string, unknown>? borrowed selected preparation queue
 ---@field _decoded table<string, unknown>? borrowed selected decoded CPU owner
 ---@field _meshGroup table<string, unknown>? live physical-coverage mesh group this pool shares immutable geometry through
----@field _groupOwned table<string, boolean> effective geometry keys this pool owns one group ref for
 local GpuAssetPool = {}
 GpuAssetPool.__index = GpuAssetPool
 
@@ -120,7 +119,7 @@ end
 -- One live physical coverage shares immutable vertex/index payloads across
 -- its cell pools through a group owned by the coverage closure: the group
 -- holds one live entry per effective geometry key plus an owner count, while
--- each pool records one owning ref per admitted key in its own cache. Only
+-- each pool records one owning ref per admitted key in its own mesh cache. Only
 -- the final owner's release frees the Mesh; a borrowed entry counts toward
 -- the borrowing pool's local mesh/triangle stats exactly like a scene-owned
 -- one. The group is reachable only through live coverage options/pools; it
@@ -140,7 +139,7 @@ end
 -- Borrow the live group entry for one effective key when another cell pool
 -- already published it. Records the local ref once (cache entry, mesh list,
 -- triangle count, ownership flag) and cancels this pool's redundant
--- prefetch token through its existing owner. A pool that already owns the
+-- prefetch token through its existing owner. A pool that already caches the
 -- key borrows nothing twice.
 ---@param pool GpuAssetPool
 ---@param key string
@@ -161,7 +160,6 @@ local function borrowGroupEntry(pool, key)
   end
   record.owners = record.owners + 1
   pool._meshCache[key] = record.entry
-  pool._groupOwned[key] = true
   pool.meshes[#pool.meshes + 1] = record.entry.mesh
   pool.triangles = pool.triangles + record.entry.triangles
   local token = pool._geometryPrefetch[key]
@@ -187,14 +185,8 @@ local function publishGroupEntry(pool, key, entry)
   if entries == nil then
     return
   end
-  if pool._groupOwned[key] then
-    return
-  end
-  if entries[key] ~= nil then
-    return
-  end
+  assert(entries[key] == nil, "a live group entry is borrowed, never republished")
   entries[key] = { entry = entry, owners = 1 }
-  pool._groupOwned[key] = true
 end
 
 ---@class GpuAssetPoolOptions
@@ -293,7 +285,6 @@ function GpuAssetPool.new(cacheFs, opts)
     _queue = queue,
     _decoded = decoded,
     _meshGroup = meshGroup,
-    _groupOwned = {},
   }, GpuAssetPool)
 end
 
@@ -767,22 +758,20 @@ end
 -- behind other scenes keep their own leases and meshes; a release here
 -- never evicts a committed scene's resources.
 function GpuAssetPool:release()
-  -- Group-owned keys decrement the shared owner count: only the final
-  -- owner releases the GPU object, while a survivor keeps it alive. Local
-  -- cache, mesh list, and triangle count clear exactly as before, so a
-  -- repeat release never touches the same object twice.
+  -- With a group, every cached mesh is one owning ref on its group record:
+  -- only the final owner releases the GPU object, while a survivor keeps it
+  -- alive. Local cache, mesh list, and triangle count clear exactly as
+  -- before, so a repeat release never touches the same object twice.
   local shared = groupEntries(self)
   local retained = {}
   if shared ~= nil then
-    for key in pairs(self._groupOwned) do
-      local record = shared[key]
-      if record ~= nil then
-        record.owners = record.owners - 1
-        if record.owners > 0 then
-          retained[record.entry.mesh] = true
-        else
-          shared[key] = nil
-        end
+    for key in pairs(self._meshCache) do
+      local record = assert(shared[key], "a cached mesh of a grouped pool is registered under its effective key")
+      record.owners = record.owners - 1
+      if record.owners > 0 then
+        retained[record.entry.mesh] = true
+      else
+        shared[key] = nil
       end
     end
   end
@@ -817,7 +806,6 @@ function GpuAssetPool:release()
   self._geometryPrefetch = {}
   self.meshes = {}
   self._meshCache = {}
-  self._groupOwned = {}
   self.triangles = 0
 end
 

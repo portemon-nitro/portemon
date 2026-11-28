@@ -689,14 +689,178 @@ local function restoreWrapperPolicy(screen)
   end
 end
 
+-- Drops one occurrence track under every identity it is filed by (its
+-- pending token and its player handle) and closes its effect hold exactly
+-- once, so cancellation or retirement through either alias returns the
+-- same admission interest. A disposed screen's holder already returned it.
+---@param screen BattleScreenState owning screen behind the occurrence
+---@param track table<string, unknown> occurrence track under dropping
+local function dropTrack(screen, track)
+  if track.token ~= nil then
+    screen._nativeHandles[track.token] = nil
+  end
+  if track.handle ~= nil then
+    screen._nativeHandles[track.handle] = nil
+  end
+  local hold = track.hold
+  track.hold = nil
+  if hold == nil then
+    return
+  end
+  local closed, failure = screen._assets:closeEffectHold(hold)
+  if closed == nil and not screen._disposed then
+    failNative(
+      screen,
+      "battle effect "
+        .. tostring(track.effectKey)
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": admission release failure: "
+        .. tostring(failure)
+    )
+  end
+end
+
+---@param screen BattleScreenState owning screen behind effect admission
+---@param track table<string, unknown> occurrence track whose admission failed
+---@param reason string terminal cause under diagnosis
+---@return string phase always failed
+local function failTrack(screen, track, reason)
+  track.failed = true
+  local hold = track.hold
+  track.hold = nil
+  if hold ~= nil then
+    screen._assets:closeEffectHold(hold)
+  end
+  failNative(
+    screen,
+    "battle effect " .. tostring(track.effectKey) .. " failed for launch " .. screen._launchId .. ": " .. reason
+  )
+  return "failed"
+end
+
+-- Advances one occurrence toward its start: the staged closure is
+-- demanded, the loaded program is validated against the frozen request
+-- before anything is acquired, then the occurrence's own effect hold
+-- borrows every declared texture and stages every named sound's required
+-- sources. Pending keeps the occurrence parked behind its token without
+-- advancing mechanics. Once usable, the root display policy installs and
+-- the player starts the program; the hold stays with the occurrence until
+-- it retires, cancels, or is refused.
+---@param screen BattleScreenState owning screen behind effect admission
+---@param track table<string, unknown> occurrence track carrying its cue and effect key
+---@return string phase pending, started, or failed
+local function advanceOccurrence(screen, track)
+  local effectKey = track.effectKey --[[@as string]]
+  local cue = track.cue --[[@as table<string, unknown>]]
+  local request = cue.request --[[@as table<string, unknown>]]
+  if track.record == nil then
+    local ready, demandFailure = screen._assets:demandEffect(effectKey)
+    if demandFailure ~= nil then
+      return failTrack(screen, track, tostring(demandFailure))
+    end
+    if ready ~= true then
+      return "pending"
+    end
+    local record, loadFailure = screen._assets:loadEffect(effectKey)
+    if record == nil then
+      return failTrack(screen, track, tostring(loadFailure))
+    end
+    local program = record.program --[[@as table<string, unknown>?]]
+    if type(program) ~= "table" then
+      return failTrack(screen, track, "no compiled program")
+    end
+    -- Reject any program whose task kind lacks a real factory body before
+    -- anything stages.
+    for _, kind in ipairs(program.taskKinds or {}) do
+      if not BattleEffectTasks.supportsKind(kind) then
+        return failTrack(screen, track, "task kind " .. tostring(kind) .. " has no real factory body")
+      end
+    end
+    -- Required-context probe: a program declaring resolved move power
+    -- admits only a request freezing the executed unsigned value. A
+    -- missing or malformed fact fails with launch, effect, packet, and
+    -- event provenance before anything stages.
+    local frozen = request.playback --[[@as table<string, unknown>]]
+    local frozenContext = frozen.context --[[@as table<string, unknown>?]]
+    local required = record.requiredContext
+    if type(required) == "table" and required.movePower ~= nil then
+      local power = type(frozenContext) == "table" and frozenContext.movePower or nil
+      if type(power) ~= "number" or power % 1 ~= 0 or power < 0 or power > 65535 then
+        return failTrack(
+          screen,
+          track,
+          "required movePower has no usable resolved value for packet "
+            .. tostring(cue.packetId)
+            .. " event "
+            .. tostring(cue.eventSequence)
+            .. " request ordinal "
+            .. tostring((request.identity --[[@as table<string, unknown>]]).ordinal)
+        )
+      end
+    end
+    track.record = record
+    track.hold = screen._assets:openEffectHold(effectKey)
+  end
+  local usable, holdFailure = screen._assets:advanceEffectHold(track.hold)
+  if usable == nil then
+    return failTrack(screen, track, tostring(holdFailure))
+  end
+  if usable ~= true then
+    return "pending"
+  end
+  local record = track.record --[[@as table<string, unknown>]]
+  -- The wrapper applies the admitted root display policy before the
+  -- occurrence starts; refusal, completion, retirement, cancellation,
+  -- and failure restore the default.
+  if not installWrapperPolicy(screen, record, effectKey) then
+    track.failed = true
+    local hold = track.hold
+    track.hold = nil
+    screen._assets:closeEffectHold(hold)
+    return "failed"
+  end
+  -- Admission consumes the ledgered frozen request: the selector already
+  -- froze roots, context, and topology, so nothing here re-selects or
+  -- repairs them. Playback carries no occurrence-derived seed: the running
+  -- occurrence draws visual variation from the screen-owned battle visual
+  -- stream, never from cue identity arithmetic.
+  local frozen = request.playback --[[@as table<string, unknown>]]
+  local playback = {
+    launchId = cue.launchId,
+    packetId = cue.packetId,
+    identity = request.identity,
+    event = cue.event,
+    topology = frozen.topology,
+    context = frozen.context,
+  }
+  screen._liveEffectRecord = record
+  local handle, refusal = screen._player:start(playback, record.program)
+  if handle == nil then
+    screen._liveEffectRecord = nil
+    restoreWrapperPolicy(screen)
+    return failTrack(screen, track, "program refused admission: " .. tostring(refusal))
+  end
+  track.handle = handle
+  screen._liveEffectHandle = handle
+  screen._nativeHandles[handle] = track
+  return "started"
+end
+
 ---@param screen BattleScreenState owning screen behind effect admission
 ---@param cue table<string, unknown> native-effect cue carrying its ledgered frozen request
----@return table<string, unknown>? player handle behind the running occurrence, nil on terminal refusal
-local function nativeEffectAdmit(screen, cue)
+---@return table<string, unknown>? player handle or pending token, nil on terminal refusal
+local function nativeEffectStart(screen, cue)
+  if screen._disposed or screen._mode == "failed" then
+    return nil
+  end
   local request = cue.request --[[@as table<string, unknown>?]]
   local effectKey = cue.effectKey
   if type(request) == "table" and type(request.effectKey) == "string" then
     effectKey = request.effectKey --[[@as string]]
+  end
+  if type(effectKey) ~= "string" or effectKey == "" then
+    return nil
   end
   if type(request) ~= "table" or type(request.playback) ~= "table" then
     failNative(
@@ -709,169 +873,21 @@ local function nativeEffectAdmit(screen, cue)
     )
     return nil
   end
-  if type(effectKey) ~= "string" or effectKey == "" then
-    failNative(screen, "battle effect for launch " .. screen._launchId .. ": the ledgered request names no catalog key")
+  local track = { effectKey = effectKey, cue = cue }
+  local phase = advanceOccurrence(screen, track)
+  if phase == "failed" then
     return nil
   end
-  local record, loadFailure = screen._assets:loadEffect(effectKey)
-  if record == nil then
-    failNative(
-      screen,
-      "battle effect " .. effectKey .. " failed for launch " .. screen._launchId .. ": " .. tostring(loadFailure)
-    )
-    return nil
+  if phase == "started" then
+    return track.handle
   end
-  local program = record.program --[[@as table<string, unknown>?]]
-  if type(program) ~= "table" then
-    failNative(
-      screen,
-      "battle effect " .. effectKey .. " failed for launch " .. screen._launchId .. ": no compiled program"
-    )
-    return nil
-  end
-  -- C05 consumer obligation: reject any program whose task kind
-  -- lacks a real factory body before anything stages.
-  for _, kind in ipairs(program.taskKinds or {}) do
-    if not BattleEffectTasks.supportsKind(kind) then
-      failNative(
-        screen,
-        "battle effect "
-          .. effectKey
-          .. " failed for launch "
-          .. screen._launchId
-          .. ": task kind "
-          .. tostring(kind)
-          .. " has no real factory body"
-      )
-      return nil
-    end
-  end
-  -- Admission probe: every declared staged texture must upload
-  -- before the occurrence starts, so a terminal driver or payload
-  -- failure names its resource instead of failing mid-run. The admitted
-  -- lease is retained by the holder until the run stages its own lease
-  -- and through playback, so the run never reacquires what admission
-  -- already validated; launch disposal returns the retained hold.
-  local declared = record.resources
-  if type(declared) == "table" then
-    for resourceKey, descriptor in pairs(declared) do
-      if type(descriptor) == "table" and descriptor.kind == "texture" then
-        local lease, resolveFailure = screen._assets:resolveEffectResource(record, resourceKey)
-        if lease == nil then
-          failNative(
-            screen,
-            "battle effect "
-              .. effectKey
-              .. " failed for launch "
-              .. screen._launchId
-              .. ": "
-              .. tostring(resolveFailure)
-          )
-          return nil
-        end
-      end
-    end
-  end
-  -- Required-context probe: a program declaring resolved move power
-  -- admits only a request freezing the executed unsigned value. A
-  -- missing or malformed fact fails with launch, effect, packet, and
-  -- event provenance before anything stages; effects without the
-  -- declaration start exactly as before.
-  local frozen = request.playback --[[@as table<string, unknown>]]
-  local frozenContext = frozen.context --[[@as table<string, unknown>?]]
-  local required = record.requiredContext
-  if type(required) == "table" and required.movePower ~= nil then
-    local power = type(frozenContext) == "table" and frozenContext.movePower or nil
-    if type(power) ~= "number" or power % 1 ~= 0 or power < 0 or power > 65535 then
-      failNative(
-        screen,
-        "battle effect "
-          .. effectKey
-          .. " failed for launch "
-          .. screen._launchId
-          .. ": required movePower has no usable resolved value for packet "
-          .. tostring(cue.packetId)
-          .. " event "
-          .. tostring(cue.eventSequence)
-          .. " request ordinal "
-          .. tostring((request.identity --[[@as table<string, unknown>]]).ordinal)
-      )
-      return nil
-    end
-  end
-  -- Admission consumes the ledgered frozen request: the selector
-  -- already froze roots, context, and topology, so nothing here
-  -- re-selects or repairs them. The cue event rides along only as
-  -- task context behind the running player occurrence.
-  -- The wrapper applies the admitted root display policy before the
-  -- occurrence starts; refusal, completion, retirement, cancellation,
-  -- and failure restore the default.
-  if not installWrapperPolicy(screen, record, effectKey) then
-    return nil
-  end
-  -- Playback carries no occurrence-derived seed: the running
-  -- occurrence draws visual variation from the screen-owned battle
-  -- visual stream, never from cue identity arithmetic.
-  local playback = {
-    launchId = cue.launchId,
-    packetId = cue.packetId,
-    identity = request.identity,
-    event = cue.event,
-    topology = frozen.topology,
-    context = frozen.context,
-  }
-  screen._liveEffectRecord = record
-  local handle, refusal = screen._player:start(playback, program)
-  if handle == nil then
-    screen._liveEffectRecord = nil
-    restoreWrapperPolicy(screen)
-    failNative(
-      screen,
-      "battle effect "
-        .. effectKey
-        .. " failed for launch "
-        .. screen._launchId
-        .. ": program refused admission: "
-        .. tostring(refusal)
-    )
-    return nil
-  end
-  screen._liveEffectHandle = handle
-  screen._nativeHandles[handle] = { handle = handle, effectKey = effectKey }
-  return handle
-end
-
----@param screen BattleScreenState owning screen behind effect admission
----@param cue table<string, unknown> native-effect cue carrying its ledgered frozen request
----@return table<string, unknown>? player handle or pending token, nil on terminal refusal
-local function nativeEffectStart(screen, cue)
-  if screen._disposed or screen._mode == "failed" then
-    return nil
-  end
-  local effectKey = cue.effectKey
-  if (type(effectKey) ~= "string" or effectKey == "") and type(cue.request) == "table" then
-    effectKey = cue.request.effectKey
-  end
-  if type(effectKey) ~= "string" or effectKey == "" then
-    return nil
-  end
-  local ready, demandFailure = screen._assets:demandEffect(effectKey)
-  if demandFailure ~= nil then
-    failNative(
-      screen,
-      "battle effect " .. effectKey .. " failed for launch " .. screen._launchId .. ": " .. tostring(demandFailure)
-    )
-    return nil
-  end
-  if ready ~= true then
-    -- Still staging: park behind a pending token; status promotes
-    -- once the worker closure validates, so pending stalls only
-    -- presentation, never mechanics.
-    local token = { pending = true }
-    screen._nativeHandles[token] = { token = token, pending = true, effectKey = effectKey, cue = cue }
-    return token
-  end
-  return nativeEffectAdmit(screen, cue)
+  -- Still staging: park behind a pending token that stays the stable track
+  -- identity; status promotes once the occurrence's hold is usable, so
+  -- pending stalls only presentation, never mechanics.
+  local token = { pending = true }
+  track.token = token
+  screen._nativeHandles[token] = track
+  return token
 end
 
 ---@param screen BattleScreenState owning screen behind occurrence polling
@@ -889,40 +905,14 @@ local function nativeEffectStatus(screen, handleOrToken)
     )
     return "failed"
   end
-  if track.pending == true then
-    local ready, demandFailure = screen._assets:demandEffect(track.effectKey)
-    if demandFailure ~= nil then
-      track.pending = false
-      track.failed = true
-      failNative(
-        screen,
-        "battle effect "
-          .. track.effectKey
-          .. " failed for launch "
-          .. screen._launchId
-          .. ": "
-          .. tostring(demandFailure)
-      )
-      return "failed"
-    end
-    if ready ~= true then
-      return "pending"
-    end
-    track.pending = false
-    local handle = nativeEffectAdmit(screen, track.cue)
-    if handle == nil then
-      track.failed = true
-      return "failed"
-    end
-    -- The token stays the stable track identity so every collaborator
-    -- poll keeps resolving: the admitted handle rides the same track.
-    track.handle = handle
-  end
   if track.failed == true then
     return "failed"
   end
   if track.handle == nil then
-    return "pending"
+    local phase = advanceOccurrence(screen, track)
+    if phase ~= "started" then
+      return phase
+    end
   end
   local phase = screen._player:status(track.handle)
   if phase == nil then
@@ -966,7 +956,7 @@ local function nativeEffectCancel(screen, handleOrToken, reason)
   if track == nil then
     return
   end
-  screen._nativeHandles[handleOrToken] = nil
+  dropTrack(screen, track)
   if track.handle ~= nil then
     screen._player:cancel(track.handle, reason)
     if screen._liveEffectHandle == track.handle then
@@ -984,9 +974,12 @@ end
 -- releases: only the timeline consumption point retires a track.
 ---@param screen BattleScreenState owning screen behind occurrence polling
 local function pollNativeEffects(screen)
-  local keys = {}
-  for key in pairs(screen._nativeHandles) do
-    keys[#keys + 1] = key
+  local keys, seen = {}, {}
+  for key, track in pairs(screen._nativeHandles) do
+    if not seen[track] then
+      seen[track] = true
+      keys[#keys + 1] = key
+    end
   end
   for _, key in ipairs(keys) do
     if screen._nativeHandles[key] ~= nil then
@@ -1005,61 +998,35 @@ local function pollNativeEffects(screen)
 end
 
 -- Releases one consumed native occurrence after its timeline cue
--- observes completion: the track leaves the map, the player drops the
--- terminal record, and the live record clears when it names the retired
--- handle. Only the timeline consumption point calls this; the generic
--- poll never retires. Unknown or already-released identities refuse
--- without touching live work, and a release failure fails the launch
--- with provenance instead of counting a false completion.
+-- observes completion: the track leaves the map under every alias, the
+-- player drops the terminal record, its hold returns once, and the live
+-- record clears when it names the retired handle. Only the timeline
+-- consumption point calls this; the generic poll never retires. Unknown or
+-- already-released identities refuse without touching live work, and a
+-- release failure fails the launch with provenance instead of counting a
+-- false completion.
 ---@param screen BattleScreenState owning screen behind occurrence retirement
 ---@param handleOrToken table<string, unknown> player handle or pending token under release
 ---@return boolean released true once the track and its terminal record were dropped
 local function nativeEffectRetire(screen, handleOrToken)
-  -- A promoted token keeps its stable track while admission also files
-  -- the admitted handle beside it, so one retired identity can own two
-  -- tracks. The release resolves the occurrence handle behind either
-  -- identity first, then drops every track naming the token or that
-  -- handle, and retires the single player occurrence behind them.
-  local handle = nil
-  local direct = screen._nativeHandles[handleOrToken]
-  if direct ~= nil then
-    handle = direct.handle
-  else
-    for _, track in pairs(screen._nativeHandles) do
-      if track.handle == handleOrToken then
-        handle = handleOrToken
-        break
-      end
-    end
-  end
-  if direct == nil and handle == nil then
+  local track = screen._nativeHandles[handleOrToken]
+  if track == nil then
     return false
   end
-  local keys = {}
-  local effectKey = nil
-  for key, track in pairs(screen._nativeHandles) do
-    if key == handleOrToken or (handle ~= nil and (key == handle or track.handle == handle)) then
-      keys[#keys + 1] = key
-      if effectKey == nil then
-        effectKey = track.effectKey
-      end
-    end
-  end
+  local handle = track.handle
   if handle == nil then
-    for _, key in ipairs(keys) do
-      screen._nativeHandles[key] = nil
-    end
+    dropTrack(screen, track)
     return true
   end
-  -- A refused player release leaves every track in place, so the next
-  -- poll still resolves and the launch fails loudly instead of
-  -- aliasing a live occurrence.
+  -- A refused player release leaves the track in place, so the next poll
+  -- still resolves and the launch fails loudly instead of aliasing a live
+  -- occurrence.
   local ok, retired = pcall(screen._player.retire, screen._player, handle)
   if not ok then
     failNative(
       screen,
       "battle effect "
-        .. tostring(effectKey)
+        .. tostring(track.effectKey)
         .. " failed for launch "
         .. screen._launchId
         .. ": release failure: "
@@ -1070,9 +1037,7 @@ local function nativeEffectRetire(screen, handleOrToken)
   if retired ~= true then
     return false
   end
-  for _, key in ipairs(keys) do
-    screen._nativeHandles[key] = nil
-  end
+  dropTrack(screen, track)
   if screen._liveEffectHandle == handle then
     screen._liveEffectHandle = nil
     screen._liveEffectRecord = nil
@@ -2606,12 +2571,36 @@ local function snapshotCommandIcon(self, acting, latest)
   return commandIcon
 end
 
--- Collects drawable icon keys behind the command icon and child slots.
+-- Icon selectors the party list paints for the current own-party
+-- snapshot, derived like the battle party model's slots. Empty until a
+-- request packet carries the snapshot or without the field icon provider.
+---@param self BattleScreenState
+---@return string[] icon selectors in snapshot order
+local function partyIconKeys(self)
+  local keys = {}
+  if self._monIconProvider == nil or self._partySnapshot == nil then
+    return keys
+  end
+  for _, record in ipairs(self._partySnapshot) do
+    if type(record) == "table" and type(record.species) == "string" then
+      local form = type(record.form) == "number" and record.form or 0
+      keys[#keys + 1] = MonCache.iconSelector(record.species, form --[[@as integer]], false)
+    end
+  end
+  return keys
+end
+
+-- Collects drawable icon keys behind the command icon, the party list,
+-- and child slots. The party snapshot's icons stay demanded so opening
+-- the party list never grows the demand under its first frame.
 ---@param self BattleScreenState
 ---@param commandIcon table<string, unknown>? command icon
 ---@return string[] icon keys
 local function snapshotIconKeys(self, commandIcon)
   local iconKeys = commandIcon ~= nil and { commandIcon.key } or {}
+  for _, key in ipairs(partyIconKeys(self)) do
+    iconKeys[#iconKeys + 1] = key
+  end
   local activeChildView = self._subflows:status().childView
   local childNative = type(activeChildView) == "table" and activeChildView.native or nil
   local childParty = type(childNative) == "table" and childNative.view or nil
@@ -4319,6 +4308,22 @@ function BattleScreenState:_portPresent(packet)
       self._deferredPackets[#self._deferredPackets + 1] = packet
       return
     end
+  end
+  -- The active roster's selectable moves stage their effects before the
+  -- next command: with Battle Scene off only Transform still plays. The
+  -- fact applies in accepted delivery order, as the packet is presented;
+  -- effects it drops stay held until this delivery's cues settle.
+  local preparation = packet.preparation --[[@as table<string, unknown>?]]
+  if type(preparation) == "table" then
+    local predicted = {} ---@type string[]
+    for _, key in
+      ipairs(preparation.effects --[[@as string[] ]])
+    do
+      if self._battleAnimationsOn or key == "TRANSFORM" then
+        predicted[#predicted + 1] = key
+      end
+    end
+    self._assets:setPredictedEffects(predicted)
   end
   if not self._introBuilt then
     -- The first delivery installs the opening facts and queues the
@@ -7197,6 +7202,112 @@ function BattleScreenState:_notifyResultMusic(word)
   end
 end
 
+-- Probes the art an ordinary command's entry points paint first, from
+-- the pending request and the battle-owned snapshots: the command and
+-- Fight screens under the selected scene background with each slot's
+-- move button and type icon, the Bag's opening pocket page with the
+-- faces and icons it currently shows, and the icons the party list
+-- paints. Every key is probed so pending uploads enroll together; deeper
+-- party pages and other bag items keep their eager speculative demand.
+---@param self BattleScreenState
+---@param request table<string, unknown> pending ordinary action request
+---@return boolean ready true once every entry drawable resolves
+local function commandEntryArtReady(self, request)
+  local keys, seen = {}, {}
+  local function need(key)
+    if not seen[key] then
+      seen[key] = true
+      keys[#keys + 1] = key
+    end
+  end
+  local offered = {}
+  for _, id in ipairs(self:_surfaceIds()) do
+    offered[id] = true
+  end
+  local menus = self._manifest.menus --[[@as table<string, unknown>]]
+  -- A pulsing screen paints only beside its index mask.
+  local function needScreen(layout, index, screen)
+    need("menu:" .. layout .. ":screen:" .. tostring(index))
+    if screen.pulse == true then
+      need("menu:pulse-mask")
+    end
+  end
+  for index, screen in ipairs(menus.command.screens) do
+    needScreen("command", index, screen)
+  end
+  if offered.fight then
+    -- Each actor's slots name their resting button variant, as the move
+    -- list paints them: typed art for a known move, the blank otherwise.
+    local buttons = { {}, {}, {}, {} } ---@type string[][]
+    local options = request.options --[[@as table<string, unknown>?]]
+    local actors = type(options) == "table" and options.actors or nil
+    if type(actors) == "table" then
+      for _, actor in ipairs(actors) do
+        local found = moveChoices(actor)
+        for slot = 0, 3 do
+          local choice = found[slot]
+          local display = choice ~= nil and choice.display or nil
+          local variants = buttons[slot + 1]
+          if type(display) ~= "table" or display.name == nil then
+            variants[#variants + 1] = "empty"
+          elseif type(display.type) == "string" then
+            local typeKey = display.type:lower()
+            need("battle:move-type-icon:" .. typeKey)
+            variants[#variants + 1] = typeKey .. ":normal"
+          end
+        end
+      end
+    end
+    for index, screen in ipairs(menus.moves.screens) do
+      needScreen("moves", index, screen)
+      if type(screen.moveButtons) == "table" then
+        for slot = 0, math.min(#screen.moveButtons, 4) - 1 do
+          for _, variant in ipairs(buttons[slot + 1]) do
+            need("menu:moves:move-button:" .. tostring(slot) .. ":" .. variant)
+          end
+        end
+      end
+    end
+  end
+  if self._keyboardFocus then
+    need("cursor")
+  end
+  -- The browser always opens on its pocket menu (battle_bag_menu.c
+  -- Create): the last-used shortcut shows its stocked item icon, or its
+  -- disabled face, and a remembered active d-pad cursor its corners.
+  if offered.bag and self._kind ~= "frontier" and self._kind ~= "link" then
+    need("bag:screen:1")
+    local lastUsed = self:_bagLastUsed()
+    local stock = self._inventorySnapshot
+    if lastUsed ~= nil and type(stock) == "table" and (stock[lastUsed.item] or 0) >= 1 then
+      need("battle:item-icon:" .. tostring(lastUsed.item))
+    else
+      need("bag:button:4:3:5")
+    end
+    local cursor = self:_battleCursorSnapshot()
+    if cursor ~= nil and cursor.cursorActive == true then
+      for _, corner in ipairs({ "tl", "tr", "bl", "br" }) do
+        need("battle:cursor-" .. corner)
+      end
+    end
+  end
+  if self._tutorial then
+    need("battle:finger")
+  end
+  if offered.pokemon then
+    for _, iconKey in ipairs(partyIconKeys(self)) do
+      need("battle:icon:" .. iconKey .. ":frame:1")
+    end
+  end
+  local ready = true
+  for _, key in ipairs(keys) do
+    if self._assets:drawable(key) == nil then
+      ready = false
+    end
+  end
+  return ready
+end
+
 -- Applies the retained delivery once its cues drain: reconcile exact
 -- final facts, then expose the next request or the terminal result.
 -- Exposure waits for a fully settled tick so the finished frame
@@ -7208,9 +7319,22 @@ function BattleScreenState:_drain(settledTick)
     return
   end
   self:_invalidatePublishedView()
+  -- A pending ordinary action request starts its entry art while its
+  -- delivery still plays, so the settled command rarely waits on it.
+  local entryArtReady = false
+  local pendingAction = self._pendingRequest
+  if
+    pendingAction ~= nil
+    and self:_modeForOptions(pendingAction.options --[[@as table<string, unknown>?]]) == "command"
+  then
+    entryArtReady = commandEntryArtReady(self, pendingAction)
+  end
   if not self._timeline:settled() then
     return
   end
+  -- Every presented delivery's cues have played: effects a newer
+  -- preparation fact dropped can no longer be used by accepted events.
+  self._assets:retireDroppedPredictions()
   if self._pendingFinal ~= nil then
     self:_reconcile(self._pendingFinal)
     self._pendingFinal = nil
@@ -7278,6 +7402,17 @@ function BattleScreenState:_drain(settledTick)
     then
       self._tutorialPrompted = request.requestId --[[@as integer]]
       self._timeline:announce(self:_tutorialThrowPrompt(), false, 0)
+      return
+    end
+    -- An ordinary action command is exposed only once every move the
+    -- roster can select has its effect usable and its entry points'
+    -- first-painted art resolves; preparation keeps advancing meanwhile.
+    -- Forced, learning, and terminal decisions keep their own readiness
+    -- rules.
+    if
+      self:_modeForOptions(request.options --[[@as table<string, unknown>?]]) == "command"
+      and (not entryArtReady or not self._assets:predictedEffectsReady())
+    then
       return
     end
     self._pendingRequest = nil
@@ -8422,6 +8557,7 @@ function BattleScreenState:updateFixed(dt)
   assert(type(dt) == "number" and dt == dt and dt >= 0, "battle updates take accepted seconds")
   local menuGateAtStart = self._menuGateTicks
   self._assets:update()
+  self._assets:pollPredictedEffects()
   -- Replays leaf-deferred packets in order once their entries stage:
   -- the head waits while its art is still pending, and a processed
   -- head reveals the next packet without advancing source time here.

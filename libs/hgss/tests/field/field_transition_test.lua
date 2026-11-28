@@ -33,7 +33,9 @@ local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 
 local T = {}
 
+-- One host update carrying one fixed tick.
 local function step(transition)
+  transition:beginHostUpdate()
   local moved = transition:updateFixed()
   transition:updateSourceFrame()
   return moved
@@ -2109,6 +2111,7 @@ local function outdoorFixture(opts)
       return camera
     end,
     doorAt = opts.doorAt,
+    clock = opts.clock,
   })
   if opts.player then
     transition.player = opts.player
@@ -2900,12 +2903,51 @@ function T.covered_swap_advances_the_destination_stage_across_cover_ticks()
     step(fixture.transition)
   end
   Assert.equal(#advances, 3, "the destination window was staged over three cover ticks")
-  for _, units in ipairs(advances) do
-    Assert.equal(units, 1, "covered staging advances one integral unit at a time under its measured slice")
-  end
   Assert.equal(prepared, 1, "preparation runs once, after the staged window is ready")
   Assert.equal(#fixture.swaps, 1, "the swap commits once")
   Assert.equal(stageReleased, 0, "a committed stage is not released")
+end
+
+-- The staging slice belongs to one host update: catch-up fixed ticks of the
+-- same update share it and yield once it is spent, while the next host update
+-- starts a fresh slice. Source tick timing is never held back by the yield.
+function T.destination_slice_is_shared_by_the_fixed_ticks_of_one_host_update()
+  local now = 0
+  local advances = 0
+  local fixture = outdoorFixture({
+    clock = function()
+      return now
+    end,
+  })
+  fixture.transition.produceDestination = function()
+    return {
+      advance = function()
+        advances = advances + 1
+        now = now + 0.005
+        return 1
+      end,
+      isReady = function()
+        return false
+      end,
+      release = function() end,
+    }
+  end
+  fixture.transition:startCoveredSwap(
+    fixture.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  fixture.transition:beginHostUpdate()
+  fixture.transition:updateFixed()
+  Assert.equal(fixture.transition.phase, "load_destination", "the covered swap reaches destination staging")
+  local firstTick = advances
+  Assert.isTrue(firstTick >= 1, "the first drive of a host update stages")
+  fixture.transition:updateFixed()
+  fixture.transition:updateFixed()
+  Assert.equal(advances, firstTick, "catch-up ticks of the same host update yield once the slice is spent")
+  fixture.transition:beginHostUpdate()
+  fixture.transition:updateFixed()
+  Assert.isTrue(advances > firstTick, "the next host update starts a fresh slice")
 end
 
 -- Destination readiness is demanded once per transition: once the required
@@ -3157,9 +3199,6 @@ function T.pending_destination_with_resumable_aggregate_state_stays_covered_unti
   Assert.isTrue(observedPlan == plan, "resolution sees the staged destination plan")
   Assert.equal(requests, 1, "destination readiness is demanded exactly once")
   Assert.equal(stageReleased, 0, "a committed stage is not released")
-  for _, units in ipairs(advances) do
-    Assert.equal(units, 1, "covered staging advances one integral unit at a time under its measured slice")
-  end
 
   -- Abort variant: a stage that fails mid-cover releases what it built once
   -- and never commits.

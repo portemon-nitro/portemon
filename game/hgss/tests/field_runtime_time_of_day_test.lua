@@ -29,6 +29,7 @@ local function runtimeWithEnvironment(clock, environment, sceneRuntime)
     runtimeMap = { renderEnvironment = environment, sceneRuntime = sceneRuntime },
     session = { accumulator = 0, setBattleActive = function() end, updateFixed = function() end },
     transition = {
+      beginHostUpdate = function() end,
       error = nil,
       consumeCompleted = function()
         return false

@@ -240,13 +240,10 @@ function T.completion_and_disposal_commit_exactly_once_and_release_once()
   local launch = launchFor("once")
   local party = newPartyOwner()
   local foe = foeRecord("TOTODILE", 4, 0x5EED0003)
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = launch.id .. "-attempt", mon = foe },
-    {
-      party = party,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = launch.id .. "-attempt", mon = foe }, {
+    party = party,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
     request = launch,
@@ -371,6 +368,57 @@ function T.production_attacks_settle_through_move_mechanics_not_a_fixed_strike()
   Assert.equal(fixed, 0, "production attacks never settle as fixed one-point strikes")
   Assert.isTrue(mechanic > 0, "production attacks settle through move mechanics")
   Assert.isTrue(heavy, "a real strike with nontrivial combatants deals more than one point")
+  battle:dispose()
+end
+
+-- The active combatants' selectable moves ride each delivery privately, and
+-- only when they change: the foe's moves reach the presentation for
+-- preparation without ever entering a public view.
+function T.packets_carry_the_active_selectable_moves_only_when_they_change()
+  local BattleRuntime = requirePresent(RUNTIME_MODULE, "application battle lifetime with readiness waits")
+  local ScenarioFactory = requirePresent(SCENARIO_FACTORY_MODULE, "field sources mapped to one detached scenario")
+  local party = newPartyOwner()
+  local foe = foeRecord("TOTODILE", 20, 0x5EED0002)
+  foe.moves = { { move = "TACKLE", pp = 35, ppUps = 0 }, { move = "SCRATCH", pp = 35, ppUps = 0 } }
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-prepared-moves", mon = foe }, { party = party })
+  local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
+  local packets = {}
+  local port = headlessPort(portRecord)
+  local deliver = port.present
+  port.present = function(packet)
+    packets[#packets + 1] = packet
+    deliver(packet)
+  end
+  local battle = BattleRuntime.new({
+    request = { id = "launch-prepared-moves", kind = "wild", payload = { species = "TOTODILE", level = 20 } },
+    scenario = scenario,
+    party = party,
+    seed = 0x1BADB003,
+    presentation = port,
+  })
+  driveToDecision(battle, 400)
+  for _ = 1, 5 do
+    battle:update()
+  end
+  Assert.isTrue(#packets > 0, "the opening delivers packets")
+  local first = packets[1].preparation
+  Assert.notNil(first, "the first delivery carries the active moves")
+  local seen = {}
+  for _, key in ipairs(first.effects) do
+    seen[key] = true
+  end
+  Assert.isTrue(seen.TACKLE, "the active foe's selectable move is prepared")
+  Assert.isTrue(seen.SCRATCH, "every selectable move of the active foe is prepared")
+  for _, foeView in ipairs(packets[1].after.foes) do
+    Assert.isNil(foeView.moves, "the foe's moves never enter the public view")
+  end
+  local carried = 0
+  for _, packet in ipairs(packets) do
+    if packet.preparation ~= nil then
+      carried = carried + 1
+    end
+  end
+  Assert.equal(carried, 1, "an unchanged roster republishes nothing")
   battle:dispose()
 end
 
@@ -511,14 +559,11 @@ local function healingBattle(species, level, seed)
   Assert.notNil(wounding, "the setup wound stages against the live party")
   wounding.publish()
   local foe = foeRecord(species, level, seed)
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = "attempt-item-" .. seed, mon = foe },
-    {
-      party = party,
-      bag = bag,
-      player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
-    }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-item-" .. seed, mon = foe }, {
+    party = party,
+    bag = bag,
+    player = { trainerId = 99, trainerName = "MINT", language = "french", trainerClassKey = "PKMN_TRAINER_ETHAN" },
+  })
   local portRecord = { ready = true, enters = 0, frames = {}, leaves = 0, disposed = 0 }
   local battle = BattleRuntime.new({
     request = { id = "launch-item-" .. seed, kind = "wild", payload = preparedWild() },

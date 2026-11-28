@@ -45,6 +45,7 @@ end
 local function runtimeWithAudio(calls, options)
   options = options or {}
   local transition = {
+    beginHostUpdate = function() end,
     phase = "idle",
     error = nil,
     updateSourceFrame = function()
@@ -84,6 +85,7 @@ end
 
 local function runtimeWithoutAudio(calls)
   local transition = {
+    beginHostUpdate = function() end,
     phase = "idle",
     error = nil,
     updateSourceFrame = function()
@@ -132,6 +134,7 @@ local function runtimeForSemanticCatchUp(counters)
       end,
     },
     transition = {
+      beginHostUpdate = function() end,
       phase = "idle",
       error = nil,
       updateSourceFrame = function()
@@ -341,6 +344,7 @@ function T.tests.zero_delta_does_not_advance_any_clock()
       end,
     },
     transition = {
+      beginHostUpdate = function() end,
       phase = "idle",
       error = nil,
       updateSourceFrame = function()
@@ -384,6 +388,7 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
     },
     actors = { currentMapId = 61 },
     transition = {
+      beginHostUpdate = function() end,
       phase = "idle",
       error = nil,
       updateSourceFrame = function() end,
@@ -403,7 +408,11 @@ local function runtimeWithFollowerPresentation(updateOptions, modal)
         return nil
       end,
     },
-    playerAvatar = { durableState = function() return "walking" end },
+    playerAvatar = {
+      durableState = function()
+        return "walking"
+      end,
+    },
     followingMon = {
       setStowed = function() end,
       update = function(_, options)
@@ -436,7 +445,11 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
       emitCommittedActorSteps = function() end,
     },
     actors = { currentMapId = actorMapId },
-    playerAvatar = { durableState = function() return "walking" end },
+    playerAvatar = {
+      durableState = function()
+        return "walking"
+      end,
+    },
     followingMon = {
       setStowed = function() end,
       update = function()
@@ -444,6 +457,7 @@ local function runtimeForFollowerCoherence(logicalMapId, actorMapId, entryActive
       end,
     },
     transition = {
+      beginHostUpdate = function() end,
       phase = "idle",
       error = nil,
       updateSourceFrame = function() end,

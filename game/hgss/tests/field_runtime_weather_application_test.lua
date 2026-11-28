@@ -185,6 +185,7 @@ local function runtimeWithClock(catalog, calls, currentMap)
       end,
     },
     transition = {
+      beginHostUpdate = function() end,
       error = nil,
       fadeAlpha = 1,
       consumeCompleted = function()

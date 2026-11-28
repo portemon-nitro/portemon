@@ -614,6 +614,7 @@ local function fullManifest()
   old.images["assets/generated/battle/bag-page-1.png"] = { width = 256, height = 192 }
   old.images["assets/generated/battle/bag-page-2.png"] = { width = 256, height = 192 }
   old.images["assets/generated/battle/bag-page-3.png"] = { width = 256, height = 192 }
+  old.images["assets/generated/battle/bag-button-4-3-5.png"] = { width = 208, height = 40 }
   for _, slug in ipairs({
     "party-list",
     "mon-menu",
@@ -1437,7 +1438,11 @@ local function fullManifest()
           },
         },
       },
-      buttons = {},
+      -- The disabled last-used face the pocket menu shows without a
+      -- last-used item (GetButtonPalette: frame 3 always bank 5).
+      buttons = {
+        { button = 4, frame = 3, bank = 5, image = "assets/generated/battle/bag-button-4-3-5.png" },
+      },
     },
     party = (function()
       local pages = {}

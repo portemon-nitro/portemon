@@ -149,7 +149,7 @@ function T.palette_generations_publish_source_indexed_batches_transactionally()
   Assert.isTrue(battle:drawable("terrain") == terrainHandle, "an identical batch keeps the terrain handle")
   Assert.isTrue(battle:drawable("hud") == hudHandle, "an identical batch keeps the hud handle")
 
-  assets.failKey = "battle-palette:hud:2"
+  assets.failKey = "battle-palette:scene:2"
   local terrainPaletteB = paletteBytes(wordsB())
   local hudPaletteB = paletteBytes(wordsA())
   local staged, failure = battle:updatePaletteDrawables({
@@ -165,11 +165,11 @@ function T.palette_generations_publish_source_indexed_batches_transactionally()
   Assert.isTrue(battle:drawable("hud") == hudHandle, "a failed staging keeps the prior hud handle")
   local candidateKey = nil
   for _, key in ipairs(assets.uploads) do
-    if key:find("battle-palette:scene:2", 1, true) ~= nil then
+    if key:find("battle-palette:hud:2", 1, true) ~= nil then
       candidateKey = key
     end
   end
-  Assert.notNil(candidateKey, "the staged terrain candidate uploaded before the hud failure")
+  Assert.notNil(candidateKey, "the staged hud candidate uploaded before the terrain failure")
   Assert.equal(
     assets.released[
       candidateKey --[[@as string]]

@@ -420,7 +420,15 @@ end
 -- recorded, tokens complete only when the test says so, and cancellation is
 -- observable. Source reads themselves belong to the queue suite.
 local function recordingQueue()
-  local queue = { requests = {}, states = {}, cancelled = {}, takes = {}, promoted = {}, nextToken = 0 }
+  local queue = {
+    requests = {},
+    states = {},
+    cancelled = {},
+    takes = {},
+    leases = {},
+    promoted = {},
+    nextToken = 0,
+  }
   function queue:request(kind, path, priority)
     assert(kind == "source", "prediction must request the selected source kind")
     self.nextToken = self.nextToken + 1
@@ -434,7 +442,12 @@ local function recordingQueue()
     self.cancelled[#self.cancelled + 1] = token
     self.states[token] = nil
   end
+  -- The real queue's take returns the raw decoded lease, which has no
+  -- release; only takeSource returns the releaseable source lease.
   function queue:take(token)
+    error("selected source tokens transfer through takeSource, not take")
+  end
+  function queue:takeSource(token)
     assert(self.states[token] == "ready", "takes transfer ready tokens")
     self.takes[#self.takes + 1] = token
     self.states[token] = nil
@@ -443,6 +456,7 @@ local function recordingQueue()
       self.value = nil
       self.released = self.released + 1
     end
+    self.leases[#self.leases + 1] = lease
     return lease
   end
   function queue:promote(token, priority)
@@ -600,6 +614,9 @@ function T.required_bank_sources_gate_music_start_until_selected_bytes_are_held(
   Assert.equal(#queue.takes, 2, "ready selected reads transfer into retained holds")
   Assert.equal(#queue.cancelled, 0, "required holds are retained, never cancelled to idle")
   Assert.equal(p:releaseBankSources(12), 2, "release returns every retained hold exactly once")
+  for _, lease in ipairs(queue.leases) do
+    Assert.equal(lease.released, 1, "each taken source lease is returned through its own release")
+  end
   Assert.equal(p:releaseBankSources(12), 0, "a second release returns nothing")
   p:dispose()
 
@@ -618,8 +635,13 @@ function T.required_bank_sources_gate_music_start_until_selected_bytes_are_held(
     end
   end
   Assert.notNil(failedToken, "the probed sample enrolls its own read")
-  sadQueue.states[failedToken] = "failed"
+  -- One sample is held before another fails: the failure returns the held
+  -- lease exactly once and leaves nothing retained.
   sadQueue.states[survivorToken] = "ready"
+  ready, failure = sad:requireBankSources(12)
+  Assert.equal(ready, false, "a held sample beside a pending one still reports pending")
+  Assert.equal(#sadQueue.leases, 1, "the settled sample transfers into a held lease")
+  sadQueue.states[failedToken] = "failed"
   ready, failure = sad:requireBankSources(12)
   Assert.isNil(ready, "a terminal selected read never reports ready")
   Assert.isTrue(
@@ -628,8 +650,31 @@ function T.required_bank_sources_gate_music_start_until_selected_bytes_are_held(
       and tostring(failure):find(firstKey, 1, true) ~= nil,
     "the failure names its bank and sample key: " .. tostring(failure)
   )
+  Assert.equal(sadQueue.leases[1].released, 1, "the failure returns the held lease exactly once")
   Assert.equal(sad:releaseBankSources(12), 0, "a failed requirement retains no partial hold")
+  Assert.equal(sadQueue.leases[1].released, 1, "release returns nothing twice")
   sad:dispose()
+
+  -- A sample whose payload was never published is a terminal failure, not a
+  -- resident sample; a bank that does not resolve raises instead of
+  -- reporting ready.
+  local missingBundle = AudioFixture.bundle()
+  missingBundle.samples[firstKey] = nil
+  local missingCache, _ = selectedSampleCache(missingBundle)
+  local missingQueue = recordingQueue()
+  local missingApi, _ = recordingAcquirer(missingCache)
+  local missing =
+    AudioAssetProvider.new(missingCache, { acquireSource = missingApi.acquireSource, assetPreparation = missingQueue })
+  ready, failure = missing:requireBankSources(12)
+  Assert.isNil(ready, "an unpublished required sample never reports ready")
+  Assert.isTrue(
+    type(failure) == "string" and tostring(failure):find(firstKey, 1, true) ~= nil,
+    "the failure names the unpublished sample: " .. tostring(failure)
+  )
+  throwsCode("AUDIO_PROVIDER_BANK_UNKNOWN", function()
+    missing:requireBankSources(9999)
+  end)
+  missing:dispose()
 
   local residentCache = AudioFixture.residentCache(bundle)
   local residentQueue = recordingQueue()

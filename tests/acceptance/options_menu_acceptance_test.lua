@@ -421,6 +421,9 @@ local function stagingBackedAssets(staging)
   assets.loadEffect = staging.services.loadEffect
   assets.resolveEffectResource = staging.services.resolveEffectResource
   assets.releaseEffectResource = staging.services.releaseEffectResource
+  assets.effectSoundBanks = staging.services.effectSoundBanks
+  assets.requireEffectBank = staging.services.requireEffectBank
+  assets.releaseEffectBank = staging.services.releaseEffectBank
   return assets
 end
 

@@ -1606,19 +1606,22 @@ end
 -- Draws one OBJ image under the source palette blend toward a target
 -- color with the native integer coefficient. An indexed image resolves
 -- through its exact palette first; a nil palette samples straight texels.
+-- A coverage source keeps its own alpha over the opaque palette colors.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param target number[] blend target as normalized RGB
 ---@param coefficient integer source blend coefficient 0..16
 ---@param palette table<string, unknown>|userdata|nil exact palette of an indexed image
 ---@param paletteOffset integer palette override offset in colors
+---@param coverageSource boolean true when the image alpha is coverage over the palette
 ---@param image table<string, unknown>|userdata staged pixels under drawing
 ---@param ... unknown placement arguments forwarded to the draw call
-local function drawPaletteFaded(graphics, target, coefficient, palette, paletteOffset, image, ...)
+local function drawPaletteFaded(graphics, target, coefficient, palette, paletteOffset, coverageSource, image, ...)
   local previous = graphics.getShader()
   local shader = copyFadeShader(graphics)
   graphics.setShader(shader)
   shader:send("u_fadeTarget", target)
   shader:send("u_fadeCoefficient", coefficient)
+  shader:send("u_coverageSource", coverageSource)
   if palette ~= nil then
     shader:send("u_usePalette", true)
     shader:send("u_paletteCount", palette:getWidth())
@@ -1658,7 +1661,7 @@ local function drawFadedCopy(graphics, picture, quad, x, y, scaleX, scaleY)
     (color % 32) / 31,
     (math.floor(color / 32) % 32) / 31,
     (math.floor(color / 1024) % 32) / 31,
-  }, intensity, palette, paletteOffset, picture.image, quad, x, y, 0, scaleX, scaleY)
+  }, intensity, palette, paletteOffset, false, picture.image, quad, x, y, 0, scaleX, scaleY)
 end
 
 -- One animation sprite copy as a native OBJ fragment. CreateBattlerSprite
@@ -2820,6 +2823,7 @@ local function drawBallCell(graphics, image, flash, flashColor, ...)
   end
   local drawable = image
   local palette = nil
+  local coverageSource = false
   local sampler = samplerOf(image)
   if sampler ~= nil then
     -- Headless descriptors stay drawable-shaped for recording; they carry
@@ -2835,9 +2839,10 @@ local function drawBallCell(graphics, image, flash, flashColor, ...)
       if type(palette.setFilter) == "function" then
         palette:setFilter("nearest", "nearest")
       end
+      coverageSource = sampler.coverage == true
     end
   end
-  drawPaletteFaded(graphics, target, flash, palette, 0, drawable, ...)
+  drawPaletteFaded(graphics, target, flash, palette, 0, coverageSource, drawable, ...)
 end
 
 -- Draws the thrown Poke Ball sprite over the battlefield. Ball cells are

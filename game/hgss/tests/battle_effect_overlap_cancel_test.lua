@@ -282,6 +282,9 @@ local function overlapScreenServices(staging)
   function services.releaseEffectResource(lease)
     return staging.services.releaseEffectResource(lease)
   end
+  services.effectSoundBanks = staging.services.effectSoundBanks
+  services.requireEffectBank = staging.services.requireEffectBank
+  services.releaseEffectBank = staging.services.releaseEffectBank
   return services
 end
 
@@ -521,7 +524,7 @@ function T.parked_and_running_occurrences_retire_only_at_their_own_completion()
   for _ = 1, 600 do
     screen:updateFixed(1 / 30)
     for token, track in pairs(screen._nativeHandles) do
-      if type(track) == "table" and track.pending == true and track.effectKey == "TACKLE" then
+      if type(track) == "table" and track.token == token and track.handle == nil and track.effectKey == "TACKLE" then
         parkedToken = token
       end
     end
@@ -630,6 +633,72 @@ function T.parked_and_running_occurrences_retire_only_at_their_own_completion()
   screen:dispose()
   Assert.equal(trackCount(screen._nativeHandles), 0, "disposal leaves no tracks")
   Assert.equal(#screen._player._occurrences, 0, "disposal leaves no occurrence records")
+end
+
+-- A parked occurrence promoted to its player handle stays one occurrence:
+-- cancelling through its stable token drops both identities and returns its
+-- admission hold exactly once, instead of leaving the handle's hold behind
+-- until launch disposal.
+function T.promoted_token_cancel_returns_its_single_admission_hold()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local launchId = "launch-promoted-token-cancel"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local bytes = EffectStagingFixture.rgba(2, 2)
+  local record = EffectStagingFixture.effectRecord("SLOW", {
+    {
+      key = "probe-slow",
+      kind = "texture",
+      payload = "effects/probe-slow.lua",
+      contentIdentity = Hashing.sha1hex(bytes),
+    },
+  })
+  record.program = {
+    entry = "main",
+    instructions = { { op = "interpreter-wait", values = { 60 } }, { op = "reset-blend-alpha" } },
+    subprograms = {},
+    taskKinds = {},
+  }
+  staging:stageEffect("SLOW", record, {})
+  local screen = openOverlapScreen(launchId, staging)
+  local collaborator = screen._timeline._effects
+  presentOverlapStrikes(screen, launchId, 1, {})
+  presentOverlapStrikes(screen, launchId, 2, { overlapStrike("SLOW", 62, 2) })
+  local token = nil
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+    for key, track in pairs(screen._nativeHandles) do
+      if track.effectKey == "SLOW" and track.token == key then
+        token = key
+      end
+    end
+    if token ~= nil then
+      break
+    end
+  end
+  Assert.notNil(token, "the unstaged occurrence parks behind its token")
+  staging.staged.SLOW.payloads["effects/probe-slow.lua"] = { width = 2, height = 2, rgba8888 = bytes }
+  local handle = nil
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+    local track = screen._nativeHandles[token]
+    if track ~= nil and track.handle ~= nil then
+      handle = track.handle
+      break
+    end
+  end
+  Assert.notNil(handle, "the staged token promotes to its handle")
+  Assert.equal(screen._nativeHandles[handle], screen._nativeHandles[token], "both identities name one occurrence")
+  Assert.equal(staging.refcounts["probe-slow"], 1, "the occurrence holds its admitted texture once")
+  collaborator.cancel(token, "probe cancel")
+  Assert.isNil(screen._nativeHandles[token], "cancel drops the token identity")
+  Assert.isNil(screen._nativeHandles[handle], "cancel drops the promoted handle identity")
+  Assert.equal(staging.refcounts["probe-slow"], 0, "cancel returns the admission hold")
+  collaborator.cancel(handle, "probe cancel")
+  Assert.equal(staging.drops["probe-slow"], 1, "the texture frees exactly once")
+  Assert.isTrue(screen:status().mode ~= "failed", "cancel through either alias stays silent")
+  screen:dispose()
+  Assert.equal(staging.drops["probe-slow"], 1, "disposal frees nothing twice")
 end
 
 return { tests = T }

@@ -81,6 +81,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _musicNote string? battle-music start note, set once the staged track voices
 ---@field _musicBankIds integer[]? admission snapshot behind the gated music start, refreshed while empty
 ---@field _cryBankIds integer[]? admission snapshot of demanded cry banks behind the gated music start
+---@field _effectBankIds table<integer, boolean> effect sound banks whose required sources this launch retains
 ---@field _musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@field _resultMusicPlayed boolean true once the result music swap was attempted for the launch
 ---@field _captureAnimationRng (fun(): table<string, unknown>) | nil detached visual-launch capture closure behind the shared seed
@@ -134,6 +135,15 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@class FieldBattlePresentation.PooledHandle
 ---@field lease table<string, unknown> shared-owner borrow returned at release or disposal
 ---@field handle table<string, unknown> resolved drawable behind the borrow: the pool lease itself for whole images, or a lease-plus-quad pair for atlas cells. Renderers draw through the lease sampler surface, never the bare image.
+
+---@class FieldBattlePresentation.LiveEffectResource
+---@field kind string staged descriptor kind
+---@field payloadPath string cache-relative staged payload path behind the entry
+---@field contentIdentity unknown staged content identity the descriptor declared
+---@field payload table<string, unknown> immutable normalized payload every lease borrows
+---@field handle table<string, unknown>? uploaded image for a graphical texture, nil otherwise
+---@field leases table<table<string, unknown>, boolean> outstanding semantic lease identities
+---@field count integer outstanding lease count
 
 ---@return table<string, unknown> silent cue sink used when no audio boundary is composed
 local function nullAudio()
@@ -258,6 +268,7 @@ local WARM_PINNED_KEYS = {
 ---@param envelope FieldBattlePresentation
 ---@param path string cache-relative Lua document path
 ---@return table<string, unknown>? parsed document, nil when the document is missing
+---@return unknown? failure load failure behind a missing document, nil otherwise
 local function stagedDoc(envelope, path)
   local cached = envelope._manifestDocs[path]
   if cached ~= nil then
@@ -270,9 +281,9 @@ local function stagedDoc(envelope, path)
       return envelope._manifest
     end
   end
-  local doc = envelope._cacheFs:loadLua(path)
+  local doc, failure = envelope._cacheFs:loadLua(path)
   if type(doc) ~= "table" then
-    return nil
+    return nil, failure
   end
   envelope._manifestDocs[path] = doc
   return doc
@@ -280,6 +291,7 @@ end
 
 ---@class FieldBattlePresentation.SceneCandidate
 ---@field sceneKey string validated scene key under staging
+---@field record BattlePresentationCache.SceneRecord validated scene record the attempt read once and stages from
 ---@field introKey string drawable key behind the staged intro borrow
 ---@field playerKey string drawable key behind the staged player terrain borrow
 ---@field foeKey string drawable key behind the staged foe terrain borrow
@@ -1113,6 +1125,7 @@ function FieldBattlePresentation.new(opts)
     _musicNote = nil,
     _musicBankIds = nil,
     _cryBankIds = nil,
+    _effectBankIds = {},
     _musicRole = nil,
     _resultMusicPlayed = false,
     _captureAnimationRng = opts.captureAnimationRng,
@@ -1346,62 +1359,48 @@ local function resolveCatalogImage(envelope, graphics, images, failures, cacheFs
   return image
 end
 
--- Uploads one staged effect texture descriptor through the host graphics
--- namespace: validate the exact typed RGBA payload dimensions and byte
--- length, expand the bytes into one nearest-filtered image, and answer
--- the owned handle. Anything short of an exact payload, a missing
--- graphics namespace, or a driver failure answers a terminal failure
--- naming the effect, resource, and payload path so the caller fails
--- closed instead of holding forever on a deterministic corrupt image.
----@param graphics table<string, unknown>? host graphics namespace enabling GPU upload
+---@param payload unknown staged effect texture payload under validation
+---@return boolean exact true when the payload carries positive integral dimensions and exactly width*height*4 bytes
+local function exactEffectTexture(payload)
+  if type(payload) ~= "table" then
+    return false
+  end
+  local width, height, rgba = payload.width, payload.height, payload.rgba8888
+  return type(width) == "number"
+    and width % 1 == 0
+    and width >= 1
+    and type(height) == "number"
+    and height % 1 == 0
+    and height >= 1
+    and type(rgba) == "string"
+    and #rgba == width * height * 4
+end
+
+-- Uploads one exact staged effect texture through the host graphics
+-- namespace: the normalized straight-RGBA bytes are already the final
+-- raster, so the packed bytes construct the image data natively, then one
+-- nearest-filtered image uploads with its staged wrap. A driver or
+-- configuration failure answers a terminal failure naming the effect,
+-- resource, and payload path, and a created image that failed configuration
+-- is released here, never published.
+---@param graphics table<string, unknown> host graphics namespace performing the upload
 ---@param effectKey string selected semantic effect key behind diagnostics
 ---@param resourceKey string semantic texture resource key behind diagnostics
 ---@param path string cache-relative staged payload path behind diagnostics
----@param payload table<string, unknown> staged typed texture payload under upload
+---@param payload table<string, unknown> exact staged texture payload under upload
 ---@return table<string, unknown>? owned image handle, nil on terminal failure
 ---@return string? terminal failure naming effect, resource, and path, nil on success
 local function uploadEffectTexture(graphics, effectKey, resourceKey, path, payload)
-  local function invalid(cause)
-    return nil,
-      "battle effect image "
-        .. tostring(resourceKey)
-        .. " failed for effect "
-        .. tostring(effectKey)
-        .. ": "
-        .. tostring(path)
-        .. ": "
-        .. tostring(cause)
-  end
-  local width = type(payload) == "table" and payload.width or nil
-  local height = type(payload) == "table" and payload.height or nil
-  local rgba = type(payload) == "table" and payload.rgba8888 or nil
-  if
-    type(width) ~= "number"
-    or width % 1 ~= 0
-    or width < 1
-    or type(height) ~= "number"
-    or height % 1 ~= 0
-    or height < 1
-    or type(rgba) ~= "string"
-    or #rgba ~= width * height * 4
-  then
-    return invalid("staged texture has no exact dimensions and bytes")
-  end
-  if graphics == nil then
-    return invalid("no graphics namespace stages effect images")
-  end
-  local textureWidth = width --[[@as integer]]
-  local textureHeight = height --[[@as integer]]
-  local textureBytes = rgba --[[@as string]]
+  assert(exactEffectTexture(payload), "effect uploads take an exact staged texture")
   -- Particle quads tile their texture by repeat powers (texRepeat), so the
   -- handle must wrap instead of clamping: with clamp sampling a 2x2 repeat
   -- shows only its top-left tile while the remaining viewport clamps to the
   -- transparent edge. The staged sampler names the hardware wrap per axis:
   -- a mirrored-repeat quarter-wave must mirror to reconstruct the full wave,
   -- not repeat its top-left quadrant four times. Payloads without a sampler
-  -- (older caches) keep the repeat borrow; the particle system corrects
-  -- handles from its compiled sampler afterwards.
-  local sampler = type(payload) == "table" and payload.sampler or nil
+  -- keep the repeat borrow; the particle system corrects handles from its
+  -- compiled sampler afterwards.
+  local sampler = payload.sampler
   local wrapX, wrapY = "repeat", "repeat"
   if
     type(sampler) == "table"
@@ -1410,32 +1409,24 @@ local function uploadEffectTexture(graphics, effectKey, resourceKey, path, paylo
   then
     wrapX, wrapY = sampler.wrapX, sampler.wrapY
   end
-  local ok, imageOrErr = pcall(function()
-    local pixels = love.image.newImageData(textureWidth, textureHeight)
-    local at = 1
-    for y = 0, textureHeight - 1 do
-      for x = 0, textureWidth - 1 do
-        local red, green, blue, alpha = string.byte(textureBytes, at, at + 3)
-        assert(
-          red ~= nil and green ~= nil and blue ~= nil and alpha ~= nil,
-          "the staged texture bytes cover every pixel"
-        )
-        pixels:setPixel(x, y, red / 255, green / 255, blue / 255, alpha / 255)
-        at = at + 4
-      end
-    end
-    local uploaded = graphics.newImage(pixels)
+  local uploaded = nil
+  local ok, failure = pcall(function()
+    local pixels = love.image.newImageData(payload.width, payload.height, "rgba8", payload.rgba8888)
+    uploaded = graphics.newImage(pixels)
     assert(uploaded ~= nil, "the graphics driver handed out no image")
     uploaded:setFilter("nearest", "nearest")
-    if type(uploaded.setWrap) == "function" then
-      uploaded:setWrap(wrapX, wrapY)
-    end
-    return uploaded
+    uploaded:setWrap(wrapX, wrapY)
   end)
-  if ok and imageOrErr ~= nil then
-    return imageOrErr
+  if ok then
+    return uploaded
   end
-  return invalid(ok and "empty image handle" or tostring(imageOrErr))
+  if uploaded ~= nil and type(uploaded.release) == "function" then
+    uploaded:release()
+  end
+  return nil,
+    "battle effect image " .. tostring(resourceKey) .. " failed for effect " .. tostring(effectKey) .. ": " .. tostring(
+      path
+    ) .. ": " .. tostring(failure)
 end
 
 -- Loads one portrait's exact CPU source beside its raster, cached per
@@ -2274,7 +2265,12 @@ function FieldBattlePresentation:_preparationServices()
     end
     return owner
   end
-  local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
+  -- One live entry per effect resource key while any semantic lease borrows
+  -- it: the validated staged identity, its normalized payload, the optional
+  -- uploaded handle (projected into `images` for drawable lookup), and the
+  -- exact outstanding lease identities. The entry leaves at its last return;
+  -- no idle effect resource is retained.
+  local liveEffects = {} ---@type table<string, FieldBattlePresentation.LiveEffectResource>
   local services = { headless = graphics == nil }
   -- One private pending scene candidate per selected scene: preparation
   -- retains its partially acquired handles, parsed metadata, and
@@ -2337,6 +2333,19 @@ function FieldBattlePresentation:_preparationServices()
     for _, entry in ipairs(candidate.particles) do
       drop(entry.path, entry.sampler)
     end
+  end
+  -- Ends the pending candidate's attempt: only its attempt-owned refs and
+  -- queued tickets return, pre-existing warm ownership stays. The launch
+  -- teardown and a superseding scene share this one boundary, so a later
+  -- launch of the same scene starts a fresh attempt.
+  function services.abandonScene()
+    local candidate = pendingCandidate
+    if candidate == nil then
+      return
+    end
+    pendingCandidate = nil
+    rollbackCandidate(candidate)
+    dropCandidateTickets(candidate)
   end
   -- Stages the launch-independent scene inputs behind a new candidate:
   -- BG3 bytes, intro characters, indexed source metadata with its exact
@@ -2451,6 +2460,7 @@ function FieldBattlePresentation:_preparationServices()
     end
     return {
       sceneKey = sceneKey,
+      record = record,
       introKey = "scene-intro:" .. sceneKey,
       playerKey = "scene-terrain:" .. sceneKey .. ":player",
       foeKey = "scene-terrain:" .. sceneKey .. ":foe",
@@ -2491,6 +2501,69 @@ function FieldBattlePresentation:_preparationServices()
     end
     return true
   end
+  -- Enrolls every upload this demand already knows without waiting, so the
+  -- worker decodes portrait pages, fixed art, and party wrapper layers while
+  -- a pending scene or leaf still builds. Each path enrolls once per launch;
+  -- the drawables take over the tickets.
+  ---@param demand table<string, unknown> launch demand carrying the known pages and party keys
+  local function enrollKnownUploads(demand)
+    -- Staged portrait pages decode while icons and audio still pend:
+    -- the battler drawables take over each page ticket instead of
+    -- decoding the shared atlas behind the remaining build.
+    if envelope._pool ~= nil then
+      local portraitsDoc = stagedDoc(envelope, MonCache.portraitManifestPath())
+      local entries = type(portraitsDoc) == "table" and portraitsDoc.entries or nil
+      if type(entries) == "table" then
+        for _, selector in ipairs(demand.pages or {}) do
+          local entry = entries[selector]
+          local pageId = type(entry) == "table" and entry.pageId or nil
+          if type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0 then
+            enrollUpload(envelope, MonCache.pageImagePath("portraits", pageId --[[@as integer]]))
+          end
+        end
+      end
+    end
+    -- Battle art stages only for demands carrying a scene; a menu-opened
+    -- evolution demands portraits and audio alone.
+    if graphics ~= nil and #(demand.scenes or {}) > 0 then
+      local staged = stagedManifest(envelope._manifest)
+      assert(staged ~= nil, "a launched battle owns its verified core")
+      -- Fixed art decodes while the remaining launch-specific members
+      -- still pend: every graphical launch draws these paths, so
+      -- preparation enrolls them once per launch and the drawables take
+      -- over each ticket instead of serializing behind the build.
+      for _, key in ipairs(REQUIRED_FIXED_ART) do
+        local path = fixedArt(staged, FIXED_ART[key])
+        if type(path) == "string" then
+          enrollUpload(envelope, path)
+        end
+      end
+      -- Party wrapper backgrounds decode alongside fixed art so opening
+      -- Summary/Check Moves never serializes behind its first drawable:
+      -- each demanded party:page key enrolls both staged layers.
+      local partySection = type(staged.party) == "table" and staged.party or nil
+      local partyPages = type(partySection) == "table" and partySection.pages or nil
+      if type(partyPages) == "table" then
+        local wantedPages = type(demand.partyPages) == "table" and demand.partyPages or {}
+        for _, wantedKey in ipairs(wantedPages) do
+          for _, page in ipairs(partyPages) do
+            if type(page) == "table" and page.key == wantedKey then
+              local layers = page.layers
+              if type(layers) == "table" then
+                for _, layer in ipairs(layers) do
+                  local imagePath = type(layer) == "table" and layer.image or nil
+                  if type(imagePath) == "string" then
+                    enrollUpload(envelope, imagePath)
+                  end
+                end
+              end
+              break
+            end
+          end
+        end
+      end
+    end
+  end
   function services.prepare(demand)
     if type(demand) ~= "table" then
       return nil, "battle demands arrive as records"
@@ -2528,14 +2601,6 @@ function FieldBattlePresentation:_preparationServices()
             return false, nil
           end
         end
-        local record, recordErr = BattlePresentationCache.loadScene(cacheFs, sceneKey)
-        if record == nil then
-          local cause = tostring(recordErr or ("no staged battle scene for " .. sceneKey))
-          if not scheduled then
-            return nil, cause .. ": no scene demand host to schedule battle scene " .. tostring(sceneKey)
-          end
-          return nil, "battle scene " .. tostring(sceneKey) .. ": " .. cause
-        end
         -- A staged layer stays usable only while its drawables are still
         -- the live warm pins: idle warmup retires a superseded scene's
         -- pins once its successor group completes, so a launch returning
@@ -2568,14 +2633,21 @@ function FieldBattlePresentation:_preparationServices()
           end
         end
         if stagedSceneKey ~= sceneKey then
-          -- A superseding scene abandons the pending candidate: only its
-          -- attempt-owned refs return, pre-existing warm ownership stays.
-          if pendingCandidate ~= nil and pendingCandidate.sceneKey ~= sceneKey then
-            rollbackCandidate(pendingCandidate)
-            dropCandidateTickets(pendingCandidate)
-            pendingCandidate = nil
-          end
-          if pendingCandidate == nil then
+          -- Only a new candidate reads the scene record: a pending
+          -- candidate of this scene keeps polling its retained record,
+          -- and a staged scene answering through its live pins needs none.
+          if pendingCandidate == nil or pendingCandidate.sceneKey ~= sceneKey then
+            local record, recordErr = BattlePresentationCache.loadScene(cacheFs, sceneKey)
+            if record == nil then
+              local cause = tostring(recordErr or ("no staged battle scene for " .. sceneKey))
+              if not scheduled then
+                return nil, cause .. ": no scene demand host to schedule battle scene " .. tostring(sceneKey)
+              end
+              return nil, "battle scene " .. tostring(sceneKey) .. ": " .. cause
+            end
+            -- A superseding scene abandons the pending candidate: only its
+            -- attempt-owned refs return, pre-existing warm ownership stays.
+            services.abandonScene()
             local candidate, candidateFailure = beginSceneCandidate(sceneKey, record, core)
             if candidate == nil then
               return nil, candidateFailure
@@ -2583,6 +2655,7 @@ function FieldBattlePresentation:_preparationServices()
             pendingCandidate = candidate
           end
           local candidate = pendingCandidate --[[@as FieldBattlePresentation.SceneCandidate]]
+          local record = candidate.record
           local sprites = candidate.sprites
           local function noteAcquired(key)
             if not candidate.acquired[key] then
@@ -2652,11 +2725,8 @@ function FieldBattlePresentation:_preparationServices()
           local sourceMeta = candidate.sourceMeta
           local sourceIndices = candidate.sourceIndices
           local sourceMapFor = candidate.sourceMapFor
-          local particleSets = {}
-          for setIndex, set in ipairs(record.encounterParticles) do
-            particleSets[setIndex] = { startTick = set.startTick, emitters = set.emitters, textures = {} }
-          end
-          for _, entry in ipairs(candidate.particles) do
+          local particleDrawables = {} ---@type table<integer, table<string, unknown>>
+          for index, entry in ipairs(candidate.particles) do
             local drawable, failure = acquirePooled(envelope, entry.key, entry.path, nil, entry.sampler)
             if drawable == nil then
               if failure ~= nil then
@@ -2665,21 +2735,31 @@ function FieldBattlePresentation:_preparationServices()
               waiting = true
             else
               noteAcquired(entry.key)
-              local textures = particleSets[entry.set].textures
-              textures[#textures + 1] = {
-                id = entry.texture.id,
-                width = entry.texture.width,
-                height = entry.texture.height,
-                drawable = drawable,
-                -- The staged descriptor's exact coverage flags ride into
-                -- the scene layer: the particle owners preserve them for
-                -- the shared depth/blend classification.
-                alphaUsage = entry.texture.alphaUsage,
-              }
+              particleDrawables[index] = drawable
             end
           end
           if waiting then
+            enrollKnownUploads(demand)
             return false, nil
+          end
+          -- The particle sets assemble once, from the candidate's own
+          -- record, when every texture of the group has resolved.
+          local particleSets = {}
+          for setIndex, set in ipairs(record.encounterParticles) do
+            particleSets[setIndex] = { startTick = set.startTick, emitters = set.emitters, textures = {} }
+          end
+          for index, entry in ipairs(candidate.particles) do
+            local textures = particleSets[entry.set].textures
+            textures[#textures + 1] = {
+              id = entry.texture.id,
+              width = entry.texture.width,
+              height = entry.texture.height,
+              drawable = particleDrawables[index],
+              -- The staged descriptor's exact coverage flags ride into
+              -- the scene layer: the particle owners preserve them for
+              -- the shared depth/blend classification.
+              alphaUsage = entry.texture.alphaUsage,
+            }
           end
           -- Publish only the complete candidate: the predecessor layer
           -- stays live until every required piece resolves, and the
@@ -2750,22 +2830,7 @@ function FieldBattlePresentation:_preparationServices()
     if portraitsOk == false then
       return false, nil
     end
-    -- Staged portrait pages decode while icons and audio still pend:
-    -- the battler drawables take over each page ticket instead of
-    -- decoding the shared atlas behind the remaining build.
-    if envelope._pool ~= nil then
-      local portraitsDoc = stagedDoc(envelope, MonCache.portraitManifestPath())
-      local entries = type(portraitsDoc) == "table" and portraitsDoc.entries or nil
-      if type(entries) == "table" then
-        for _, selector in ipairs(demand.pages or {}) do
-          local entry = entries[selector]
-          local pageId = type(entry) == "table" and entry.pageId or nil
-          if type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0 then
-            enrollUpload(envelope, MonCache.pageImagePath("portraits", pageId --[[@as integer]]))
-          end
-        end
-      end
-    end
+    enrollKnownUploads(demand)
     -- Every leaf demand issues before any wait: a pending trainer leaf
     -- never starves the ball demand behind it, and the launch holds
     -- only after all selected workers are queued.
@@ -2804,46 +2869,6 @@ function FieldBattlePresentation:_preparationServices()
     -- actually required: headless composition keeps its descriptor
     -- behavior so recording views prove without staged art.
     if graphics ~= nil then
-      local staged = stagedManifest(envelope._manifest)
-      assert(staged ~= nil, "a launched battle owns its verified core")
-      -- Battle art stages only for demands carrying a scene; a menu-opened
-      -- evolution demands portraits and audio alone.
-      if #(demand.scenes or {}) > 0 then
-        -- Fixed art decodes while the remaining launch-specific members
-        -- still pend: every graphical launch draws these paths, so
-        -- preparation enrolls them once per launch and the drawables take
-        -- over each ticket instead of serializing behind the build.
-        for _, key in ipairs(REQUIRED_FIXED_ART) do
-          local path = fixedArt(staged, FIXED_ART[key])
-          if type(path) == "string" then
-            enrollUpload(envelope, path)
-          end
-        end
-        -- Party wrapper backgrounds decode alongside fixed art so opening
-        -- Summary/Check Moves never serializes behind its first drawable:
-        -- each demanded party:page key enrolls both staged layers.
-        local partySection = type(staged.party) == "table" and staged.party or nil
-        local partyPages = type(partySection) == "table" and partySection.pages or nil
-        if type(partyPages) == "table" then
-          local wantedPages = type(demand.partyPages) == "table" and demand.partyPages or {}
-          for _, wantedKey in ipairs(wantedPages) do
-            for _, page in ipairs(partyPages) do
-              if type(page) == "table" and page.key == wantedKey then
-                local layers = page.layers
-                if type(layers) == "table" then
-                  for _, layer in ipairs(layers) do
-                    local imagePath = type(layer) == "table" and layer.image or nil
-                    if type(imagePath) == "string" then
-                      enrollUpload(envelope, imagePath)
-                    end
-                  end
-                end
-                break
-              end
-            end
-          end
-        end
-      end
       -- Cry and music banks stage through the same provisioner seam so
       -- the launch never voices a bank whose file is not yet generated:
       -- an unstaged bank waits under cover while its fixed art already
@@ -2952,6 +2977,42 @@ function FieldBattlePresentation:_preparationServices()
     paletteStages[key] = { source = source, palette = palette, handle = handle }
     images[key] = handle
     return handle
+  end
+  -- Returns the staged layer borrows one party page composite holds behind
+  -- its suffixed sub-keys, so a later resolution borrows them again instead
+  -- of leaking or overwriting a held lease.
+  ---@param pageKey string requested party page drawable key
+  local function returnPageLayers(pageKey)
+    for _, suffix in ipairs({ "#layer1", "#layer2" }) do
+      local subKey = pageKey .. suffix
+      local subLeases = envelope._leases --[[@as table<string, FieldBattlePresentation.PooledHandle>]]
+      local subPooled = subLeases[subKey]
+      if subPooled ~= nil then
+        subLeases[subKey] = nil
+        if envelope._warmPinned[subKey] == nil and envelope._pool ~= nil then
+          envelope._pool:release(subPooled.lease)
+        end
+      end
+      images[subKey] = nil
+      envelope._imageFailures[subKey] = nil
+    end
+  end
+  -- Resolves one composite layer, resuming the borrow an earlier attempt
+  -- already holds: a pending sibling layer never re-borrows a ready one.
+  ---@param subKey string layer sub-key behind the page
+  ---@param image string staged layer image path
+  ---@param failures table<string, string> latched terminal failures by drawable key
+  ---@return table<string, unknown>? layer borrow, nil while pending or on terminal failure
+  ---@return string? terminal failure, nil while pending or on success
+  local function resolvePageLayer(subKey, image, failures)
+    local held = envelope._leases[subKey]
+    if held ~= nil then
+      return held.handle
+    end
+    if images[subKey] ~= nil then
+      return images[subKey]
+    end
+    return resolveStagedImage(envelope, graphics, images, failures, cacheFs, subKey, image)
   end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
@@ -3189,19 +3250,19 @@ function FieldBattlePresentation:_preparationServices()
       if type(firstImage) ~= "string" or type(secondImage) ~= "string" then
         return nil
       end
-      local firstHandle, firstFailure =
-        resolveStagedImage(envelope, graphics, images, failures, cacheFs, key .. "#layer1", firstImage)
+      local firstHandle, firstFailure = resolvePageLayer(key .. "#layer1", firstImage, failures)
       if firstHandle == nil then
         if firstFailure ~= nil then
+          returnPageLayers(key)
           failures[key] = firstFailure
           return nil, firstFailure
         end
         return nil
       end
-      local secondHandle, secondFailure =
-        resolveStagedImage(envelope, graphics, images, failures, cacheFs, key .. "#layer2", secondImage)
+      local secondHandle, secondFailure = resolvePageLayer(key .. "#layer2", secondImage, failures)
       if secondHandle == nil then
         if secondFailure ~= nil then
+          returnPageLayers(key)
           failures[key] = secondFailure
           return nil, secondFailure
         end
@@ -3529,22 +3590,9 @@ function FieldBattlePresentation:_preparationServices()
   end
   function services.release(key)
     -- Party page composites own two staged layer borrows behind
-    -- suffixed sub-keys: releasing the page releases its layers so a
-    -- later resolution borrows them again instead of leaking.
+    -- suffixed sub-keys: releasing the page releases its layers.
     if tostring(key):match("^party:page/") ~= nil then
-      for _, suffix in ipairs({ "#layer1", "#layer2" }) do
-        local subKey = tostring(key) .. suffix
-        local subLeases = envelope._leases --[[@as table<string, FieldBattlePresentation.PooledHandle>]]
-        local subPooled = subLeases[subKey]
-        if subPooled ~= nil then
-          subLeases[subKey] = nil
-          if envelope._warmPinned[subKey] == nil and envelope._pool ~= nil then
-            envelope._pool:release(subPooled.lease)
-          end
-        end
-        images[subKey] = nil
-        envelope._imageFailures[subKey] = nil
-      end
+      returnPageLayers(tostring(key))
       envelope._imageFailures[key] = nil
     end
     -- Returned borrows rest resident under the shared owner until its own
@@ -3664,14 +3712,16 @@ function FieldBattlePresentation:_preparationServices()
     end
     return BattlePresentationCache.loadEffect(cacheFs, key)
   end
-  -- Resolves one dependency of a loaded effect into a semantic lease.
-  -- Texture descriptors validate exact dimensions and bytes, upload
-  -- once through the host graphics namespace, and share the one owned
-  -- image across duplicate resolves; other kinds arrive as immutable
-  -- decoded records beside their staged path, never the path alone.
-  -- Malformed payloads and driver failures are terminal naming effect,
-  -- resource, and path; nothing is cached on failure so a retry never
-  -- observes a half upload.
+  -- Resolves one dependency of a loaded effect into a distinct semantic
+  -- lease over the one live entry for its resource key. A resident entry
+  -- whose staged identity (kind, payload path, content identity) matches
+  -- answers without reading, evaluating, or uploading anything again; a
+  -- conflicting descriptor never shares the entry. A miss loads the selected
+  -- payload once, validates its required representation (exact texture
+  -- dimensions and bytes, or a normalized record for other kinds), uploads a
+  -- graphical texture, and publishes the entry only once fully usable.
+  -- Headless composition validates the same data and answers handle-less
+  -- leases. Failures are terminal naming effect, resource, and path.
   function services.resolveEffectResource(effect, resourceKey)
     if envelope._disposed then
       return nil, "battle effect resources are released: the presented battle envelope is disposed"
@@ -3688,89 +3738,210 @@ function FieldBattlePresentation:_preparationServices()
     if type(descriptor) ~= "table" then
       return nil, "unknown battle effect resource " .. tostring(resourceKey) .. " for effect " .. effectKey
     end
-    if descriptor.kind ~= "texture" then
-      if type(descriptor.payload) ~= "string" or descriptor.payload == "" then
-        return nil, "battle effect resource " .. tostring(resourceKey) .. " is not staged for effect " .. effectKey
-      end
-      -- Non-texture payloads decode here, once per resolve: tasks only
-      -- ever read the decoded record and must never mistake the staged
-      -- path for data. The decoded table is borrowed immutable.
-      local data = cacheFs:loadLua(descriptor.payload)
-      if type(data) ~= "table" then
+    local path = descriptor.payload
+    if type(path) ~= "string" or path == "" then
+      return nil, "battle effect resource " .. tostring(resourceKey) .. " is not staged for effect " .. effectKey
+    end
+    local texture = descriptor.kind == "texture"
+    local entry = liveEffects[resourceKey]
+    if entry ~= nil then
+      if
+        entry.kind ~= descriptor.kind
+        or entry.payloadPath ~= path
+        or entry.contentIdentity ~= descriptor.contentIdentity
+      then
         return nil,
-          "battle effect resource " .. tostring(resourceKey) .. " failed for effect " .. effectKey .. ": " .. tostring(
-            descriptor.payload
-          ) .. ": staged payload is not a normalized record"
+          "battle effect resource "
+            .. resourceKey
+            .. " for effect "
+            .. effectKey
+            .. " conflicts with its live staged identity: "
+            .. tostring(path)
       end
-      return {
+    else
+      local payload = cacheFs:loadLua(path)
+      if texture then
+        if not exactEffectTexture(payload) then
+          return nil,
+            "battle effect image "
+              .. resourceKey
+              .. " failed for effect "
+              .. effectKey
+              .. ": "
+              .. path
+              .. ": staged texture has no exact dimensions and bytes"
+        end
+      elseif type(payload) ~= "table" then
+        return nil,
+          "battle effect resource "
+            .. resourceKey
+            .. " failed for effect "
+            .. effectKey
+            .. ": "
+            .. path
+            .. ": staged payload is not a normalized record"
+      end
+      local normalized = payload --[[@as table<string, unknown>]]
+      local handle = nil
+      if texture and graphics ~= nil then
+        local uploaded, failure = uploadEffectTexture(graphics, effectKey, resourceKey, path, normalized)
+        if uploaded == nil then
+          return nil, assert(failure, "effect upload failures carry their reason")
+        end
+        handle = uploaded
+      end
+      entry = {
+        kind = descriptor.kind --[[@as string]],
+        payloadPath = path,
+        contentIdentity = descriptor.contentIdentity,
+        payload = normalized,
+        handle = handle,
+        leases = {},
+        count = 0,
+      }
+      liveEffects[resourceKey] = entry
+      if handle ~= nil then
+        images[resourceKey] = handle
+      end
+    end
+    local lease
+    if texture then
+      lease = {
+        key = resourceKey,
+        kind = "texture",
+        width = entry.payload.width,
+        height = entry.payload.height,
+        rgba8888 = entry.payload.rgba8888,
+        payload = path,
+        contentIdentity = descriptor.contentIdentity,
+        handle = entry.handle,
+      }
+    else
+      lease = {
         key = resourceKey,
         kind = descriptor.kind,
-        payloadPath = descriptor.payload,
+        payloadPath = path,
         contentIdentity = descriptor.contentIdentity,
-        data = data,
+        data = entry.payload,
       }
     end
-    local payload = cacheFs:loadLua(descriptor.payload)
-    if type(payload) ~= "table" then
-      return nil,
-        "battle effect image " .. tostring(resourceKey) .. " failed for effect " .. effectKey .. ": " .. tostring(
-          descriptor.payload
-        ) .. ": staged texture is not staged"
-    end
-    -- Without a graphics namespace there is no GPU to upload through:
-    -- the validated staged payload still answers a handle-less descriptor
-    -- lease (like every non-texture kind), so headless presentation can
-    -- complete its audio and timing contract without inventing pixels.
-    local image = images[resourceKey]
-    if image == nil and graphics ~= nil then
-      local uploaded, failure = uploadEffectTexture(
-        graphics,
-        effectKey,
-        resourceKey,
-        descriptor.payload,
-        payload --[[@as table<string, unknown>]]
-      )
-      if uploaded == nil then
-        assert(type(failure) == "string", "effect upload failures carry their reason")
-        return nil, failure
-      end
-      image = uploaded
-      images[resourceKey] = image
-    end
-    effectRefs[resourceKey] = (effectRefs[resourceKey] or 0) + 1
-    local staged = payload --[[@as table<string, unknown>]]
-    return {
-      key = resourceKey,
-      kind = "texture",
-      width = staged.width,
-      height = staged.height,
-      rgba8888 = staged.rgba8888,
-      payload = descriptor.payload,
-      contentIdentity = descriptor.contentIdentity,
-      handle = image,
-    }
+    entry.leases[lease] = true
+    entry.count = entry.count + 1
+    return lease
   end
-  -- Returns one effect lease: texture refcounts drop the shared image
-  -- at the last release, other kinds validate only. A release the
-  -- holder already returned reports its double release instead of
-  -- freeing a foreign handle.
+  -- Returns one semantic lease by identity: exactly that borrow leaves its
+  -- live entry and drops its payload and image references, and the last
+  -- return forgets the entry and its drawable projection, then releases
+  -- the entry's image exactly once. A lease the entry does not hold
+  -- (unknown or already returned) is refused without touching anyone
+  -- else's borrow.
   function services.releaseEffectResource(lease)
     if type(lease) ~= "table" or type(lease.key) ~= "string" or lease.key == "" then
       return nil, "effect releases name their lease"
     end
     local resourceKey = lease.key --[[@as string]]
-    if lease.kind ~= nil and lease.kind ~= "texture" then
-      return true
+    local entry = liveEffects[resourceKey]
+    if entry == nil or entry.leases[lease] == nil then
+      return nil, "effect lease " .. resourceKey .. " is not held"
     end
-    local left = (effectRefs[resourceKey] or 0) - 1
-    if left < 0 then
-      return nil, "effect lease " .. resourceKey .. " is already released"
-    end
-    effectRefs[resourceKey] = left
-    if left == 0 then
-      images[resourceKey] = nil
+    entry.leases[lease] = nil
+    entry.count = entry.count - 1
+    lease.handle = nil
+    lease.rgba8888 = nil
+    lease.data = nil
+    if entry.count == 0 then
+      liveEffects[resourceKey] = nil
+      local handle = entry.handle
+      if handle ~= nil then
+        if images[resourceKey] == handle then
+          images[resourceKey] = nil
+        end
+        handle:release()
+      end
     end
     return true
+  end
+  -- Projects the named sequence symbols of one loaded effect onto their
+  -- distinct sound banks through the selected audio index, parsed once per
+  -- envelope. Required effect sound is strict: an unresolvable declared
+  -- sequence or bank fails naming the effect and symbol instead of
+  -- reporting an empty set.
+  function services.effectSoundBanks(effectKey, symbols)
+    assert(type(symbols) == "table", "effect sound projection takes its sequence symbols")
+    local index, indexErr = stagedDoc(envelope, AudioCache.indexPath())
+    if type(index) ~= "table" then
+      return nil, "battle effect " .. tostring(effectKey) .. " has no staged audio index: " .. tostring(indexErr)
+    end
+    local sequences = index.sequences --[[@as table<integer, table<string, unknown>>?]]
+    local bySymbol = index.sequenceBySymbol --[[@as table<string, integer>?]]
+    local banks, seen = {}, {} ---@type integer[], table<integer, boolean>
+    for _, symbol in ipairs(symbols) do
+      local id = type(bySymbol) == "table" and bySymbol[symbol] or nil
+      local entry = type(id) == "number" and type(sequences) == "table" and sequences[id] or nil
+      local bank = type(entry) == "table" and entry.bankId or nil
+      if type(bank) ~= "number" then
+        return nil, "battle effect " .. tostring(effectKey) .. " sound " .. tostring(symbol) .. " has no staged bank"
+      end
+      if not seen[bank] then
+        seen[bank] = true
+        banks[#banks + 1] = bank
+      end
+    end
+    table.sort(banks)
+    return banks
+  end
+  -- Stages one effect sound bank for the current launch: the derived bank
+  -- closure first, then the required selected sample sources retained
+  -- through the launch audio owner. Pending answers false without voicing;
+  -- a terminal bank or sample failure answers its cause. Audio owners
+  -- without the required-source contract keep derived-bank readiness,
+  -- exactly like the battle music gate.
+  function services.requireEffectBank(bankId)
+    assert(type(bankId) == "number" and bankId % 1 == 0, "effect sound banks are numeric identities")
+    if envelope._disposed then
+      return nil, "battle effect sound bank " .. bankId .. " is not staged: the presented battle envelope is disposed"
+    end
+    local staged, failure = checkAudioBanks(envelope, { audio = { banks = { bankId }, cries = {} } })
+    if staged ~= true then
+      return staged, failure
+    end
+    local descriptor = envelope._descriptor
+    local audio = descriptor ~= nil and descriptor.audio or nil
+    local requireSources = type(audio) == "table" and audio.requireBattleBankSources or nil
+    if type(requireSources) ~= "function" then
+      return true
+    end
+    envelope._effectBankIds[bankId] = true
+    local ok, ready, sourceFailure = pcall(requireSources, audio, bankId)
+    if not ok then
+      return nil, tostring(ready)
+    end
+    if sourceFailure ~= nil then
+      return nil, tostring(sourceFailure)
+    end
+    return ready == true
+  end
+  -- Returns one effect sound bank the launch no longer needs. Banks the
+  -- battle music or demanded cries also hold stay retained for their own
+  -- launch-long lifetime and return at the launch drop instead.
+  function services.releaseEffectBank(bankId)
+    if not envelope._effectBankIds[bankId] then
+      return
+    end
+    envelope._effectBankIds[bankId] = nil
+    for _, held in ipairs({ envelope._musicBankIds or {}, envelope._cryBankIds or {} }) do
+      for _, launchBank in ipairs(held) do
+        if launchBank == bankId then
+          return
+        end
+      end
+    end
+    local descriptor = envelope._descriptor
+    local audio = descriptor ~= nil and descriptor.audio or nil
+    local releaseSources = type(audio) == "table" and audio.releaseBattleBankSources or nil
+    if type(releaseSources) == "function" then
+      pcall(releaseSources, audio, bankId)
+    end
   end
   return services
 end
@@ -5544,7 +5715,16 @@ function FieldBattlePresentation:_battleMusicStaged()
     bankIds = self:_audioBanks()
     self._musicBankIds = bankIds
   end
-  local staged, failure = checkAudioBanks(self, { audio = { banks = bankIds, cries = {} } })
+  -- Every bank whose selected sources this gate requires must first have its
+  -- derived closure staged: the music banks and the demanded send-out cries.
+  local gatedBanks = {} ---@type integer[]
+  for _, bankId in ipairs(bankIds) do
+    gatedBanks[#gatedBanks + 1] = bankId
+  end
+  for _, bankId in ipairs(self._cryBankIds or {}) do
+    gatedBanks[#gatedBanks + 1] = bankId
+  end
+  local staged, failure = checkAudioBanks(self, { audio = { banks = gatedBanks, cries = {} } })
   if staged ~= true then
     return staged, failure
   end
@@ -5794,6 +5974,42 @@ function FieldBattlePresentation:_dropLaunch()
           pcall(releaseSources, launchAudio, bankId)
         end
       end
+    end
+  end
+  -- Effect sound banks a live screen interest still retains return with the
+  -- launch exactly once, beside (never twice with) the music and cry holds.
+  local releaseEffectSources = type(launchAudio) == "table" and launchAudio.releaseBattleBankSources or nil
+  if type(releaseEffectSources) == "function" then
+    local launchHeld = {} ---@type table<integer, boolean>
+    for _, bankId in ipairs(musicBanks or {}) do
+      launchHeld[bankId] = true
+    end
+    for _, bankId in ipairs(cryBanks or {}) do
+      launchHeld[bankId] = true
+    end
+    for bankId in pairs(self._effectBankIds) do
+      if not launchHeld[bankId] then
+        pcall(releaseEffectSources, launchAudio, bankId)
+      end
+    end
+  end
+  self._effectBankIds = {}
+  -- A party page whose second layer never resolved still holds its first
+  -- layer borrow: the screen never held the page, so the launch returns it.
+  local abandonScene = self._services.abandonScene
+  if type(abandonScene) == "function" then
+    abandonScene()
+  end
+  local releaseDrawable = self._services.release
+  if type(releaseDrawable) == "function" then
+    local layerKeys = {} ---@type string[]
+    for key in pairs(self._leases) do
+      if key:match("^party:page/.+#layer%d$") ~= nil then
+        layerKeys[#layerKeys + 1] = key
+      end
+    end
+    for _, key in ipairs(layerKeys) do
+      releaseDrawable(key)
     end
   end
   local staged = self._pendingSceneImage

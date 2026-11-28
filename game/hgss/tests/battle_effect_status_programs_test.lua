@@ -861,6 +861,9 @@ function T.named_status_and_stage_events_start_one_native_screen_task()
     assets.loadEffect = staging.services.loadEffect
     assets.resolveEffectResource = staging.services.resolveEffectResource
     assets.releaseEffectResource = staging.services.releaseEffectResource
+    assets.effectSoundBanks = staging.services.effectSoundBanks
+    assets.requireEffectBank = staging.services.requireEffectBank
+    assets.releaseEffectBank = staging.services.releaseEffectBank
     local screen = BattleScreenFixture.new({
       launchId = launchId,
       manifest = manifest,

@@ -14,8 +14,10 @@ local FakeGraphics = require("tests.support.FakeGraphics")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
+local MonCache = require("libs.assets.src.MonCache")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
+local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 
@@ -431,6 +433,7 @@ function T.ball_palette_flash_draws_through_the_source_blend_shader()
   for _, entry in ipairs(shader.sends) do
     sent[entry.name] = entry.value
   end
+  Assert.equal(sent.u_coverageSource, false, "an ordinary indexed texture keeps palette alpha")
   Assert.equal(sent.u_usePalette, true, "an indexed ball cell samples through its palette")
   Assert.equal(sent.u_palette, palette, "the indexed ball binds its exact palette")
   Assert.equal(sent.u_paletteCount, 16, "the indexed ball binds its palette width")
@@ -438,6 +441,27 @@ function T.ball_palette_flash_draws_through_the_source_blend_shader()
   Assert.equal(sent.u_fadeCoefficient, 12, "the indexed ball keeps the source coefficient")
   Assert.deepEqual(paletteFilters[1], { "nearest", "nearest" }, "the indexed palette keeps exact sampling")
   Assert.equal(graphics.getShader(), nil, "the neutral shader returns after the indexed ball draw")
+  -- A coverage-bearing indexed source asks the shared blend for its own
+  -- alpha instead of the palette alpha.
+  resources.assets.drawable = function()
+    return {
+      kind = "r8",
+      coverage = true,
+      width = 16,
+      height = 16,
+      image = raw,
+      palette = palette,
+      drawQuad = function() end,
+      draw = function() end,
+    }
+  end
+  shader.sends = {}
+  BattleRenderer.drawPane(resources, view, "detail", {}, {})
+  sent = {}
+  for _, entry in ipairs(shader.sends) do
+    sent[entry.name] = entry.value
+  end
+  Assert.equal(sent.u_coverageSource, true, "a coverage-bearing indexed ball keeps its source alpha")
   view.openingPresentation.ballThrow.paletteFlash = nil
   BattleRenderer.drawPane(resources, view, "detail", {}, {})
   Assert.equal(graphics.shaders[2], nil, "an unflashed ball compiles no shader")
@@ -683,9 +707,24 @@ local function openRig(opts)
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
   end
+  -- An optional staged-effect double routes native effects through the
+  -- production service contract: its leases and sound banks stay exact.
+  if opts.staging ~= nil then
+    for _, name in ipairs({
+      "requestEffect",
+      "loadEffect",
+      "resolveEffectResource",
+      "releaseEffectResource",
+      "effectSoundBanks",
+      "requireEffectBank",
+      "releaseEffectBank",
+    }) do
+      rig.assets[name] = opts.staging.services[name]
+    end
+  end
   local party = makeParty(
     { species = "EEVEE", level = 20, seed = 0x33333333 },
-    { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+    opts.reserve or { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
     opts.leadPp,
     opts.extraLeadMove
   )
@@ -734,6 +773,9 @@ local function openRig(opts)
     windows = rig.windows,
     audio = rig.audio,
     overrides = opts.overrides,
+    itemCatalog = opts.itemCatalog,
+    monIconProvider = opts.monIconProvider,
+    battleMenus = opts.battleMenus,
   })
   rig.screen = screen
   seedHeadlessPass(rig)
@@ -4879,5 +4921,361 @@ end
 -- is pinned cheaply by battle_screen_timeline_test's
 -- native_menu_reveal_frames_and_input_gate_follow_source_ticks, so no
 -- runtime-driven duplicate lives here.
+
+-- The first actionable command waits for every selectable move's effect,
+-- including its named sound sources, through a real runtime request and
+-- ordinary keyboard and pointer input. The struck move's resources stay
+-- held across the delivery that spends its last PP until that occurrence
+-- has played; afterwards the next command awaits only the current roots.
+function T.predicted_effects_gate_the_real_command_and_survive_the_spending_delivery()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local launchId = "launch-screen-predicted-command"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local textureBytes = EffectStagingFixture.rgba(2, 2)
+  local function stage(key, withTexture)
+    local path = "effects/" .. key .. ".lua"
+    local record = EffectStagingFixture.effectRecord(key, {
+      { key = key .. ":spark", kind = "texture", payload = path, contentIdentity = string.rep("ab", 20) },
+    })
+    record.program = {
+      entry = "main",
+      instructions = { { op = "play-sound", sound = "SEQ_SE_PROBE_" .. key } },
+      subprograms = {},
+      taskKinds = {},
+    }
+    staging:stageEffect(
+      key,
+      record,
+      withTexture and { [path] = { width = 2, height = 2, rgba8888 = textureBytes } } or {}
+    )
+  end
+  stage("TACKLE", true)
+  stage("QUICK_ATTACK", false)
+  staging.soundBanks.SEQ_SE_PROBE_TACKLE = 3
+  staging.soundBanks.SEQ_SE_PROBE_QUICK_ATTACK = 7
+  staging.bankStates[7] = "pending"
+  local rig = openRig({
+    launchId = launchId,
+    staging = staging,
+    extraLeadMove = { move = "QUICK_ATTACK", pp = 1, ppUps = 0 },
+  })
+  function rig.audio.isEffectWaitComplete(_, _)
+    return true
+  end
+  local awaiting = false
+  for _ = 1, 600 do
+    rig.pump(1)
+    Assert.isTrue(
+      rig.screen:status().mode ~= "failed",
+      "the opening never fails: " .. tostring(rig.screen:status().error)
+    )
+    if
+      rig.screen._pendingRequest ~= nil
+      and rig.screen._timeline:settled()
+      and rig.screen._assets:state() == "ready"
+    then
+      awaiting = true
+      break
+    end
+  end
+  Assert.isTrue(awaiting, "the opening settles with the runtime's real action request delivered")
+  local function attemptCommand()
+    rig.screen:input({ { type = "confirm" } })
+    rig.screen:input({ { type = "pointer_down", pointerId = "touch:early", x = 128, y = 275 } })
+    rig.screen:input({ { type = "pointer_up", pointerId = "touch:early", x = 128, y = 275 } })
+    rig.screen:input({ { type = "confirm" } })
+    rig.pump(10)
+    Assert.isTrue(rig.screen:status().mode ~= "command", "no command is exposed while a selectable effect stages")
+    Assert.isTrue(rig.screen:status().mode ~= "moves", "no move list opens while a selectable effect stages")
+    Assert.isNil(rig.screen:status().request, "the pending request is not yet an actionable decision")
+    Assert.equal(#rig.submits, 0, "no choice seals before the predicted effects are usable")
+  end
+  attemptCommand()
+  Assert.isNil(staging.refcounts["QUICK_ATTACK:spark"], "the unstaged texture is not yet borrowed")
+  staging.staged.QUICK_ATTACK.payloads["effects/QUICK_ATTACK.lua"] = { width = 2, height = 2, rgba8888 = textureBytes }
+  attemptCommand()
+  Assert.equal(staging.refcounts["QUICK_ATTACK:spark"], 1, "the prediction holds the staged texture")
+  Assert.equal(staging.uploads, 2, "each predicted texture uploads once")
+  staging.bankStates[7] = "ready"
+  driveToMode(rig, "command")
+  Assert.notNil(rig.screen:status().request, "the request becomes actionable once every root is usable")
+
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(
+    rig.screen:status().mode,
+    "moves",
+    "the next valid input opens the move list without an extra acknowledgement"
+  )
+  rig.screen:input({ { type = "navigate", direction = "right" } })
+  rig.pump(1)
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(#rig.submits, 1, "the selected move seals once")
+
+  local admitted, minimumHeld = false, math.huge
+  for _ = 1, 900 do
+    rig.pump(1)
+    Assert.isTrue(
+      rig.screen:status().mode ~= "failed",
+      "the strike never fails: " .. tostring(rig.screen:status().error)
+    )
+    for _, track in pairs(rig.screen._nativeHandles) do
+      if track.effectKey == "QUICK_ATTACK" and track.handle ~= nil then
+        admitted = true
+      end
+    end
+    if admitted then
+      break
+    end
+    minimumHeld = math.min(minimumHeld, staging.refcounts["QUICK_ATTACK:spark"] or 0)
+  end
+  Assert.isTrue(admitted, "the spent move's occurrence admits through ordinary cue routing")
+  Assert.equal(minimumHeld, 1, "the spending delivery never returns the texture before its occurrence admits")
+  Assert.isNil(staging.drops["QUICK_ATTACK:spark"], "the struck texture is never freed underneath its occurrence")
+  Assert.equal(staging.uploads, 2, "the occurrence borrows the held texture instead of uploading again")
+
+  driveToMode(rig, "command")
+  local voiced = false
+  for _, name in ipairs(rig.audio.plays) do
+    voiced = voiced or name == "SEQ_SE_PROBE_QUICK_ATTACK"
+  end
+  Assert.isTrue(voiced, "the occurrence plays its named sound at its source instruction")
+  Assert.equal(staging.refcounts["QUICK_ATTACK:spark"], 0, "the dropped root returns once its delivery has played")
+  Assert.equal(staging.drops["QUICK_ATTACK:spark"], 1, "the dropped root's texture frees exactly once")
+  local releasedScratchBank = false
+  for _, bankId in ipairs(staging.bankReleases) do
+    releasedScratchBank = releasedScratchBank or bankId == 7
+  end
+  Assert.isTrue(releasedScratchBank, "the dropped root's sound bank interest returns")
+  Assert.equal(staging.refcounts["TACKLE:spark"], 1, "the still-selectable root keeps its hold")
+  rig.screen:dispose()
+  rig.battle:dispose()
+  Assert.equal(staging.refcounts["TACKLE:spark"], 0, "disposal returns the remaining hold")
+end
+
+---@param rig table live screen rig under test driving
+---@return table drawn handle keys from one fresh draw
+local function drawnHandles(rig)
+  local graphics = FakeGraphics.new({})
+  rig.screen:draw({ graphics = graphics })
+  local handles = {}
+  for _, entry in ipairs(graphics.draws) do
+    local image = entry.image
+    if type(image) == "table" and type(image.handle) == "string" then
+      handles[#handles + 1] = image.handle
+    end
+  end
+  return handles
+end
+
+---@param handles string[] drawn handle keys
+---@param pattern string Lua pattern naming one expected drawable
+---@return boolean drawn
+local function drewMatching(handles, pattern)
+  for _, handle in ipairs(handles) do
+    if handle:match(pattern) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+-- Pumps a real runtime until its first ordinary action request is pending
+-- behind a settled opening.
+---@param rig table live screen rig under test driving
+local function pumpToPendingCommand(rig)
+  for _ = 1, 600 do
+    rig.pump(1)
+    Assert.isTrue(
+      rig.screen:status().mode ~= "failed",
+      "the opening never fails: " .. tostring(rig.screen:status().error)
+    )
+    if rig.screen._pendingRequest ~= nil and rig.screen._timeline:settled() then
+      return
+    end
+  end
+  error("the runtime never delivered its first action request", 0)
+end
+
+-- The first actionable command waits for the art its ordinary entry
+-- points paint first: the Fight list under the selected scene
+-- background with each slot's move button, the Bag's opening pocket page
+-- and its visible face, the icons the voluntary party list paints, and the
+-- index mask a pulsing screen paints beside (that screen waits meanwhile).
+-- Launch readiness and the deeper party pages stay on their own eager
+-- path; each entry opens fully drawn once the command is offered.
+function T.first_command_waits_for_its_entry_art_and_draws_it_when_opened()
+  local manifest = battleManifest()
+  -- The pulsing backdrop plane draws through the opening as well.
+  manifest.menus.command.screens[1].plane = 2
+  manifest.menus.command.screens[1].pulse = true
+  manifest.menus.moves.screens[1].moveButtons = {
+    { x = 0, y = 24 },
+    { x = 128, y = 24 },
+    { x = 0, y = 88 },
+    { x = 128, y = 88 },
+  }
+  local icons = {}
+  local partyLists = {}
+  local partyRenderer = {}
+  function partyRenderer.draw(_, native)
+    partyLists[#partyLists + 1] = native
+  end
+  local rig = openRig({
+    launchId = "launch-screen-entry-art",
+    manifest = manifest,
+    reserve = { species = "CHIKORITA", level = 5, seed = 0x44444444 },
+    itemCatalog = ItemFixture.makeCatalog(),
+    monIconProvider = icons,
+    battleMenus = {
+      party = { manifest = PartyPresentationFixture.manifest(), renderer = partyRenderer, icons = icons },
+    },
+  })
+  -- The reserve's icon is painted only by the party list: the lead's
+  -- rides the Fight command icon already.
+  local partyIcon = "^battle:icon:" .. MonCache.iconSelector("CHIKORITA", 0, false):gsub("%p", "%%%0") .. ":frame:1$"
+  local pending = {
+    partyIcon,
+    "^menu:moves:move%-button:0:normal:normal$",
+    "^menu:moves:screen:1@",
+    "^bag:screen:1$",
+    "^bag:button:4:3:5$",
+    "^menu:pulse%-mask$",
+  }
+  local withheld = {}
+  for _, pattern in ipairs(pending) do
+    withheld[pattern] = true
+  end
+  local function isWithheld(key)
+    for pattern in pairs(withheld) do
+      if key:match(pattern) ~= nil then
+        return true
+      end
+    end
+    return false
+  end
+  -- Icon pages follow the field provider: an icon resolves only once a
+  -- demand named it, and the demand waits while a named page decodes.
+  local demandedIcons = {}
+  local prepare = rig.assets.prepare
+  function rig.assets.prepare(demand)
+    prepare(demand)
+    local ready = true
+    for _, iconKey in ipairs(demand.iconKeys) do
+      demandedIcons[iconKey] = true
+      ready = ready and not isWithheld("battle:icon:" .. iconKey .. ":frame:1")
+    end
+    return ready
+  end
+  local resolve = rig.assets.drawable
+  function rig.assets.drawable(key)
+    local iconKey = key:match("^battle:icon:(.+):frame:%d+$")
+    if (iconKey ~= nil and not demandedIcons[iconKey]) or isWithheld(key) then
+      return nil
+    end
+    return resolve(key)
+  end
+  pumpToPendingCommand(rig)
+  local demand = rig.assets.prepared[#rig.assets.prepared]
+  local partyPages = {}
+  for _, key in ipairs(demand.partyPages) do
+    partyPages[key] = true
+  end
+  Assert.isTrue(
+    partyPages["party:page/summary"] and partyPages["party:page/check-moves"],
+    "deep party pages keep their eager demand while the command waits"
+  )
+  for _, pattern in ipairs(pending) do
+    rig.screen:input({ { type = "confirm" } })
+    rig.screen:input({ { type = "pointer_down", pointerId = "touch:early", x = 128, y = 275 } })
+    rig.screen:input({ { type = "pointer_up", pointerId = "touch:early", x = 128, y = 275 } })
+    rig.pump(10)
+    Assert.isTrue(rig.screen:status().mode ~= "command", "no command is offered while " .. pattern .. " decodes")
+    Assert.isNil(rig.screen:status().request, "the pending request is not yet actionable: " .. pattern)
+    Assert.equal(#rig.submits, 0, "no choice seals before the entry art resolves")
+    Assert.isFalse(
+      drewMatching(drawnHandles(rig), "^menu:command:screen:1@"),
+      "the pulsing backdrop waits for its pending mask instead of faulting"
+    )
+    withheld[pattern] = nil
+    if pattern == partyIcon then
+      rig.pump(1)
+      Assert.equal(rig.screen._assets:state(), "ready", "launch readiness never waits for menu or bag entry art")
+    end
+  end
+  local backdrop = drawnHandles(rig)
+  Assert.isTrue(drewMatching(backdrop, "^menu:command:screen:1@"), "the resolved mask releases the pulsing backdrop")
+  Assert.isTrue(drewMatching(backdrop, "^menu:pulse%-mask$"), "the pulsing backdrop draws its tinted mask")
+  driveToMode(rig, "command")
+
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "moves", "the offered Fight opens its move list")
+  local fight = drawnHandles(rig)
+  Assert.isTrue(drewMatching(fight, "^menu:moves:screen:1@"), "Fight draws its selected-background screen")
+  Assert.isTrue(
+    drewMatching(fight, "^menu:moves:move%-button:0:normal:normal$"),
+    "Fight draws the slot's typed move button"
+  )
+  rig.screen:input({ { type = "cancel" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "command", "cancel returns to the command")
+
+  rig.screen:input({ { type = "navigate", direction = "down" } })
+  rig.pump(1)
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "child", "the offered Bag opens its child")
+  local bag = drawnHandles(rig)
+  Assert.isTrue(drewMatching(bag, "^bag:screen:1$"), "the Bag draws its opening pocket page")
+  Assert.isTrue(drewMatching(bag, "^bag:button:4:3:5$"), "the Bag draws its disabled last-used face")
+  -- The first B only activates the browser's d-pad cursor (TryActivate).
+  for _ = 1, 2 do
+    rig.screen:input({ { type = "cancel" } })
+    rig.pump(1)
+  end
+  driveToMode(rig, "command")
+
+  rig.screen:input({ { type = "navigate", direction = "up" } })
+  rig.pump(1)
+  rig.screen:input({ { type = "navigate", direction = "right" } })
+  rig.pump(1)
+  rig.screen:input({ { type = "confirm" } })
+  rig.pump(1)
+  Assert.equal(rig.screen:status().mode, "child", "the offered party opens its list")
+  drawnHandles(rig)
+  Assert.isTrue(#partyLists > 0, "the party list paints on its first frame instead of waiting for its icons")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- A terminal entry-art failure fails the screen closed with its cause
+-- instead of holding the first command forever.
+function T.first_command_entry_art_failure_fails_closed()
+  local rig = openRig({ launchId = "launch-screen-entry-art-failure", itemCatalog = ItemFixture.makeCatalog() })
+  local resolve = rig.assets.drawable
+  function rig.assets.drawable(key)
+    if key == "bag:screen:1" then
+      return nil, "probe-bag-boom"
+    end
+    return resolve(key)
+  end
+  for _ = 1, 600 do
+    rig.pump(1)
+    if rig.screen:status().mode == "failed" then
+      break
+    end
+  end
+  local status = rig.screen:status()
+  Assert.equal(status.mode, "failed", "a terminal entry-art failure fails the screen")
+  Assert.isTrue(
+    tostring(status.error):find("probe-bag-boom", 1, true) ~= nil,
+    "the failure carries its cause: " .. tostring(status.error)
+  )
+  Assert.equal(#rig.submits, 0, "no choice seals over failed entry art")
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
 
 return { tests = T }

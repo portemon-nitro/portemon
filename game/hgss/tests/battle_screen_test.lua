@@ -1782,6 +1782,9 @@ local function nativeScreenServices(staging)
   function services.releaseEffectResource(lease)
     return staging.services.releaseEffectResource(lease)
   end
+  services.effectSoundBanks = staging.services.effectSoundBanks
+  services.requireEffectBank = staging.services.requireEffectBank
+  services.releaseEffectBank = staging.services.releaseEffectBank
   return services
 end
 

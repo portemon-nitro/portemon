@@ -23,12 +23,29 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field loadEffect? fun(key: string): table<string, unknown>?, string?
 ---@field resolveEffectResource? fun(effect: table<string, unknown>, resourceKey: string): table<string, unknown>?, string?
 ---@field releaseEffectResource? fun(lease: table<string, unknown>): boolean?, string?
+---@field effectSoundBanks? fun(effectKey: string, symbols: string[]): integer[]?, string?
+---@field requireEffectBank? fun(bankId: integer): boolean?, string?
+---@field releaseEffectBank? fun(bankId: integer)
 
 ---@class BattlePresentationAssets.EffectState
 ---@field ready boolean true once the staged closure validated
 ---@field record table<string, unknown>? loaded schema-valid effect record
----@field leases table<integer, table<string, unknown>> outstanding admitted resource leases
+---@field soundBanks integer[]? distinct sound banks the record's named sequences need, projected once
 ---@field failed string? terminal effect failure, latched without retry
+
+-- One caller's interest in a staged effect: the texture borrows and sound
+-- bank interests this hold itself acquired, returned exactly once when the
+-- caller closes it (a prediction retiring, an occurrence ending) or when its
+-- own acquisition fails terminally.
+---@class BattlePresentationAssets.EffectHold
+---@field key string flat semantic effect key
+---@field leases table<string, unknown>[] texture borrows this hold acquired
+---@field banks integer[] sound banks this hold counts an interest in
+---@field texturesHeld boolean every declared texture is borrowed
+---@field banksEnrolled boolean every named sound bank carries this hold's interest
+---@field readyBanks table<integer, boolean> enrolled banks whose required sources this hold saw staged
+---@field ready boolean the record, textures, and required sound sources are usable
+---@field closed boolean acquisitions already returned
 
 ---@class BattlePresentationAssets
 ---@field _assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
@@ -55,15 +72,25 @@ local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentati
 ---@field _paletteDrawables table<string, { image: table<string, unknown>|userdata, uploadKey: string, source: table<string, unknown>, palette: string }> active palette-sampled drawable substitutions
 ---@field _paletteGeneration integer generation for transactional palette image replacements
 ---@field _imageErrors table<string, string> terminal upload failures by key, latched without retry
----@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load/lease state by flat effect key
+---@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load state by flat effect key
+---@field _effectLeases table<table<string, unknown>, string> outstanding resource lease identities to their effect key
+---@field _effectHolds table<BattlePresentationAssets.EffectHold, boolean> open effect holds
+---@field _effectBanks table<integer, integer> open hold interests per effect sound bank
 ---@field _effectDrawables table<string, boolean> staged semantic texture keys admitted through effect leases
 ---@field _picturePass table<string, unknown>? per-screen Pokepic color/depth renderer
+---@field _predicted table<string, BattlePresentationAssets.PredictedEffect> effects staged for the active roster's selectable moves, by key
+---@field _predictedOrder string[] predicted keys in staging order
+---@field _retiring table<string, BattlePresentationAssets.PredictedEffect> predictions a newer fact dropped, held until the accepted delivery settles
 ---@field _released boolean release guard
 ---@field _headless boolean explicit data-only composition
 local BattlePresentationAssets = {}
 BattlePresentationAssets.__index = BattlePresentationAssets
 
 BattlePresentationAssets.DEFAULT_FRAME = "default"
+
+---@class BattlePresentationAssets.PredictedEffect
+---@field hold BattlePresentationAssets.EffectHold this prediction's own effect interest
+---@field settled boolean true once the hold is ready or its staging ended terminally
 
 ---@class BattlePresentationAssets.Options
 ---@field assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
@@ -130,7 +157,13 @@ function BattlePresentationAssets.new(opts)
     _paletteGeneration = 0,
     _imageErrors = {},
     _effects = {},
+    _effectLeases = {},
+    _effectHolds = {},
+    _effectBanks = {},
     _effectDrawables = {},
+    _predicted = {},
+    _predictedOrder = {},
+    _retiring = {},
     _picturePass = nil,
     _released = false,
     _headless = opts.assets.headless == true,
@@ -159,9 +192,8 @@ end
 -- Retail battle mon-menu/summary/check-moves/move-detail page
 -- backgrounds ride every launch demand (battle_party_menu.c
 -- LoadPageTilemaps): the four semantic page keys stage without
--- invented substitutes. Page readiness gates on each drawable resolving
--- in update below; a missing page draws nothing at paint time instead
--- of failing the launch.
+-- invented substitutes. No readiness gate waits on them: a missing page
+-- draws nothing at paint time instead of failing the launch.
 local PARTY_PAGES = {
   "party:page/check-moves",
   "party:page/mon-menu",
@@ -175,30 +207,10 @@ local PARTY_PAGES = {
 local function effectState(self, key)
   local state = self._effects[key]
   if state == nil then
-    state = { ready = false, record = nil, leases = {}, failed = nil }
+    state = { ready = false, record = nil, soundBanks = nil, failed = nil }
     self._effects[key] = state
   end
   return state
-end
-
--- Returns every outstanding lease of one effect through the configured
--- release callback, ignoring results: rollback after a terminal upload
--- and launch disposal free exactly what this holder admitted without
--- touching handles owned elsewhere.
----@param self BattlePresentationAssets holder owning the per-effect state
----@param effectKey string flat semantic effect key under release
-local function rollbackEffectLeases(self, effectKey)
-  local state = self._effects[effectKey]
-  if state == nil then
-    return
-  end
-  local releaser = self._assets.releaseEffectResource
-  if type(releaser) == "function" then
-    for _, lease in ipairs(state.leases) do
-      releaser(lease)
-    end
-  end
-  state.leases = {}
 end
 
 ---@return table<string, unknown> exact launch demand for the preparation services
@@ -347,28 +359,16 @@ function BattlePresentationAssets:setIconKeys(iconKeys)
   end
 end
 
--- Image keys the launch always draws: the selected scene, both HUD
--- composites, and all three menu surfaces. Battler portraits stay
--- cue-gated through their side keys instead: their selectors arrive
--- after the opening delivery, so readiness cannot wait on them.
+-- Image keys the launch always draws beside the selected scene: both
+-- HUD composites and the shadow. Battler portraits stay cue-gated
+-- through their side keys instead: their selectors arrive after the
+-- opening delivery, so readiness cannot wait on them. The art an
+-- ordinary command's entry points paint first gates that command alone
+-- (BattleScreenState), never launch readiness.
 local REQUIRED_DRAWABLES = {
   "hud:enemy",
   "hud:player",
-  "menu:command",
-  "menu:moves",
-  "menu:target",
   "shadow",
-}
-
--- First-action roots behind the immediately openable child surfaces:
--- the Bag browser opens on its first page and the party menu opens on
--- its mon-menu wrapper, so the first command waits for exactly these
--- two drawables instead of any deep optional page. Enrollment of every
--- party page and icon stays eager through the preparation demand; only
--- the readiness gate narrows to the two roots the first input can show.
-local FIRST_ACTION_ROOTS = {
-  "bag:screen:1",
-  "party:page/mon-menu",
 }
 
 -- Runs preparation once per demand: an invalid frame selection or a
@@ -440,25 +440,10 @@ function BattlePresentationAssets:update()
     end
     self._owned[key] = true
   end
-  -- Party pages stay out of the launch readiness gate on purpose, apart
-  -- from the mon-menu root above: the demand still names every staged
-  -- page so they resolve, but launches whose deeper pages never open (or
-  -- whose worker has not staged them yet) still reach ready once the
-  -- first-action roots do. The page painter gates on each drawable
-  -- instead and draws nothing new while its background is missing.
-  for _, key in ipairs(FIRST_ACTION_ROOTS) do
-    local handle, failure = self._assets.drawable(key)
-    if failure ~= nil then
-      self._state = "failed"
-      self._error = "battle image failed for launch " .. self._launchId .. ": " .. tostring(failure)
-      self._imageErrors[key] = self._error --[[@as string]]
-      return
-    end
-    if handle == nil then
-      return
-    end
-    self._owned[key] = true
-  end
+  -- Party pages stay out of the launch readiness gate on purpose: the
+  -- demand still names every staged page so they resolve eagerly, while
+  -- the page painter gates on each drawable and draws nothing new while
+  -- its background is missing.
   self._state = "ready"
 end
 
@@ -516,12 +501,10 @@ function BattlePresentationAssets:drawable(key)
   -- Admitted effect textures resolve verbatim through the services:
   -- an effect-scoped terminal stays scoped to its effect instead of
   -- failing the whole holder and its already-ready scene resources.
+  -- The live effect resource owns the image; the holder never releases it
+  -- through the generic drawable path.
   if self._effectDrawables[key] then
-    local admitted, admittedFailure = self._assets.drawable(key)
-    if admitted ~= nil then
-      self._owned[key] = true
-    end
-    return admitted, admittedFailure
+    return self._assets.drawable(key)
   end
   if self._state == "failed" then
     return nil, self._error
@@ -628,18 +611,14 @@ function BattlePresentationAssets:updatePaletteDrawables(requests)
   local nextDrawables = {}
   local nextKeys = {}
   local newlyUploaded = {}
-  -- Staging iterates keys in sorted order so multi-key batches behave
-  -- deterministically, and every changed key stages before any failure
-  -- rejects the generation: a partial short-circuit would leave which
-  -- candidates exist to chance, while the all-or-nothing publication
-  -- below keeps the prior generation intact either way.
+  -- Staging walks keys in sorted order so the first failing key is
+  -- deterministic. A terminal failure returns the already staged
+  -- replacements and leaves the published set untouched.
   local orderedKeys = {}
   for sourceKey in pairs(requests) do
     orderedKeys[#orderedKeys + 1] = sourceKey
   end
   table.sort(orderedKeys)
-  local failedKey = nil
-  local failedCause = nil
   for _, sourceKey in ipairs(orderedKeys) do
     local request = requests[sourceKey]
     checkPaletteRequest(sourceKey, request)
@@ -651,30 +630,23 @@ function BattlePresentationAssets:updatePaletteDrawables(requests)
       local uploadKey = request.uploadKey .. ":generation:" .. tostring(generation)
       local image, failure = upload(uploadKey, request.source, request.palette)
       if failure ~= nil or image == nil then
-        if failedKey == nil then
-          failedKey = sourceKey
-          failedCause = failure
+        for rollbackKey in pairs(newlyUploaded) do
+          self._assets.release(rollbackKey)
         end
-      else
-        nextDrawables[sourceKey] =
-          { image = image, uploadKey = uploadKey, source = request.source, palette = request.palette }
-        nextKeys[uploadKey] = true
-        newlyUploaded[uploadKey] = true
+        self._state = "failed"
+        self._error = "battle palette image failed for "
+          .. sourceKey
+          .. " in launch "
+          .. self._launchId
+          .. ": "
+          .. tostring(failure or "upload returned no image")
+        return false, self._error
       end
+      nextDrawables[sourceKey] =
+        { image = image, uploadKey = uploadKey, source = request.source, palette = request.palette }
+      nextKeys[uploadKey] = true
+      newlyUploaded[uploadKey] = true
     end
-  end
-  if failedKey ~= nil then
-    for rollbackKey in pairs(newlyUploaded) do
-      self._assets.release(rollbackKey)
-    end
-    self._state = "failed"
-    self._error = "battle palette image failed for "
-      .. failedKey
-      .. " in launch "
-      .. self._launchId
-      .. ": "
-      .. tostring(failedCause or "upload returned no image")
-    return false, self._error
   end
   for _, current in pairs(self._paletteDrawables) do
     if not nextKeys[current.uploadKey] and self._owned[current.uploadKey] ~= nil then
@@ -832,12 +804,11 @@ function BattlePresentationAssets:ensureEvolution()
   return record
 end
 
--- Resolves one dependency of a loaded effect into a semantic lease:
--- texture leases share one immutable uploaded image across duplicate
--- resolves, other kinds arrive as immutable typed descriptors with no
--- pixels. An upload failure rolls back every handle this holder
--- admitted for the effect and latches it failed; the failure replays
--- identically instead of hanging as pending.
+-- Resolves one dependency of a loaded effect into a distinct semantic
+-- lease: texture leases share one immutable uploaded image across
+-- borrows, other kinds arrive as immutable normalized records. A failure
+-- latches the effect failed and replays identically instead of hanging as
+-- pending; the caller returns only the borrows it acquired itself.
 ---@param effect table<string, unknown> loaded schema-valid effect record
 ---@param resourceKey string semantic dependency key under resolving
 ---@return table<string, unknown>? admitted resource lease, nil on terminal failure
@@ -876,21 +847,21 @@ function BattlePresentationAssets:resolveEffectResource(effect, resourceKey)
   end
   local lease, failure = self._assets.resolveEffectResource(effect, resourceKey)
   if lease == nil then
-    rollbackEffectLeases(self, effectKey)
     state.failed = self:_withLaunch(failure or ("battle effect resource " .. resourceKey .. " is not staged"))
     return nil, state.failed
   end
-  state.leases[#state.leases + 1] = lease
+  self._effectLeases[lease] = effectKey
   if lease.handle ~= nil then
-    self._owned[resourceKey] = true
     self._effectDrawables[resourceKey] = true
   end
   return lease
 end
 
--- Returns one admitted effect lease exactly once: the configured
--- service frees the shared image at its last release. Unknown leases
--- and releases without a configured service fail with context.
+-- Returns one admitted effect lease exactly once by identity: the
+-- configured service frees the shared image at its last release. A lease
+-- this holder does not hold (unknown or already returned) is refused
+-- before anything reaches the service, so it can never consume another
+-- borrow's reference.
 ---@param lease table<string, unknown> admitted resource lease under release
 ---@return boolean? released true once returned
 ---@return string? terminal release failure, nil on success
@@ -909,17 +880,345 @@ function BattlePresentationAssets:releaseEffectResource(lease)
         .. self._launchId
         .. ": no configured effect service"
   end
-  for _, state in pairs(self._effects) do
-    for index, held in ipairs(state.leases) do
-      if held == lease then
-        table.remove(state.leases, index)
-        break
-      end
-    end
+  if self._effectLeases[lease] == nil then
+    return nil, self:_withLaunch("effect lease " .. tostring(lease.key) .. " is not held")
   end
+  self._effectLeases[lease] = nil
   local released, failure = self._assets.releaseEffectResource(lease)
   if released == nil then
     return nil, self:_withLaunch(failure or ("effect lease " .. tostring(lease.key) .. " is already released"))
+  end
+  return true
+end
+
+---@param record table<string, unknown> loaded schema-valid effect record
+---@return string[] distinct named sequence symbols of the lowered program, sorted
+local function soundSymbols(record)
+  local program = record.program --[[@as table<string, unknown>?]]
+  local symbols, seen = {}, {} ---@type string[], table<string, boolean>
+  for _, instruction in ipairs(type(program) == "table" and program.instructions or {}) do
+    local symbol = type(instruction) == "table" and instruction.sound or nil
+    if type(symbol) == "string" and not seen[symbol] then
+      seen[symbol] = true
+      symbols[#symbols + 1] = symbol
+    end
+  end
+  table.sort(symbols)
+  return symbols
+end
+
+-- Projects a loaded effect's named sounds onto its distinct sound banks once
+-- per effect: a silent effect needs no bank, and an unresolvable named
+-- sound latches the effect failed instead of reporting ready.
+---@param self BattlePresentationAssets holder owning the per-effect state
+---@param key string flat semantic effect key
+---@param state BattlePresentationAssets.EffectState loaded effect state
+---@return integer[]? banks distinct sound banks, nil on terminal failure
+---@return string? terminal failure naming effect and launch
+local function effectSoundBanks(self, key, state)
+  if state.soundBanks ~= nil then
+    return state.soundBanks
+  end
+  local symbols = soundSymbols(state.record --[[@as table<string, unknown>]])
+  if #symbols == 0 then
+    state.soundBanks = {}
+    return state.soundBanks
+  end
+  local project = self._assets.effectSoundBanks
+  if type(project) ~= "function" then
+    state.failed = "battle effect "
+      .. key
+      .. " cannot stage its sounds for launch "
+      .. self._launchId
+      .. ": no configured effect audio service"
+    return nil, state.failed
+  end
+  local banks, failure = project(key, symbols)
+  if banks == nil then
+    state.failed = self:_withLaunch(failure or ("battle effect " .. key .. " sounds have no staged banks"))
+    return nil, state.failed
+  end
+  state.soundBanks = banks
+  return banks
+end
+
+-- Opens one caller-owned interest in a staged effect. The hold acquires
+-- nothing until advanced and returns only what it acquired when closed.
+---@param key string flat semantic effect key
+---@return BattlePresentationAssets.EffectHold hold open effect interest
+function BattlePresentationAssets:openEffectHold(key)
+  assert(flatEffectKey(key), "effect holds name flat semantic keys")
+  local hold = {
+    key = key,
+    leases = {},
+    banks = {},
+    texturesHeld = false,
+    banksEnrolled = false,
+    readyBanks = {},
+    ready = false,
+    closed = false,
+  }
+  self._effectHolds[hold] = true
+  return hold
+end
+
+-- Returns every acquisition of one hold exactly once: its texture borrows
+-- by identity and its sound bank interests, releasing a bank only once no
+-- open hold of this launch still needs it.
+---@param self BattlePresentationAssets holder owning the hold
+---@param hold BattlePresentationAssets.EffectHold hold whose acquisitions return
+---@return string? failure first service release failure, nil on success
+local function returnHoldAcquisitions(self, hold)
+  local firstFailure = nil
+  for index = #hold.leases, 1, -1 do
+    local lease = hold.leases[index]
+    hold.leases[index] = nil
+    local released, failure = self:releaseEffectResource(lease)
+    if released == nil and firstFailure == nil then
+      firstFailure = failure
+    end
+  end
+  for index = #hold.banks, 1, -1 do
+    local bankId = hold.banks[index]
+    hold.banks[index] = nil
+    local left = (self._effectBanks[bankId] or 0) - 1
+    if left <= 0 then
+      self._effectBanks[bankId] = nil
+      local releaseBank = self._assets.releaseEffectBank
+      if type(releaseBank) == "function" then
+        releaseBank(bankId)
+      end
+    else
+      self._effectBanks[bankId] = left
+    end
+  end
+  hold.texturesHeld = false
+  hold.banksEnrolled = false
+  hold.readyBanks = {}
+  hold.ready = false
+  return firstFailure
+end
+
+-- Advances one hold toward usability without executing anything: the
+-- staged closure is demanded until the worker accepts it, then the hold
+-- realizes (its record loads once, every declared texture is borrowed,
+-- every named sound bank is enrolled), and each enrolled bank is polled
+-- until its required selected sources stage. A hold that may not realize
+-- yet stops once its closure is accepted. Pending answers false and keeps
+-- what the hold already acquired. A terminal failure latches the effect
+-- failed with its original cause and returns this hold's own acquisitions.
+---@param self BattlePresentationAssets holder owning the hold
+---@param hold BattlePresentationAssets.EffectHold open hold under advancing
+---@param mayRealize boolean false defers loading, borrowing, and bank enrollment
+---@return boolean? ready true once usable, false while pending, nil on terminal failure
+---@return string? terminal failure naming effect and launch
+---@return boolean realized true when this call performed the hold's realization
+local function advanceHold(self, hold, mayRealize)
+  assert(type(hold) == "table" and self._effectHolds[hold], "effect holds advance while open")
+  if hold.ready then
+    return true, nil, false
+  end
+  local key = hold.key
+  local state = effectState(self, key)
+  local realizing = false
+  local function fail(failure)
+    returnHoldAcquisitions(self, hold)
+    return nil, failure, realizing
+  end
+  if state.failed ~= nil then
+    return fail(state.failed)
+  end
+  if not state.ready then
+    local ready, demandFailure = self:demandEffect(key)
+    if demandFailure ~= nil then
+      return fail(demandFailure)
+    end
+    if ready ~= true then
+      return false, nil, false
+    end
+  end
+  realizing = state.record == nil or not hold.texturesHeld or not hold.banksEnrolled
+  if realizing and not mayRealize then
+    return false, nil, false
+  end
+  if state.record == nil then
+    local _, loadFailure = self:loadEffect(key)
+    if state.record == nil then
+      return fail(loadFailure)
+    end
+  end
+  local record = state.record --[[@as table<string, unknown>]]
+  if not hold.texturesHeld then
+    local declared = record.resources --[[@as table<string, table<string, unknown>>?]]
+    local resourceKeys = {} ---@type string[]
+    for resourceKey, descriptor in pairs(type(declared) == "table" and declared or {}) do
+      if type(descriptor) == "table" and descriptor.kind == "texture" then
+        resourceKeys[#resourceKeys + 1] = resourceKey
+      end
+    end
+    table.sort(resourceKeys)
+    for _, resourceKey in ipairs(resourceKeys) do
+      local lease, failure = self:resolveEffectResource(record, resourceKey)
+      if lease == nil then
+        return fail(failure)
+      end
+      hold.leases[#hold.leases + 1] = lease
+    end
+    hold.texturesHeld = true
+  end
+  if not hold.banksEnrolled then
+    local banks, soundFailure = effectSoundBanks(self, key, state)
+    if banks == nil then
+      return fail(soundFailure)
+    end
+    for _, bankId in ipairs(banks) do
+      self._effectBanks[bankId] = (self._effectBanks[bankId] or 0) + 1
+      hold.banks[#hold.banks + 1] = bankId
+    end
+    hold.banksEnrolled = true
+  end
+  -- A staged bank stays staged while this hold's interest retains it, so
+  -- only the banks still reading are polled again.
+  local pending = false
+  for _, bankId in ipairs(hold.banks) do
+    if not hold.readyBanks[bankId] then
+      local requireBank = self._assets.requireEffectBank
+      if type(requireBank) ~= "function" then
+        state.failed = "battle effect "
+          .. key
+          .. " cannot stage its sounds for launch "
+          .. self._launchId
+          .. ": no configured effect audio service"
+        return fail(state.failed)
+      end
+      local ready, bankFailure = requireBank(bankId)
+      if ready == nil or bankFailure ~= nil then
+        state.failed = self:_withLaunch(
+          "battle effect " .. key .. " sound bank " .. tostring(bankId) .. " failed: " .. tostring(bankFailure)
+        )
+        return fail(state.failed)
+      end
+      if ready == true then
+        hold.readyBanks[bankId] = true
+      else
+        pending = true
+      end
+    end
+  end
+  if pending then
+    return false, nil, realizing
+  end
+  hold.ready = true
+  return true, nil, realizing
+end
+
+-- Advances one hold toward usability, realizing it as soon as its staged
+-- closure is accepted.
+---@param hold BattlePresentationAssets.EffectHold open hold under advancing
+---@return boolean? ready true once usable, false while pending, nil on terminal failure
+---@return string? terminal failure naming effect and launch
+function BattlePresentationAssets:advanceEffectHold(hold)
+  local ready, failure = advanceHold(self, hold, true)
+  return ready, failure
+end
+
+-- Closes one hold, returning exactly what it acquired once. A closed hold
+-- stays closed.
+---@param hold BattlePresentationAssets.EffectHold hold under closing
+---@return boolean? closed true once returned
+---@return string? failure first release failure behind the return
+function BattlePresentationAssets:closeEffectHold(hold)
+  if hold.closed then
+    return true
+  end
+  hold.closed = true
+  self._effectHolds[hold] = nil
+  if self._released then
+    return true
+  end
+  local failure = returnHoldAcquisitions(self, hold)
+  if failure ~= nil then
+    return nil, failure
+  end
+  return true
+end
+
+-- Replaces the set of effects the active roster can select next. A key
+-- leaving the set keeps its hold while the delivery that carried this fact
+-- is still being presented: its accepted events may still play that
+-- effect. The screen retires those interests once that delivery settles. A
+-- key already predicted, or returning before retirement, keeps its progress.
+---@param keys string[] flat semantic effect keys, order irrelevant
+function BattlePresentationAssets:setPredictedEffects(keys)
+  assert(type(keys) == "table", "predicted effects arrive as an array")
+  if self._released then
+    return
+  end
+  local wanted = {} ---@type table<string, boolean>
+  for _, key in ipairs(keys) do
+    assert(flatEffectKey(key), "predicted effects name flat semantic keys")
+    wanted[key] = true
+  end
+  local order = {} ---@type string[]
+  for _, key in ipairs(self._predictedOrder) do
+    if wanted[key] then
+      order[#order + 1] = key
+    else
+      self._retiring[key] = self._predicted[key]
+      self._predicted[key] = nil
+    end
+  end
+  for _, key in ipairs(keys) do
+    if self._predicted[key] == nil then
+      local revived = self._retiring[key]
+      self._retiring[key] = nil
+      self._predicted[key] = revived or { hold = self:openEffectHold(key), settled = false }
+      order[#order + 1] = key
+    end
+  end
+  self._predictedOrder = order
+end
+
+-- Returns the interests of predictions a newer fact dropped. The screen
+-- calls this once the deliveries that could still play them have settled.
+function BattlePresentationAssets:retireDroppedPredictions()
+  local retiring = self._retiring
+  self._retiring = {}
+  for _, entry in pairs(retiring) do
+    self:closeEffectHold(entry.hold)
+  end
+end
+
+-- Advances every unsettled predicted effect toward readiness without
+-- waiting on any one of them: every still-staging closure keeps its demand
+-- enrolled, while at most one accepted effect realizes its record, textures,
+-- and sound banks per poll, so closures turning ready together spread their
+-- main-thread loading across source ticks. A terminal failure settles the
+-- prediction without admitting it: the failure stays latched on the effect
+-- and surfaces with provenance only if that effect is ever played.
+function BattlePresentationAssets:pollPredictedEffects()
+  if self._released then
+    return
+  end
+  local realized = false
+  for _, key in ipairs(self._predictedOrder) do
+    local entry = self._predicted[key]
+    if not entry.settled then
+      local ready, failure, didRealize = advanceHold(self, entry.hold, not realized)
+      realized = realized or didRealize
+      if ready == true or failure ~= nil then
+        entry.settled = true
+      end
+    end
+  end
+end
+
+---@return boolean ready true once every predicted effect is usable or settled terminally
+function BattlePresentationAssets:predictedEffectsReady()
+  for _, entry in pairs(self._predicted) do
+    if not entry.settled then
+      return false
+    end
   end
   return true
 end
@@ -1071,8 +1370,8 @@ function BattlePresentationAssets:error()
   return self._error
 end
 
--- Releases each owned handle exactly once, including outstanding
--- effect leases admitted through this holder. Borrowed text and window
+-- Releases each owned handle exactly once, including every outstanding
+-- effect lease and sound bank interest admitted through this holder. Borrowed text and window
 -- services are never touched here.
 function BattlePresentationAssets:dispose()
   if self._released then
@@ -1080,9 +1379,27 @@ function BattlePresentationAssets:dispose()
   end
   self._released = true
   self._evolutionRecord = nil
-  for effectKey in pairs(self._effects) do
-    rollbackEffectLeases(self, effectKey)
+  local releaseLease = self._assets.releaseEffectResource
+  if type(releaseLease) == "function" then
+    for lease in pairs(self._effectLeases) do
+      releaseLease(lease)
+    end
   end
+  local releaseBank = self._assets.releaseEffectBank
+  if type(releaseBank) == "function" then
+    for bankId in pairs(self._effectBanks) do
+      releaseBank(bankId)
+    end
+  end
+  for hold in pairs(self._effectHolds) do
+    hold.closed = true
+  end
+  self._effectLeases = {}
+  self._effectBanks = {}
+  self._effectHolds = {}
+  self._predicted = {}
+  self._predictedOrder = {}
+  self._retiring = {}
   if self._picturePass ~= nil then
     self._picturePass:release()
     self._picturePass = nil

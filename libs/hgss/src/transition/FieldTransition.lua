@@ -127,7 +127,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field dynamicWarp table<string, unknown>|nil -- the saved dynamic-warp destination, resolved once when the transition starts and handed to destination demand and resolution
 ---@field clock fun(): number? -- measured-time source bounding one staging slice; defaults to the monotonic presentation clock
 ---@field _clock fun(): number -- measured-time source bounding one staging slice
----@field _destinationSliceDeadline number? -- shared slice bound reused across the fixed ticks of one host update
+---@field _destinationSliceDeadline number? -- staging bound of the current host update, shared by its fixed ticks; nil until the first drive of the update
 ---@field selectPreview fun(sourceMap: RuntimeFieldMap, destinationMap: RuntimeFieldMap, profileId: integer|nil): { imageKey: string, timeSlot: integer, profileId: integer|nil }? -- post-commit source-selected area-preview selector
 ---@field follower { isPresent: fun(): boolean, recall: fun(), rejoin: fun(reason: string) }? -- optional presence-gated follower collaborator: panel departure recall, panel/preview arrival rejoin
 ---@field preview FieldAreaPreview? the active time-aware area preview, nil outside the preview substate
@@ -152,23 +152,23 @@ local DESTINATION_STAGE_SLICE_SECONDS = 0.008
 
 -- Advance the staged destination under the held cover in single integral
 -- units until it is ready, the task reports no progress while pending, or
--- the shared slice expires. Zero work while not ready yields instead of
--- spinning; a task that turns ready on zero work still completes. The
--- deadline is shared across the fixed ticks of one host update and renewed
--- once it expires, so catch-up ticks do not multiply the slice by gameplay
--- speed. Staging failures propagate to the caller's abort path.
+-- the host update's slice expires. Zero work while not ready yields instead
+-- of spinning; a task that turns ready on zero work still completes. The
+-- slice starts at the first drive of a host update and is shared by every
+-- fixed tick of that update: once expired, later catch-up ticks yield without
+-- staging until the host begins its next update. Staging failures propagate
+-- to the caller's abort path.
 ---@param self FieldTransition
 ---@param stage table<string, unknown> staged destination window
 ---@return boolean ready
 local function advanceDestinationSlice(self, stage)
   local clock = self._clock
-  local now = clock()
   local deadline = self._destinationSliceDeadline
-  if deadline == nil or now >= deadline then
-    deadline = now + DESTINATION_STAGE_SLICE_SECONDS
+  if deadline == nil then
+    deadline = clock() + DESTINATION_STAGE_SLICE_SECONDS
     self._destinationSliceDeadline = deadline
   end
-  while not stage:isReady() do
+  while not stage:isReady() and clock() < deadline do
     local advanced, consumed = pcall(stage.advance, stage, 1)
     if not advanced then
       error(consumed, 0)
@@ -177,11 +177,15 @@ local function advanceDestinationSlice(self, stage)
     if consumed == 0 then
       break
     end
-    if clock() >= deadline then
-      break
-    end
   end
   return stage:isReady()
+end
+
+-- Opens a host update: the next staging drive starts a fresh slice that the
+-- update's fixed ticks share. The host calls it once per update, before its
+-- fixed ticks; source tick and fade timing are unaffected.
+function FieldTransition:beginHostUpdate()
+  self._destinationSliceDeadline = nil
 end
 
 FieldTransition.PHASES = {
@@ -1479,9 +1483,6 @@ function FieldTransition:updateFixed(inputSnapshot)
       if not slicedReady then
         return false
       end
-      -- The finished window transfers through the resolution below; the
-      -- slice bound served this destination and does not carry over.
-      self._destinationSliceDeadline = nil
       -- The transition keeps the finished stage owned through resolution: the
       -- swap takes it when it adopts this destination, and a resolution or
       -- preparation failure still releases it through the abort path. Its plan

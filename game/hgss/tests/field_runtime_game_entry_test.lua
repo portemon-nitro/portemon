@@ -400,6 +400,7 @@ function T.warp_completion_does_not_request_an_implicit_save()
       setBattleActive = function() end,
     },
     transition = {
+      beginHostUpdate = function() end,
       error = nil,
       phase = "idle",
       updateSourceFrame = function() end,

@@ -919,28 +919,9 @@ function T.session_requires_player_presentation_state()
   Assert.isFalse(ok, "session must require player presentationState: " .. tostring(err))
 end
 
-function T.fixed_ticks_are_render_cadence_independent()
-  local a = fixedSession()
-  a:update(FieldSession.FIXED_DT)
-  local b = fixedSession()
-  b:update(FieldSession.FIXED_DT / 2)
-  b:update(FieldSession.FIXED_DT / 2)
-  Assert.equal(a.tick, 1)
-  Assert.equal(b.tick, 1)
-end
-
-function T.excess_backlog_is_discarded_after_max_catch_up()
-  local s = fixedSession()
-  s:update(10 * FieldSession.FIXED_DT)
-  Assert.equal(s.tick, 5)
-  -- The 5 excess ticks were dropped, not deferred to the next frame.
-  s:update(FieldSession.FIXED_DT)
-  Assert.equal(s.tick, 6)
-end
-
 function T.camera_follows_the_player_xyz_each_fixed_tick()
   local s, targets = fixedSession()
-  s:update(FieldSession.FIXED_DT)
+  s:updateFixed()
   Assert.deepEqual(targets[1], { x = 1.25, y = 2.5, z = 3.75 })
 end
 
@@ -2384,40 +2365,34 @@ function T.catch_up_ticks_do_not_replay_one_action_edge()
     interactions = interactions,
     scriptClient = client,
   }))
-  -- A render delta spanning several fixed ticks: the one Action edge must be
-  -- consumed by the first tick's snapshot and never replayed by catch-up.
-  -- update() takes no snapshot of its own -- each fixed step samples the input,
-  -- so even a stale snapshot passed along must be ignored.
-  session:update(5 * FieldSession.FIXED_DT, { actionPressed = true })
-  Assert.equal(session.tick, 5, "the full catch-up ran")
+  -- A host update spanning several fixed ticks drives each without a
+  -- snapshot: the one Action edge must be consumed by the first tick's
+  -- sample and never replayed by the catch-up ticks.
+  for _ = 1, FieldSession.MAX_CATCH_UP_TICKS do
+    session:updateFixed()
+  end
+  Assert.equal(session.tick, FieldSession.MAX_CATCH_UP_TICKS, "the full catch-up ran")
   Assert.equal(resolved, 1, "one Action edge must not be replayed over catch-up ticks")
   Assert.isFalse(input.actionPressed, "the first tick consumed the edge")
   Assert.equal(input.actionDown, true, "held state survives the edge")
 end
 
 -- renderAlpha is an interpolation factor the renderer forwards to the
--- camera; extreme render deltas must not push it out of [0, 1]. A huge delta
--- saturates the catch-up cap and drops the remainder, and a near-boundary
--- delta leaves a negative float residual in the drop branch, so the clamp is
--- a real invariant, not a formality.
-function T.render_alpha_stays_in_unit_range_after_extreme_deltas()
+-- camera. The host's catch-up and drop arithmetic can leave a float residual
+-- just outside [0, FIXED_DT), which must not push the factor out of [0, 1].
+function T.render_alpha_stays_in_unit_range_for_host_residuals()
   local session, _, _, _ = warpSession({
     fieldX = 4,
     fieldZ = 14,
     warpX = 4,
     warpZ = 14,
   })
-  local function assertInRange(label)
-    local alpha = session:renderAlpha()
-    Assert.isTrue(alpha >= 0 and alpha <= 1, label .. " renderAlpha out of [0, 1]: " .. tostring(alpha))
-  end
-  -- A near-boundary delta leaves a negative float residual in the drop
-  -- branch, so the clamp is a real invariant, not a formality.
-  session:update(1.8)
-  assertInRange("drop")
-  -- A huge delta saturates the catch-up cap and drops the remainder.
-  session:update(600)
-  assertInRange("catch-up")
+  session.accumulator = -1e-15
+  Assert.equal(session:renderAlpha(), 0, "a negative drop residual clamps to 0")
+  session.accumulator = FieldSession.FIXED_DT * (1 + 1e-12)
+  Assert.equal(session:renderAlpha(), 1, "a residual past one tick clamps to 1")
+  session.accumulator = FieldSession.FIXED_DT / 2
+  Assert.near(session:renderAlpha(), 0.5, 1e-12, "an in-range residual interpolates")
 end
 
 -- The session captures the player's walking state before the movement update

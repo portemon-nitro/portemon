@@ -143,6 +143,9 @@ function FakeGraphics.new(opts)
         setFilter = function(_, min, mag)
           image.filters[#image.filters + 1] = { min = min, mag = mag }
         end,
+        setWrap = function(_, horizontal, vertical)
+          image.wrap = { horizontal, vertical }
+        end,
         getWidth = function()
           return size[1]
         end,

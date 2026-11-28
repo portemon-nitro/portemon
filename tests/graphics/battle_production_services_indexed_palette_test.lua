@@ -343,4 +343,170 @@ vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
   )
 end
 
+-- A source replaced under the same descriptor label with different
+-- indices and coverage acquires beside the live generation: each handle
+-- keeps drawing its own bytes, a rejected candidate raises nothing and
+-- disturbs neither, and releasing the old generation leaves the new one.
+function T.same_label_source_replacement_keeps_both_generations_until_release(scope)
+  local Owner = require("game.hgss.src.battle.BattleEncounterPaletteImage")
+  local owner = Owner.new({ graphics = love.graphics })
+  scope:own({
+    release = function()
+      owner:dispose()
+    end,
+  })
+  local lg = love.graphics
+  local indicesA = indexBytes()
+  local indicesB = table.concat({
+    string.char(5, 0, 0, 255),
+    string.char(0, 0, 0, 0),
+    string.char(3, 0, 0, 90),
+    string.char(0, 0, 0, 255),
+    string.char(7, 0, 0, 0),
+    string.char(5, 0, 0, 255),
+    string.char(3, 0, 0, 255),
+    string.char(9, 0, 0, 255),
+  })
+  local words = wordsA()
+  words[10] = Rgb555.encode(0, 31, 31)
+  local referenceA = straightImage(scope, BattleEncounterIndexedRaster.render(indicesA, WIDTH, HEIGHT, words).pixels)
+  local referenceB = straightImage(scope, BattleEncounterIndexedRaster.render(indicesB, WIDTH, HEIGHT, words).pixels)
+  local function drawn(image)
+    return renderBytes(scope, WIDTH, HEIGHT, function()
+      lg.draw(image, 0, 0)
+    end)
+  end
+  local function drawnHandle(handle)
+    return renderBytes(scope, WIDTH, HEIGHT, function()
+      handle:draw(lg, 0, 0)
+    end)
+  end
+  local sourceA = { id = "shared-label", width = WIDTH, height = HEIGHT, pixels = indicesA }
+  local sourceB = { id = "shared-label", width = WIDTH, height = HEIGHT, pixels = indicesB }
+  local handleA = assert(owner:acquire(sourceA, paletteBytes(words)))
+  local handleB, failure = owner:acquire(sourceB, paletteBytes(words))
+  Assert.notNil(handleB, "a replaced source acquires beside the live generation: " .. tostring(failure))
+  ---@cast handleB -nil
+  Assert.equal(drawnHandle(handleA), drawn(referenceA), "the old source keeps drawing its own indices and coverage")
+  Assert.equal(drawnHandle(handleB), drawn(referenceB), "the replacement draws its own indices and coverage")
+  local rejected, cause =
+    owner:acquire({ id = "shared-label", width = WIDTH, height = HEIGHT, pixels = indicesB:reverse() }, "short")
+  Assert.isNil(rejected, "a rejected replacement publishes nothing")
+  Assert.notNil(cause, "a rejected replacement is diagnosed")
+  Assert.equal(drawnHandle(handleA), drawn(referenceA), "a rejected replacement leaves the old generation")
+  Assert.equal(drawnHandle(handleB), drawn(referenceB), "a rejected replacement leaves the live replacement")
+  handleA:release()
+  Assert.equal(drawnHandle(handleB), drawn(referenceB), "releasing the old source keeps the replacement drawable")
+  handleB:release()
+end
+
+-- The send-out ball flash blends the sampled palette color toward its
+-- target and keeps the source's own coverage: a texel sharing a palette
+-- slot with an opaque one stays transparent at zero coverage and keeps
+-- its partial alpha, exactly like the unflashed coverage sampler.
+function T.ball_flash_keeps_indexed_source_coverage(scope)
+  local BattlePicturePass = require("libs.hgss.src.presentation.BattlePicturePass")
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local Owner = require("game.hgss.src.battle.BattleEncounterPaletteImage")
+  local owner = Owner.new({ graphics = love.graphics })
+  scope:own({
+    release = function()
+      owner:dispose()
+    end,
+  })
+  local size = 16
+  local pixels = {}
+  for y = 0, size - 1 do
+    for x = 0, size - 1 do
+      -- Four coverage bands share palette slot 3: opaque, clear,
+      -- partial, opaque again.
+      local band = math.floor(x / 4)
+      local coverage = ({ 255, 0, 128, 255 })[band + 1]
+      pixels[#pixels + 1] = string.char(3, 0, 0, coverage)
+    end
+  end
+  local source = { id = "ball-probe", width = size, height = size, pixels = table.concat(pixels) }
+  local handle = assert(owner:acquire(source, paletteBytes({ [4] = Rgb555.encode(31, 0, 0) })))
+  local pass = scope:own(BattlePicturePass.new(love.graphics))
+  local resources = {
+    graphics = love.graphics,
+    text = {},
+    windows = { drawWindow = function() end },
+    assets = {
+      drawable = function()
+        return handle
+      end,
+      renderPictures = function(_, graphics, pictures)
+        return pass:render(graphics, pictures)
+      end,
+    },
+    frameKey = "unused",
+    sceneImageKey = "unused",
+  }
+  ---@param flash integer? source blend coefficient, nil while unflashed
+  ---@param visible boolean false renders the pane backdrop alone
+  ---@return love.ImageData rendered detail pane
+  local function render(flash, visible)
+    local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    BattleRenderer.drawPane(resources, {
+      battlers = {},
+      effectInstances = {},
+      slotGeometry = {},
+      hudSections = {},
+      message = "",
+      openingPresentation = {
+        playerTrainerVisible = false,
+        foeTrainerVisible = false,
+        trainerSlides = {},
+        terrainSlides = {},
+        ballThrow = {
+          selector = "ball:POKE_BALL",
+          x = 128,
+          y = 96,
+          drawableKey = "battle-ball:POKE_BALL:0",
+          rotation = 0,
+          visible = visible,
+          paletteFlash = flash,
+        },
+      },
+    }, "detail", {}, { x = 0, y = 0, width = 256, height = 192 })
+    love.graphics.setCanvas()
+    return scope:own(canvas:newImageData())
+  end
+  local backdrop = render(nil, false)
+  local flashed = render(8, true)
+  local TOLERANCE = 4 / 255
+  -- The ball draws centered on its anchor: source column zero lands at x = 120.
+  local left, top = 120, 88
+  local function at(image, column)
+    return image:getPixel(left + column, top + 8)
+  end
+  -- Pure red blended halfway toward white keeps red full while green and
+  -- blue rise to the native floor of half the remaining span. Zero
+  -- coverage reproduces the backdrop; partial coverage mixes the blended
+  -- color over it by its own alpha.
+  local blendRed, blendGreen = 1, math.floor(31 * 8 / 16) / 31
+  for _, column in ipairs({ 5, 6 }) do
+    local fr, fg, fb = at(flashed, column)
+    local br, bg, bb = at(backdrop, column)
+    Assert.near(fr, br, TOLERANCE, "a zero-coverage texel keeps the backdrop red under the flash")
+    Assert.near(fg, bg, TOLERANCE, "a zero-coverage texel keeps the backdrop green under the flash")
+    Assert.near(fb, bb, TOLERANCE, "a zero-coverage texel keeps the backdrop blue under the flash")
+  end
+  local fr, fg = at(flashed, 1)
+  Assert.near(fr, blendRed, TOLERANCE, "an opaque texel blends its palette red")
+  Assert.near(fg, blendGreen, TOLERANCE, "an opaque texel blends its palette green")
+  local alpha = 128 / 255
+  local br, bg, bb = at(backdrop, 9)
+  local mr, mg, mb = at(flashed, 9)
+  local expectedR = br * (1 - alpha) + blendRed * alpha
+  local expectedG = bg * (1 - alpha) + blendGreen * alpha
+  local expectedB = bb * (1 - alpha) + blendGreen * alpha
+  Assert.near(mr, expectedR, TOLERANCE * 2, "a partial texel mixes the blended red by its own coverage")
+  Assert.near(mg, expectedG, TOLERANCE * 2, "a partial texel mixes the blended green by its own coverage")
+  Assert.near(mb, expectedB, TOLERANCE * 2, "a partial texel mixes the blended blue by its own coverage")
+end
+
 return GraphicsSmoke.suite(T)
