@@ -20,7 +20,12 @@ local T = {
 }
 
 local MAP = "MAP_GOLDENROD_TUNNEL_B1F"
-local APPROACH_TILE = { fieldX = 10, fieldZ = 18 }
+-- The source coordinate event claims x=15, z=7 through 13 while the takeover
+-- sits at stage 2 (zone_event/192_D37R0102): the acceptance starts one step
+-- outside that authored region and walks in so event arbitration, not a
+-- direct script call, owns the trigger.
+local OUTSIDE_TILE = { fieldX = 15, fieldZ = 6 }
+local TRIGGER_TILE = { fieldX = 15, fieldZ = 7 }
 local COSTUME_SCRIPT = "vanilla.hgss.scr_seq.0094.script_004"
 local COSTUME_FLAG = FieldScriptSymbols.flagsByName.FLAG_SYS_ROCKET_COSTUME
 local TAKEOVER_STAGE_VAR = FieldScriptSymbols.variablesByName.VAR_SCENE_ROCKET_TAKEOVER
@@ -35,9 +40,9 @@ local function boot()
       return FinalizedGameFixture.build(versionId, {
         location = {
           mapSymbol = requestedMap,
-          fieldX = APPROACH_TILE.fieldX,
-          fieldZ = APPROACH_TILE.fieldZ,
-          facing = "north",
+          fieldX = OUTSIDE_TILE.fieldX,
+          fieldZ = OUTSIDE_TILE.fieldZ,
+          facing = "south",
         },
         worldState = FieldEventState.new({ vars = { [TAKEOVER_STAGE_VAR] = 2 } }),
       })
@@ -109,7 +114,18 @@ function T.tests.costume_scene_sets_the_source_flag_and_keeps_the_avatar_identit
     local avatarIdBefore = game:snapshot().avatarId
 
     game:waitForFieldReady()
-    game:startScript(COSTUME_SCRIPT)
+    -- Walk into the authored coordinate region: the source zone event must
+    -- claim the costume script on its own.
+    game:face("south")
+    game:move("south")
+    local stepped = game:advanceUntil("the costume step settles", function(snapshot)
+      return snapshot.player.motion == "idle"
+    end, 240)
+    Assert.equal(stepped.player.fieldX, TRIGGER_TILE.fieldX, "the step enters the authored trigger tile")
+    Assert.equal(stepped.player.fieldZ, TRIGGER_TILE.fieldZ, "the step enters the authored trigger tile")
+    game:advanceUntil("the source costume script starts", function()
+      return #game:recordsForScript(COSTUME_SCRIPT, "script.started") > 0
+    end, 240)
     runScene(game, COSTUME_SCRIPT, 2400)
     Assert.equal(
       #game:recordsForScript(COSTUME_SCRIPT, "script.error"),
@@ -118,6 +134,11 @@ function T.tests.costume_scene_sets_the_source_flag_and_keeps_the_avatar_identit
     )
 
     Assert.isTrue(costumeFlag(game), "the scene sets the source Rocket costume flag")
+    Assert.equal(
+      game.runtime.scripts.worldState:getVar(TAKEOVER_STAGE_VAR),
+      3,
+      "the source scene advances the takeover to stage 3"
+    )
     local avatar = game.runtime.playerAvatar:status()
     Assert.equal(avatar.durableState, COSTUME_TRANSITION, "the source avatar transition owns the costume appearance")
     Assert.equal(game:snapshot().avatarId, avatarIdBefore, "the costume never replaces the player's avatar identity")

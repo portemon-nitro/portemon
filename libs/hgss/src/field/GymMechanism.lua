@@ -42,6 +42,7 @@ local SinjohGym = require("libs.hgss.src.field.gymmick.SinjohGym")
 ---@field state GymMechanismState the saved union this mechanism owns
 ---@field geometry GymMechanismGeometry the runtime plateau the union implies
 ---@field playerOf fun(): table<string, unknown> reads the live field player
+---@field cameraOf (fun(): table<string, unknown>|nil)? reads the live field camera; the winch and spider leaves resolve it per activation so a world swap never strands them on a retired camera
 ---@field actors table<string, unknown>
 ---@field followingMon table<string, unknown>
 ---@field audio table<string, unknown>? the source audio host the rides play through
@@ -86,6 +87,7 @@ local SinjohGym = require("libs.hgss.src.field.gymmick.SinjohGym")
 ---@field private _state GymMechanismState
 ---@field private _geometry table<string, unknown>
 ---@field private _playerOf fun(): table<string, unknown>
+---@field private _cameraOf (fun(): table<string, unknown>|nil)?
 ---@field private _actors table<string, unknown>
 ---@field private _followingMon table<string, unknown>
 ---@field private _audio table<string, unknown>
@@ -138,11 +140,15 @@ function GymMechanism.new(options)
       "the trainer engagement context answers the engaged trainer actor"
     )
   end
+  if options.cameraOf ~= nil then
+    assert(type(options.cameraOf) == "function", "the gym mechanism reads the live field camera through an accessor")
+  end
   return setmetatable({
     _foregroundScript = options.foregroundScript,
     _state = options.state,
     _geometry = options.geometry,
     _playerOf = options.playerOf,
+    _cameraOf = options.cameraOf,
     _actors = options.actors,
     _followingMon = options.followingMon,
     _audio = audio,
@@ -162,6 +168,22 @@ function GymMechanism.new(options)
     _result = nil,
     _trainerEngagement = options.trainerEngagement,
   }, GymMechanism)
+end
+
+-- The live field camera at activation time. The composition replaces the
+-- camera object on every world swap while the mechanism survives, so leaves
+-- must resolve it per activation instead of holding the boot-time snapshot.
+---@private
+---@return table<string, unknown>|nil
+function GymMechanism:_liveCamera()
+  if self._cameraOf ~= nil then
+    local ok, camera = pcall(self._cameraOf)
+    if ok and camera ~= nil then
+      return camera
+    end
+    return nil
+  end
+  return self._camera
 end
 
 -- Map load: publish the settled runtime geometry the saved union describes,
@@ -787,7 +809,7 @@ function GymMechanism:begin(action, operands)
       followingMon = self._followingMon,
       audio = self._audio,
       state = self._state,
-      camera = self._camera,
+      camera = self:_liveCamera(),
       model = spiderSlot ~= nil and self._spiderModels[spiderSlot] or nil,
     })
     if ride:start(selector) then
@@ -834,7 +856,7 @@ function GymMechanism:begin(action, operands)
     -- output variable: the mechanism writes the source boolean either way.
     local winch = CianwoodGym.new({
       state = self._state,
-      camera = self._camera,
+      camera = self:_liveCamera(),
       runtimeMap = self._runtimeMap,
     })
     local accepted = winch:activate()
@@ -891,11 +913,9 @@ function GymMechanism:step()
   end
   local sinjoh = self._sinjoh
   if sinjoh ~= nil and sinjoh:isWaiting() then
-    sinjoh:updateFixed()
-    if sinjoh:isWaiting() then
-      return "riding"
-    end
-    return "complete"
+    -- The shared stage clock advances only in the field fixed update; the
+    -- blocking task observes completion here without mutating it twice.
+    return "riding"
   end
   local ecruteak = self._ecruteak
   if ecruteak ~= nil and not ecruteak:isExtinguishComplete() then
@@ -922,6 +942,13 @@ end
 -- floor, and the switch keeps the bit it already committed.
 ---@param reason string?
 function GymMechanism:cancelRide(reason)
+  local switchWait = self._switch
+  if switchWait ~= nil then
+    -- The switch bit stays committed; only the owned wait and its own source
+    -- sound are released so no owner remains to poll an abandoned script.
+    self._switch = nil
+    pcall(self._audio.stop, self._audio, switchWait.sound)
+  end
   local winch = self._winch
   if winch ~= nil then
     self._winch = nil

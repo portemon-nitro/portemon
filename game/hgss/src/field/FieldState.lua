@@ -913,7 +913,9 @@ function FieldState:_endingPortraitManifest()
   local ok, manifest =
     pcall(runtime.cacheFs.loadLua, runtime.cacheFs, require("libs.assets.src.MonCache").portraitManifestPath())
   if not ok then
-    return nil, nil
+    -- The manifest is immutable build output with no runtime producer: an
+    -- unreadable artifact can never become ready by waiting.
+    return nil, "League ending portrait manifest is unreadable"
   end
   if type(manifest) ~= "table" or type(manifest.entries) ~= "table" then
     return nil, "League ending portrait manifest is malformed"
@@ -948,22 +950,26 @@ function FieldState:_demandPortraitPages(selectors)
   local allReady = true
   for _, selector in ipairs(selectors) do
     local entry = manifest.entries[selector]
-    if type(entry) ~= "table" or type(entry.pageId) ~= "number" then
-      allReady = false
-    else
-      local pageId = entry.pageId
-      if not seenPages[pageId] then
-        seenPages[pageId] = true
-        local okDemand, ready, demandFailure = pcall(derived.requestMonPortraitPage, pageId, "required")
-        if not okDemand then
-          return false, "League ending portrait demand failed: " .. tostring(ready)
-        end
-        if demandFailure ~= nil then
-          return false, tostring(demandFailure)
-        end
-        if ready ~= true then
-          allReady = false
-        end
+    if type(entry) ~= "table" then
+      -- The manifest is already admitted and immutable: a missing selector
+      -- can never become valid by waiting.
+      return false, "League ending portrait manifest carries no page for " .. tostring(selector)
+    end
+    if type(entry.pageId) ~= "number" or entry.pageId % 1 ~= 0 or entry.pageId < 0 then
+      return false, "League ending portrait page id is invalid for " .. tostring(selector)
+    end
+    local pageId = entry.pageId
+    if not seenPages[pageId] then
+      seenPages[pageId] = true
+      local okDemand, ready, demandFailure = pcall(derived.requestMonPortraitPage, pageId, "required")
+      if not okDemand then
+        return false, "League ending portrait demand failed: " .. tostring(ready)
+      end
+      if demandFailure ~= nil then
+        return false, tostring(demandFailure)
+      end
+      if ready ~= true then
+        allReady = false
       end
     end
   end

@@ -1741,6 +1741,11 @@ function FieldRuntime:_composeFieldServices(boot)
   local function currentMechanismPlayer()
     return self.session ~= nil and self.session.player or self.player
   end
+  -- The camera object is replaced on every world swap while the mechanism
+  -- survives, so the mechanism resolves it per activation like the player.
+  local function currentMechanismCamera()
+    return self.session ~= nil and self.session.camera or self.camera
+  end
   local function currentForegroundScriptId()
     return self.scripts ~= nil and self.scripts.scheduler:foregroundScriptId() or nil
   end
@@ -1771,7 +1776,7 @@ function FieldRuntime:_composeFieldServices(boot)
     actors = self.actors,
     followingMon = self.followingMon,
     audio = self.audio or (self.scriptHosts and self.scriptHosts.audio),
-    camera = self.camera,
+    cameraOf = currentMechanismCamera,
     foregroundScript = currentForegroundScriptId,
     trainerEngagement = { engagedActor = engagedTrainerActor },
   })

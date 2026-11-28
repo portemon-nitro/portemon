@@ -750,4 +750,113 @@ function T.a_loaded_union_restores_the_gyms_own_map_state()
   Assert.deepEqual(rested, { 1, 2 }, "a lowered winch restores nothing")
 end
 
+-- The running winch resolves the live camera per activation: a world swap
+-- replaces the camera object while the mechanism survives, so a winch
+-- accepted after the swap pans the replacement instead of a retired camera.
+function T.a_winch_activation_uses_the_live_camera_after_a_world_swap()
+  local host = newHost({ union = union("cianwood", { winchRaised = false }) })
+  host.mechanism:bindMap(host.player.currentMap)
+  local function newCamera()
+    return {
+      translations = {},
+      finished = true,
+      startTranslation = function(self, offset, ticks)
+        self.finished = false
+        self.remaining = ticks
+        self.translations[#self.translations + 1] = { x = offset.x, z = offset.z, ticks = ticks }
+      end,
+      isTranslationFinished = function(self)
+        return self.finished
+      end,
+      abandonTranslation = function(self)
+        self.finished = true
+      end,
+    }
+  end
+  local retired = newCamera()
+  local live = newCamera()
+  host.liveCamera = retired
+  host.mechanism._cameraOf = function()
+    return host.liveCamera
+  end
+  -- The swap commits before the player touches the winch.
+  host.liveCamera = live
+  host.mechanism:begin("winch")
+  Assert.equal(host.mechanism:takeResult(), 1, "the post-swap activation is accepted")
+  Assert.equal(host.mechanism:step(), "riding", "the cutscene starts its pan")
+  Assert.equal(#live.translations, 1, "the running leaf addresses the live camera")
+  Assert.equal(#retired.translations, 0, "the retired camera is never driven")
+  local ticks = 0
+  while host.mechanism:step() ~= "complete" do
+    if not live.finished then
+      live.remaining = live.remaining - 1
+      live.finished = live.remaining <= 0
+    end
+    ticks = ticks + 1
+    assert(ticks < 500, "the cutscene never released the field")
+  end
+  Assert.equal(#live.translations, 2, "the accepted turn pans out and back on the live camera")
+end
+
+-- A completed candle retires its slot: the next trainer in the same visit
+-- starts from a clean task instead of tripping the in-flight assertion.
+function T.a_second_candle_starts_after_the_first_completes_in_one_visit()
+  local host = newHost({ union = union("ecruteak", { candles = { false, false, false, false } }) })
+  host.mechanism:bindMap(host.player.currentMap)
+  local first = "map:80:object:3"
+  local second = "map:80:object:5"
+  host.actors.getById = function(_, id)
+    if id == first then
+      return { actorId = id, objectEventId = 3 }
+    end
+    if id == second then
+      return { actorId = id, objectEventId = 5 }
+    end
+    return nil
+  end
+  host.mechanism:begin("candle_extinguish", { useLastInteracted = true, lastInteractedActor = first })
+  local status
+  repeat
+    status = host.mechanism:step()
+  until status == "complete"
+  host.mechanism:begin("candle_extinguish", { useLastInteracted = true, lastInteractedActor = second })
+  repeat
+    status = host.mechanism:step()
+  until status == "complete"
+  Assert.deepEqual(host.state:ecruteakCandles(), { false, true, false, true }, "both candles commit in one visit")
+  Assert.isFalse(host.mechanism:isRiding())
+end
+
+-- Cancelling a switch wait releases the mechanism claim: the committed bit
+-- stays, the field stops riding, and the next switch or capture proceeds.
+function T.cancelling_a_switch_wait_releases_the_mechanism_claim()
+  local host = newHost({ union = union("azalea", { endpoints = { 0, 1, 2, 7 }, switchMask = 0 }) })
+  host.mechanism:begin("switch", { switchNumber = 1 })
+  Assert.isTrue(host.mechanism:isRiding(), "the switch wait owns the field")
+  host.mechanism:cancelRide("cancelled")
+  Assert.isFalse(host.mechanism:isRiding(), "a cancelled wait leaves no in-flight claim")
+  Assert.equal(host.state:switchMask(), 2, "the committed switch bit survives cancellation")
+  host.mechanism:begin("switch", { switchNumber = 0 })
+  Assert.isTrue(host.mechanism:isRiding(), "the next switch starts after a cancellation")
+  host.switchSettled = true
+  Assert.equal(host.mechanism:step(), "complete")
+  host.foreground = nil
+  Assert.isTrue(host.mechanism:isStableForSave(), "a settled switch captures once its frame ended")
+end
+
+-- The shared stage clock has one mutator: the field fixed update advances it
+-- while the blocking task only observes completion.
+function T.the_sinjoh_wait_observes_the_shared_clock_without_mutating_it()
+  local host = newHost({ union = union("sinjoh", { choice = 0 }) })
+  host.mechanism:bindMap(host.player.currentMap)
+  host.mechanism:begin("sinjoh_choose", { choice = 2 })
+  local sinjoh = assert(host.mechanism._sinjoh, "the choice owns the stage wait")
+  Assert.isTrue(host.mechanism:isRiding())
+  local before = sinjoh._frame
+  Assert.equal(host.mechanism:step(), "riding", "the pending choice holds the script")
+  Assert.equal(sinjoh._frame, before, "the blocking poll advances no frame of its own")
+  host.mechanism:updateFixed()
+  Assert.equal(sinjoh._frame, (before + 1) % 60, "the field fixed update advances exactly one frame")
+end
+
 return { tests = T }

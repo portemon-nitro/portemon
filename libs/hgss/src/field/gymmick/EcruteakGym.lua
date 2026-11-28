@@ -188,7 +188,7 @@ end
 
 ---@return boolean
 function EcruteakGym:isExtinguishComplete()
-  return self._task == nil or self._task.phase == "done"
+  return self._task == nil
 end
 
 -- One fixed tick of the source extinguish task (Task_ExtinguishCandle). Only
@@ -196,7 +196,13 @@ end
 -- source's own shrink boundary.
 function EcruteakGym:updateFixed()
   local task = self._task
-  if task == nil or task.phase == "done" then
+  if task == nil then
+    return
+  end
+  -- The completed task retires at once: only the settled union and the
+  -- replaced sprite survive, so the next candle starts from a clean slot.
+  if task.phase == "done" then
+    self._task = nil
     return
   end
   if task.phase == "delay" then
@@ -223,9 +229,9 @@ function EcruteakGym:updateFixed()
   end
   -- CANDLE_STATE_WAIT_SPRITE. The source waits for the replaced billboard to
   -- become ready; this port acquires an actor's visual from the resident actor
-  -- set synchronously, so the replacement is ready on the next fixed tick and
-  -- there is no asynchronous billboard to wait for.
-  task.phase = "done"
+  -- set synchronously, so the replacement is ready at once and the slot is
+  -- free for the next candle in the same visit.
+  self._task = nil
 end
 
 -- The four candle placements the presentation draws: a candle stands on its
